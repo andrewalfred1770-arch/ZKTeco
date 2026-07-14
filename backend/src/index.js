@@ -181,10 +181,14 @@ process.on('unhandledRejection', (err) => logger.error(`Unhandled rejection: ${d
 
 // ─── Start server ─────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT) || 5000;
-// Local Mode (spawned by Electron) keeps the historical loopback-only bind.
-// Server Mode deployments set HOST=0.0.0.0 (or a specific interface) so other
-// machines' clients can reach this process — opt-in, never the default.
-const HOST = process.env.HOST || '127.0.0.1';
+// EP-009: default bind changed from 127.0.0.1 to 0.0.0.0 — the previous
+// loopback-only default made the backend unreachable from other devices on
+// the LAN (e.g. a macOS client in Server Mode), since 127.0.0.1 only accepts
+// connections originating from the same machine. 0.0.0.0 listens on every
+// network interface, which still includes localhost/127.0.0.1 — so local
+// Electron/dev usage is unaffected. Still fully overridable via HOST for a
+// deployment that wants to bind to one specific interface instead.
+const HOST = process.env.HOST || '0.0.0.0';
 
 // Attached before the async init gap below so it's guaranteed live before
 // .listen() is actually called (event listeners are safe to attach any time
