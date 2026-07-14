@@ -15,7 +15,8 @@
     "electron:build": "npm run build && electron-builder --win --x64",
     "electron:build:dir": "npm run build && electron-builder --win --x64 --dir",
     "electron:build:mac": "npm run build && electron-builder --mac",
-    "electron:build:mac:dir": "npm run build && electron-builder --mac --dir"
+    "electron:build:mac:dir": "npm run build && electron-builder --mac --dir",
+    "electron:build:mac:legacy": "npm run build && electron-builder --mac --config electron-builder.legacy-mac.json"
   },
   "dependencies": {
     "@fontsource/cairo": "^5.0.16",

@@ -1,0 +1,72 @@
+{
+  "appId": "com.petshrow.erp",
+  "productName": "PETSHROW ERP",
+  "copyright": "© 2026 PETSHROW ERP",
+  "asar": true,
+  "asarUnpack": ["assets/**"],
+  "compression": "normal",
+
+  "electronVersion": "26.6.10",
+
+  "mac": {
+    "target": [
+      { "target": "dmg", "arch": ["x64"] },
+      { "target": "zip", "arch": ["x64"] }
+    ],
+    "icon": "assets/icon.png",
+    "category": "public.app-category.business",
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "artifactName": "PETSHROW-ERP-Legacy-${arch}.${ext}",
+    "extraResources": [
+      {
+        "from": "../backend",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!backups/**",
+          "!uploads/**",
+          "!**/*.log",
+          "!.env",
+          "!.env.*",
+          "!.env.example",
+          "!node_modules/.cache/**",
+          "!node_modules/.prisma/client/**/query_engine-windows*",
+          "!node_modules/.prisma/client/**/libquery_engine-linux*",
+          "!node_modules/.prisma/client/**/libquery_engine-debian*",
+          "!node_modules/.prisma/client/**/libquery_engine-darwin-arm64*",
+          "!node_modules/.bin/**",
+          "!**/*.md",
+          "!**/*.ts",
+          "!**/__tests__/**",
+          "!**/test/**",
+          "!**/tests/**"
+        ]
+      },
+      {
+        "from": "dist",
+        "to": "frontend/dist",
+        "filter": ["**/*"]
+      }
+    ]
+  },
+
+  "dmg": {
+    "artifactName": "PETSHROW-ERP-Legacy-${arch}.${ext}"
+  },
+
+  "files": [
+    "electron.js",
+    "electron/**/*",
+    "preload.cjs",
+    "splashPreload.cjs",
+    "assets/**/*",
+    "!assets/*.psd",
+    "!**/*.map"
+  ],
+
+  "directories": {
+    "buildResources": "assets",
+    "output": "../dist-electron-legacy"
+  }
+}
