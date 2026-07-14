@@ -77,7 +77,37 @@
           ]
         }
       ],
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "extraResources": [
+        {
+          "from": "../backend",
+          "to": "backend",
+          "filter": [
+            "**/*",
+            "!backups/**",
+            "!uploads/**",
+            "!**/*.log",
+            "!.env",
+            "!.env.*",
+            "!.env.example",
+            "!node_modules/.cache/**",
+            "!node_modules/.prisma/client/**/libquery_engine-linux*",
+            "!node_modules/.prisma/client/**/libquery_engine-darwin*",
+            "!node_modules/.prisma/client/**/libquery_engine-debian*",
+            "!node_modules/.bin/**",
+            "!**/*.md",
+            "!**/*.ts",
+            "!**/__tests__/**",
+            "!**/test/**",
+            "!**/tests/**"
+          ]
+        },
+        {
+          "from": "dist",
+          "to": "frontend/dist",
+          "filter": ["**/*"]
+        }
+      ]
     },
     "mac": {
       "target": [
@@ -146,38 +176,6 @@
       "assets/**/*",
       "!assets/*.psd",
       "!**/*.map"
-    ],
-    "extraResources": [
-      {
-        "from": "../backend",
-        "to": "backend",
-        "filter": [
-          "**/*",
-          "!backups/**",
-          "!uploads/**",
-          "!**/*.log",
-          "!.env",
-          "!.env.*",
-          "!.env.example",
-          "!node_modules/.cache/**",
-          "!node_modules/.prisma/client/**/libquery_engine-linux*",
-          "!node_modules/.prisma/client/**/libquery_engine-darwin*",
-          "!node_modules/.prisma/client/**/libquery_engine-debian*",
-          "!node_modules/.bin/**",
-          "!**/*.md",
-          "!**/*.ts",
-          "!**/__tests__/**",
-          "!**/test/**",
-          "!**/tests/**"
-        ]
-      },
-      {
-        "from": "dist",
-        "to": "frontend/dist",
-        "filter": [
-          "**/*"
-        ]
-      }
     ],
     "directories": {
       "buildResources": "assets",
