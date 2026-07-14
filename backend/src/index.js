@@ -1,3 +1,11 @@
+// EP-007: self-initializing config — if backend/.env doesn't exist yet
+// (fresh install), generate one (random JWT_SECRET, localhost/env-derived
+// DATABASE_URL) BEFORE dotenv loads anything. No-op, synchronous, and
+// idempotent when .env already exists — never touches an already-configured
+// install.
+const { ensureEnvFile } = require('./init/generateEnv');
+ensureEnvFile(process.env.DOTENV_CONFIG_PATH);
+
 // Load .env from custom path (set by Electron) or default location
 const dotenvPath = process.env.DOTENV_CONFIG_PATH;
 require('dotenv').config(dotenvPath ? { path: dotenvPath } : {});
@@ -178,25 +186,10 @@ const PORT = parseInt(process.env.PORT) || 5000;
 // machines' clients can reach this process — opt-in, never the default.
 const HOST = process.env.HOST || '127.0.0.1';
 
-server.listen(PORT, HOST, () => {
-  logger.info(`Server running on ${HOST}:${PORT} [${isProd ? 'production' : 'development'}]`);
-
-  // Start background services with delay to allow DB to be ready.
-  // syncScheduler is the SINGLE owner of attendance processing crons — the
-  // old separate attendanceProcessor (a duplicate 15-min processToday path
-  // racing the scheduler's 10-min one) has been removed.
-  setTimeout(() => {
-    try { startSyncScheduler(io); }
-    catch (err) { logger.error('SyncScheduler error:', err.message); }
-    finally { startupState.servicesStarted = true; }
-
-    // Crash safety: resume any historical rebuild job left 'running' by a
-    // process that died mid-run (see historicalRebuildService.js).
-    historicalRebuildService.resumeInterruptedJobs(io)
-      .catch((err) => logger.error(`[HIST-REBUILD] resume error: ${err.message}`));
-  }, 2000);
-});
-
+// Attached before the async init gap below so it's guaranteed live before
+// .listen() is actually called (event listeners are safe to attach any time
+// before the event can fire — this is unchanged from before, only moved a
+// few lines earlier to stay ahead of the new `await` below).
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     logger.error(`Port ${PORT} already in use. Is another instance running?`);
@@ -204,6 +197,36 @@ server.on('error', (err) => {
   }
   logger.error('Server error:', err);
 });
+
+// EP-007: first-run initialization (folders, migrations, baseline seed) runs
+// and is awaited BEFORE the port opens — nothing answers /api/* until this
+// resolves, which is what makes Electron's existing /api/startup-status poll
+// (unchanged) correctly wait for initialization too. Never throws/crashes:
+// on failure the server still starts so /api/health can report real status.
+const { runFirstRunInit } = require('./init');
+
+(async () => {
+  await runFirstRunInit();
+
+  server.listen(PORT, HOST, () => {
+    logger.info(`Server running on ${HOST}:${PORT} [${isProd ? 'production' : 'development'}]`);
+
+    // Start background services with delay to allow DB to be ready.
+    // syncScheduler is the SINGLE owner of attendance processing crons — the
+    // old separate attendanceProcessor (a duplicate 15-min processToday path
+    // racing the scheduler's 10-min one) has been removed.
+    setTimeout(() => {
+      try { startSyncScheduler(io); }
+      catch (err) { logger.error('SyncScheduler error:', err.message); }
+      finally { startupState.servicesStarted = true; }
+
+      // Crash safety: resume any historical rebuild job left 'running' by a
+      // process that died mid-run (see historicalRebuildService.js).
+      historicalRebuildService.resumeInterruptedJobs(io)
+        .catch((err) => logger.error(`[HIST-REBUILD] resume error: ${err.message}`));
+    }, 2000);
+  });
+})();
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 // Deterministic teardown order: stop producing new work (crons), drop device

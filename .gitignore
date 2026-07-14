@@ -34,3 +34,26 @@ tmp/
 *.db
 *.sqlite
 *.sqlite3
+
+# ─── Secrets & credentials (EP-006.1) ──────────────────────────────────────────
+# Never let real secrets be committed again. .env.example is a safe template
+# and is explicitly re-included below.
+backend/.env
+.env
+.env.*
+!.env.example
+!backend/.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Local Claude Code session permissions — has held plaintext local DB
+# credentials in command-allowlist entries; never track it.
+.claude/settings.local.json
+
+# ─── First-run initialization runtime state (EP-007) ───────────────────────────
+# Generated at startup, per-install — never source, never committed.
+backend/.initialized.json
+backend/backups/*
+backend/exports/*

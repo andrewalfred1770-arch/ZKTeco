@@ -1,0 +1,139 @@
+name: Build Desktop Clients
+
+# ─── Triggers ──────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+# Cancel superseded runs on the same branch/PR to save CI minutes — does not
+# affect the Windows/macOS independence requirement below (that's about job
+# failure isolation, not run cancellation on new pushes).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+  # Dummy, non-secret value — `prisma generate` only reads the DB URL to
+  # satisfy schema validation for the datasource block, it never connects.
+  # Real credentials are never present in this workflow.
+  DATABASE_URL: 'mysql://ci:ci@127.0.0.1:3306/ci_placeholder'
+
+jobs:
+  # ─── Windows Client ──────────────────────────────────────────────────────────
+  build-windows:
+    name: Build Windows Client
+    runs-on: windows-latest
+    # No `needs:` on build-macos and vice versa — independent jobs, so a
+    # failure here never cancels or blocks the macOS job (or the reverse).
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      # Prisma's downloaded query-engine binaries live here after `generate`;
+      # keying on the schema hash + OS avoids re-downloading them every run.
+      - name: Cache Prisma engines
+        uses: actions/cache@v4
+        with:
+          path: backend/node_modules/.prisma
+          key: prisma-${{ runner.os }}-${{ hashFiles('backend/prisma/schema.prisma') }}
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Generate Prisma client
+        working-directory: backend
+        run: npx prisma generate
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend (Vite)
+        working-directory: frontend
+        run: npm run build
+
+      - name: Build Windows installer (electron-builder)
+        working-directory: frontend
+        run: npx electron-builder --win --x64 --publish=never
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            dist-electron/*.exe
+          retention-days: 30
+          if-no-files-found: error
+
+  # ─── macOS Client ────────────────────────────────────────────────────────────
+  build-macos:
+    name: Build macOS Client
+    runs-on: macos-latest
+    env:
+      # No Developer ID certificate is configured in this repo — tell
+      # electron-builder not to search for one, so the build stays
+      # deterministic (unsigned) instead of failing/behaving unpredictably.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Cache Prisma engines
+        uses: actions/cache@v4
+        with:
+          path: backend/node_modules/.prisma
+          key: prisma-${{ runner.os }}-${{ hashFiles('backend/prisma/schema.prisma') }}
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Generate Prisma client
+        working-directory: backend
+        run: npx prisma generate
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend (Vite)
+        working-directory: frontend
+        run: npm run build
+
+      - name: Build macOS app (electron-builder)
+        working-directory: frontend
+        run: npx electron-builder --mac --publish=never
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: |
+            dist-electron/*.dmg
+            dist-electron/*.zip
+          retention-days: 30
+          if-no-files-found: error
