@@ -1,0 +1,575 @@
+generator client {
+  provider      = "prisma-client-js"
+  // EP-004: "native" alone only downloads the engine for whatever OS runs
+  // `prisma generate` (Windows in this dev environment). The macOS package
+  // needs its own darwin/darwin-arm64 query engines bundled — this is a
+  // generator/packaging directive only, no model or field changes.
+  binaryTargets = ["native", "darwin", "darwin-arm64"]
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Organization ──────────────────────────────────────────────────────────────
+model Company {
+  id         Int        @id @default(autoincrement())
+  name       String
+  address    String?
+  phone      String?
+  email      String?
+  logo       String?
+  status     Boolean    @default(true)
+  createdAt  DateTime   @default(now())
+  branches   Branch[]
+  @@map("companies")
+}
+
+model Branch {
+  id              Int               @id @default(autoincrement())
+  name            String
+  address         String?
+  phone           String?
+  companyId       Int
+  status          Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  company         Company           @relation(fields: [companyId], references: [id])
+  departments     Department[]
+  devices         Device[]
+  employees       Employee[]
+  rules           AttendanceRule[]
+  @@map("branches")
+}
+
+model Department {
+  id         Int               @id @default(autoincrement())
+  name       String
+  branchId   Int
+  status     Boolean           @default(true)
+  createdAt  DateTime          @default(now())
+  branch     Branch            @relation(fields: [branchId], references: [id])
+  employees  Employee[]
+  rules      AttendanceRule[]
+  @@map("departments")
+}
+
+// ─── Shifts ────────────────────────────────────────────────────────────────────
+model Shift {
+  id              Int        @id @default(autoincrement())
+  name            String
+  startTime       String
+  endTime         String
+  gracePeriod     Int        @default(0)
+  overtimeStart   String?
+  nightShift      Boolean    @default(false)
+  workingHours    Float      @default(8)
+  breakMinutes    Int        @default(0)
+  status          Boolean    @default(true)
+  createdAt       DateTime   @default(now())
+  employees       Employee[]
+  @@map("shifts")
+}
+
+// ─── Employees ─────────────────────────────────────────────────────────────────
+model Employee {
+  id              Int               @id @default(autoincrement())
+  name            String
+  zkUserId        String
+  code            String?           @unique
+  phone           String?
+  email           String?
+  nationalId      String?
+  position        String?
+  hireDate        DateTime?
+  salary          Float             @default(0)
+  departmentId    Int?
+  branchId        Int
+  shiftId         Int?
+  isMonitored     Boolean           @default(false)
+  monitorColor    String?
+  userId          Int?              @unique
+  status          Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  department      Department?       @relation(fields: [departmentId], references: [id])
+  branch          Branch            @relation(fields: [branchId], references: [id])
+  shift           Shift?            @relation(fields: [shiftId], references: [id])
+  user            User?             @relation(fields: [userId], references: [id])
+  attendanceLogs  AttendanceLog[]
+  attendanceDaily AttendanceDaily[]
+  payrolls        Payroll[]
+  advances        Advance[]
+  adjustments     AttendanceAdjustment[]
+  manualEditAudits ManualEditAuditLog[]
+  @@map("employees")
+}
+
+// ─── Devices & Raw Logs ────────────────────────────────────────────────────────
+model Device {
+  id                Int             @id @default(autoincrement())
+  name              String
+  ipAddress         String
+  port              Int             @default(4370)
+  branchId          Int
+  deviceNumber      Int             @default(1)
+  syncInterval      Int             @default(5)
+  autoSync          Boolean         @default(true)
+  lastSync          DateTime?
+  lastSyncCount     Int             @default(0)
+  totalLogsCount    Int             @default(0)
+  status            String          @default("offline")
+  errorMessage      String?
+  consecutiveErrors Int             @default(0)
+  enabled           Boolean         @default(true)
+  isArchived        Boolean         @default(false)
+  createdAt         DateTime        @default(now())
+  // Checkpoint: newest attendance timestamp confirmed during a fully
+  // converged (non-partial) sync. Used for incremental-window inserts and
+  // gap/staleness detection. NOT advanced on partial/failed pulls.
+  lastSuccessfulTimestamp DateTime?
+  // Device-reported buffer total (logCounts) from the last successful sync —
+  // used to detect a suspicious shrink in the device's own log count.
+  lastPullTotal     Int?
+  branch            Branch          @relation(fields: [branchId], references: [id])
+  logs              AttendanceLog[]
+  syncLogs          DeviceSyncLog[]
+  @@map("devices")
+}
+
+model DeviceSyncLog {
+  id                Int       @id @default(autoincrement())
+  deviceId          Int
+  startedAt         DateTime  @default(now())
+  completedAt       DateTime?
+  newLogs           Int       @default(0)
+  totalLogs         Int       @default(0)
+  status            String    @default("running")
+  error             String?
+  duration          Int?
+  triggeredBy       String    @default("auto")
+  // End-to-end tracing (Step 8)
+  returnedCount     Int?
+  duplicateCount    Int?
+  invalidCount      Int?
+  skippedOldCount   Int?
+  dbTotal           Int?
+  oldestTimestamp   DateTime?
+  newestTimestamp   DateTime?
+  convergencePasses Int?
+  zkErr             String?
+  device            Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  @@map("device_sync_logs")
+}
+
+model AttendanceLog {
+  id          Int       @id @default(autoincrement())
+  employeeId  Int?
+  deviceId    Int
+  zkUserId    String
+  timestamp   DateTime
+  verifyType  Int       @default(0)
+  source      String    @default("device")
+  isDuplicate Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  employee    Employee? @relation(fields: [employeeId], references: [id])
+  device      Device    @relation(fields: [deviceId], references: [id])
+  @@unique([deviceId, zkUserId, timestamp])
+  // Relink scans filter on zkUserId (+ employeeId IS NULL) after every sync —
+  // unindexed, that was a full table scan per employee per sync.
+  @@index([zkUserId, employeeId])
+  // Newest-row lookups (checkpoint/gap detection) order by timestamp per device.
+  @@index([deviceId, timestamp])
+  // processDate fetches an employee's punches inside a day window.
+  @@index([employeeId, timestamp])
+  @@map("attendance_logs")
+}
+
+// ─── Processed Attendance (enriched) ──────────────────────────────────────────
+model AttendanceDaily {
+  id                   Int       @id @default(autoincrement())
+  employeeId           Int
+  date                 DateTime  @db.Date
+  checkIn              DateTime?
+  checkOut             DateTime?
+  workedMinutes        Int       @default(0)
+  lateMinutes          Int       @default(0)
+  overtimeMinutes      Int       @default(0)
+  overtimeHours        Float     @default(0)
+  earlyLeaveMinutes    Int       @default(0)
+  // Policy engine fields
+  morningOvertimeHours Float     @default(0)
+  eveningOvertimeHours Float     @default(0)
+  latePenaltyUnits     Float     @default(0)
+  earlyCheckoutUnits   Float     @default(0)
+  // Day-scoped condition-rule result (e.g. penalty_excessive_late, penalty_friday_absence),
+  // evaluated ONCE here by attendanceEngine.computeDerivedFields — the only place
+  // day-scoped condition rules are ever evaluated. Folded into effectiveTotalDeductionUnits
+  // via mergeEffectivePenalty(), exactly like latePenaltyUnits/earlyCheckoutUnits.
+  conditionDeductionUnits Float  @default(0)
+  totalDeductionUnits  Float     @default(0)   // latePenalty + earlyCheckout + conditionDeductionUnits
+  // Graduated overtime-rule result (PenaltyRule type='overtime'), in bonus units.
+  // null = no overtime rules configured for this policy — effective overtime
+  // falls back to overtimeHours (1 unit = 1 hour, unchanged legacy behavior).
+  overtimeRulesUnits   Float?
+  // Manual Penalty Override — highest-precedence overlay (HR direct edit)
+  manualLatePenaltyUnits   Float?
+  manualEarlyPenaltyUnits  Float?
+  manualConditionUnits     Float?
+  manualOvertimeUnits      Float?
+  manualPenaltyReason      String?   @db.Text
+  manualPenaltyBy          Int?
+  manualPenaltyByName      String?
+  manualPenaltyAt          DateTime?
+  // Absence Permission System — set by HR when marking a day absent.
+  // penaltyDays is the deduction multiplier for this day (defaults to 1 in engine when null).
+  // These fields are HR-overlay: NOT in DAILY_RESET, survive every engine recompute.
+  absenceType          String?   // 'with_permission' | 'without_permission' | 'custom'
+  penaltyDays          Float?    // 1 | 2 | custom — null → engine uses 1
+  absenceReason        String?   @db.Text
+  absenceSetBy         String?
+  absenceSetAt         DateTime?
+  // State
+  isAbsent             Boolean   @default(false)
+  isHoliday            Boolean   @default(false)
+  isWeekend            Boolean   @default(false)
+  status               String    @default("present")
+  notes                String?
+  manualEdit           Boolean   @default(false)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  employee             Employee              @relation(fields: [employeeId], references: [id])
+  adjustment           AttendanceAdjustment?
+  @@unique([employeeId, date])
+  @@index([date])
+  @@map("attendance_daily")
+}
+
+// ─── Manual Adjustment Layer ───────────────────────────────────────────────────
+// Architecture: Raw Logs → Policy Engine → Manual Adjustments → Payroll
+// Do NOT modify biometric logs. Adjustments overlay the auto-calculated values.
+model AttendanceAdjustment {
+  id                Int       @id @default(autoincrement())
+  attendanceDailyId Int       @unique
+  employeeId        Int
+  date              DateTime  @db.Date
+
+  // ── Snapshot of auto-calculated values (read-only reference) ──────────────
+  snapCheckIn         String?
+  snapCheckOut        String?
+  snapWorkedMinutes   Int      @default(0)
+  snapLateMinutes     Int      @default(0)
+  snapOvertimeHours   Float    @default(0)
+  snapMorningOT       Float    @default(0)
+  snapEveningOT       Float    @default(0)
+  snapLatePenalty     Float    @default(0)
+  snapEarlyPenalty    Float    @default(0)
+  snapTotalDeductions Float    @default(0)
+  snapStatus          String   @default("present")
+  snapIsAbsent        Boolean  @default(false)
+
+  // ── HR-approved overrides (null = keep original calculated value) ──────────
+  adjCheckIn          String?
+  adjCheckOut         String?
+  adjWorkedMinutes    Int?
+  adjLateMinutes      Int?
+  adjOvertimeHours    Float?
+  adjMorningOT        Float?
+  adjEveningOT        Float?
+  adjLatePenalty      Float?
+  adjEarlyPenalty     Float?
+  adjConditionUnits   Float?
+  adjTotalDeductions  Float?
+  adjStatus           String?
+  adjIsAbsent         Boolean?
+
+  // ── Quick-action flags ─────────────────────────────────────────────────────
+  ignoreLate          Boolean  @default(false)  // zero out late penalty
+  ignoreEarlyLeave    Boolean  @default(false)  // zero out early checkout penalty
+  ignoreConditionUnits Boolean @default(false)  // zero out day-scoped condition-rule penalty
+  forcePresent        Boolean  @default(false)  // mark absent as present
+
+  // ── Workflow ───────────────────────────────────────────────────────────────
+  approvalStatus      String   @default("pending")
+  // pending | approved | rejected | auto_approved | reverted
+  reason              String?  @db.Text
+  hrComment           String?  @db.Text
+  approvedBy          Int?
+  approvedByName      String?
+  approvedAt          DateTime?
+
+  // ── Audit ─────────────────────────────────────────────────────────────────
+  createdBy           Int      @default(0)
+  createdByName       String?
+  createdByRole       String   @default("system")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  attendanceDaily     AttendanceDaily      @relation(fields: [attendanceDailyId], references: [id])
+  employee            Employee             @relation(fields: [employeeId], references: [id])
+  auditLogs           AdjustmentAuditLog[]
+
+  @@map("attendance_adjustments")
+}
+
+// ─── Generic Manual-Edit Audit Trail ──────────────────────────────────────────
+// Written by PUT /attendance/daily/:id (attendance overrides), PUT /payroll/:id
+// (bonus/manual deduction adjustment), and POST/DELETE /advances. One row per
+// changed field. Separate from AdjustmentAuditLog, which only covers the
+// AttendanceAdjustment approval-workflow table.
+model ManualEditAuditLog {
+  id                Int       @id @default(autoincrement())
+  employeeId        Int
+  attendanceDailyId Int?
+  payrollId         Int?
+  fieldName         String
+  oldValue          String?   @db.Text
+  newValue          String?   @db.Text
+  reason            String?   @db.Text
+  modifiedBy        Int       @default(0)
+  modifiedByName    String?
+  modifiedByRole    String    @default("hr")
+  source            String?   @default("inline-grid")
+  createdAt         DateTime  @default(now())
+
+  employee          Employee  @relation(fields: [employeeId], references: [id])
+
+  @@index([employeeId])
+  @@index([attendanceDailyId])
+  @@index([payrollId])
+  @@map("manual_edit_audit_logs")
+}
+
+model AdjustmentAuditLog {
+  id             Int      @id @default(autoincrement())
+  adjustmentId   Int
+  action         String
+  // created | field_changed | approved | rejected | reverted | flag_toggled | comment_added
+  fieldName      String?
+  oldValue       String?  @db.Text
+  newValue       String?  @db.Text
+  changedBy      Int      @default(0)
+  changedByName  String?
+  changedByRole  String   @default("system")
+  reason         String?  @db.Text
+  changedAt      DateTime @default(now())
+
+  adjustment     AttendanceAdjustment @relation(fields: [adjustmentId], references: [id], onDelete: Cascade)
+
+  @@map("adjustment_audit_logs")
+}
+
+// ─── Legacy Rule Store ─────────────────────────────────────────────────────────
+model AttendanceRule {
+  id           Int         @id @default(autoincrement())
+  ruleKey      String
+  ruleValue    String
+  branchId     Int?
+  departmentId Int?
+  employeeId   Int?
+  description  String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  branch       Branch?     @relation(fields: [branchId], references: [id])
+  department   Department? @relation(fields: [departmentId], references: [id])
+  @@map("attendance_rules")
+}
+
+// ─── Dynamic Rules Engine ──────────────────────────────────────────────────────
+/// Database-driven business rules created/managed from the Rules page.
+/// type    = number | percentage | boolean | time | text | formula | condition
+/// value   = stored as String; `type` tells consumers how to coerce it
+/// category= attendance | overtime | deductions | payroll | leaves | penalties | shifts | holidays
+model Rule {
+  id            Int         @id @default(autoincrement())
+  name          String
+  key           String      @unique
+  category      String
+  type          String      @default("number")
+  value         String      @default("") @db.Text
+  unit          String?
+  priority      Int         @default(0)
+  isActive      Boolean     @default(true)
+  appliesTo     String      @default("all")
+  conditionJson String?     @db.Text
+  description   String?     @db.Text
+  createdByName String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  audits        RuleAudit[]
+  @@index([category])
+  @@map("rules")
+}
+
+/// Audit trail — one row per change to a Rule.
+/// action = created | updated | enabled | disabled | deleted
+model RuleAudit {
+  id            Int      @id @default(autoincrement())
+  ruleId        Int
+  ruleKey       String?
+  action        String
+  fieldName     String?
+  oldValue      String?  @db.Text
+  newValue      String?  @db.Text
+  changedByName String?  @default("النظام")
+  changedAt     DateTime @default(now())
+  rule          Rule     @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  @@index([ruleId])
+  @@map("rule_audits")
+}
+
+model Holiday {
+  id          Int      @id @default(autoincrement())
+  name        String
+  date        DateTime @db.Date
+  branchId    Int?
+  type        String   @default("public")
+  createdAt   DateTime @default(now())
+  @@map("holidays")
+}
+
+/// Audit trail for "تنظيف الحركات" — one row per executed data-cleanup run.
+/// status = preview | completed | failed
+model CleanupLog {
+  id                Int      @id @default(autoincrement())
+  fromDate          DateTime @db.Date
+  toDate            DateTime @db.Date
+  dataTypes         String              // JSON: { rawLogs, daily, payroll }
+  status            String   @default("completed")
+  rawLogsDeleted    Int      @default(0)
+  dailyDeleted      Int      @default(0)
+  payrollDeleted    Int      @default(0)
+  employeesAffected Int      @default(0)
+  backupTaken       Boolean  @default(false)
+  recalcTriggered   Boolean  @default(false)
+  optimizeRun       Boolean  @default(false)
+  durationMs        Int      @default(0)
+  executedByName    String
+  notes             String?  @db.Text
+  createdAt         DateTime @default(now())
+  @@index([createdAt])
+  @@map("cleanup_logs")
+}
+
+// ─── Payroll (enriched) ────────────────────────────────────────────────────────
+model Payroll {
+  id                  Int       @id @default(autoincrement())
+  employeeId          Int
+  month               Int
+  year                Int
+  basicSalary         Float
+  hourlyRate          Float
+  workDays            Int       @default(0)
+  absentDays          Int       @default(0)
+  latePenalty         Float     @default(0)
+  // Policy engine payroll fields
+  morningOTHours      Float     @default(0)
+  eveningOTHours      Float     @default(0)
+  totalOTHours        Float     @default(0)
+  overtimeHours       Float     @default(0)
+  overtimeAmount      Float     @default(0)
+  // penaltyUnits/penaltyAmount = the FULL "ساعات الخصم" figure shown everywhere —
+  // day-scoped effective units (late+early+conditionDeductionUnits, aggregated
+  // from AttendanceDaily) PLUS conditionPenaltyUnits below. Every unit that
+  // reduces netSalary is represented in this one visible figure.
+  penaltyUnits        Float     @default(0)
+  penaltyAmount       Float     @default(0)
+  // Month-scoped condition-rule result (e.g. penalty_excessive_absence),
+  // evaluated ONCE here by payrollEngine.computePayroll — the only place
+  // month-scoped condition rules are ever evaluated. Explicit, visible line
+  // item — never silently folded into `deductions` anonymously.
+  conditionPenaltyUnits  Float   @default(0)
+  conditionPenaltyAmount Float   @default(0)
+  bonus               Float     @default(0)
+  advances            Float     @default(0)
+  deductions          Float     @default(0)
+  // Manual additive deduction adjustment (HR-entered), preserved across
+  // recalcs exactly like `bonus` — included inside `deductions` total.
+  manualDeductionAdjustment Float @default(0)
+  netSalary           Float
+  status              String    @default("draft")
+  notes               String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  employee            Employee  @relation(fields: [employeeId], references: [id])
+  @@unique([employeeId, month, year])
+  @@index([month, year])
+  @@map("payrolls")
+}
+
+model Advance {
+  id          Int      @id @default(autoincrement())
+  employeeId  Int
+  amount      Float
+  date        DateTime
+  month       Int
+  year        Int
+  reason      String?
+  status      String   @default("pending")
+  createdAt   DateTime @default(now())
+  employee    Employee @relation(fields: [employeeId], references: [id])
+  @@map("advances")
+}
+
+model User {
+  id        Int       @id @default(autoincrement())
+  username  String    @unique
+  password  String
+  role      String    @default("employee")
+  name      String
+  email     String?
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  employee  Employee?
+  @@map("users")
+}
+
+// ─── Company Settings (runtime-editable branding / identity / print assets) ──
+model CompanySetting {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  value     String?  @db.Text
+  type      String   @default("text")   // text | image | longtext
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+  @@map("company_settings")
+}
+
+// ─── Historical Attendance/Payroll Rebuild ────────────────────────────────────
+/// Tracks a single historical-rebuild run (recompute attendance_daily +
+/// payrolls for a date range from existing AttendanceLog rows). Resumable via
+/// cursorEmployeeId/cursorDate — see historicalRebuildService.js.
+model HistoricalRebuildJob {
+  id                 Int       @id @default(autoincrement())
+  fromDate           DateTime  @db.Date
+  toDate             DateTime  @db.Date
+  employeeId         Int?      // null = all active employees
+  status             String    @default("running") // running|completed|failed
+  cursorEmployeeId   Int?
+  cursorDate         DateTime? @db.Date
+  totalEmployees     Int       @default(0)
+  processedEmployees Int       @default(0)
+  processedDates     Int       @default(0)
+  errorCount         Int       @default(0)
+  lastError          String?   @db.Text
+  triggeredBy        String    @default("manual")
+  reason             String?   @db.Text
+  startedAt          DateTime  @default(now())
+  completedAt        DateTime?
+  updatedAt          DateTime  @updatedAt
+  @@index([status])
+  @@map("historical_rebuild_jobs")
+}
+
+model CompanySettingAudit {
+  id            Int      @id @default(autoincrement())
+  settingKey    String
+  action        String                  // created | updated | image_uploaded | image_removed
+  oldValue      String?  @db.Text
+  newValue      String?  @db.Text
+  changedByName String
+  changedAt     DateTime @default(now())
+  @@map("company_setting_audits")
+}

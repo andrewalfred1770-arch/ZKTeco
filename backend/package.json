@@ -1,0 +1,35 @@
+{
+  "name": "zkteco-backend",
+  "version": "2.19.4",
+  "description": "ZKTeco Attendance & Payroll Management System - Backend",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js",
+    "db:migrate": "prisma migrate dev",
+    "db:generate": "prisma generate",
+    "db:studio": "prisma studio",
+    "db:seed": "node prisma/seed.js"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.10.2",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.3",
+    "express-validator": "^7.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "moment": "^2.30.1",
+    "node-cron": "^3.0.3",
+    "node-zklib": "^1.1.0",
+    "socket.io": "^4.7.4",
+    "winston": "^3.11.0",
+    "xlsx": "^0.18.5",
+    "pdfkit": "^0.14.0",
+    "multer": "^1.4.5-lts.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0",
+    "prisma": "^5.10.2"
+  }
+}

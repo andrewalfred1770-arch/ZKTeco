@@ -1,0 +1,23 @@
+{
+  "name": "petshrow-erp",
+  "version": "2.19.5",
+  "description": "PETSHROW ERP — نظام الموارد البشرية والرواتب (workspace root — the Electron app lives in frontend/)",
+  "author": "PETSHROW",
+  "private": true,
+  "scripts": {
+    "backend": "cd backend && node src/index.js",
+    "frontend": "cd frontend && npm run dev",
+    "electron:dev": "cd frontend && npm run electron:dev",
+    "electron:build": "cd frontend && npm run electron:build",
+    "frontend:build": "cd frontend && npm run build",
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "electron-log": "^5.1.2"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "wait-on": "^7.2.0"
+  }
+}

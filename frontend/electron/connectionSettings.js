@@ -1,0 +1,63 @@
+import { app } from 'electron';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import { BACKEND_PORT } from './constants.js';
+
+// ─── Connection Layer settings (EP-003 Hybrid Client/Server) ─────────────────
+// mode:      'local'  — Electron spawns and owns a backend process on this
+//                        machine (100% today's behavior, and the default).
+//            'server' — Electron does NOT spawn a backend; the frontend talks
+//                        to an existing backend reachable at serverUrl.
+// serverUrl: full base URL of the remote backend, e.g.
+//            "http://192.168.1.10:5000" or "https://erp.company.com".
+// Persisted the same way updateSettings.js persists Update Center prefs:
+// a small JSON file under userData/config, independent of the DB — it must
+// be readable before the DB/backend even exists yet.
+const DEFAULTS = {
+  mode: 'local',
+  serverUrl: '',
+};
+
+function settingsFile() {
+  const dir = join(app.getPath('userData'), 'config');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return join(dir, 'connection-settings.json');
+}
+
+export function readConnectionSettings() {
+  try {
+    const p = settingsFile();
+    if (existsSync(p)) {
+      const raw = JSON.parse(readFileSync(p, 'utf8'));
+      return { ...DEFAULTS, ...raw };
+    }
+  } catch (err) {
+    console.warn('[Connection] settings read failed, using defaults:', err.message);
+  }
+  return { ...DEFAULTS };
+}
+
+export function writeConnectionSettings(patch) {
+  const merged = { ...readConnectionSettings(), ...patch };
+  try {
+    writeFileSync(settingsFile(), JSON.stringify(merged, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[Connection] settings write failed:', err.message);
+  }
+  return merged;
+}
+
+// Strips a trailing slash so "${base}/api/..." never ends up with "//api/...".
+function normalizeBaseUrl(url) {
+  return String(url || '').trim().replace(/\/+$/, '');
+}
+
+/** Single source of truth for "where does the frontend talk to the backend". */
+export function getEffectiveBackendBaseUrl(settings = readConnectionSettings()) {
+  if (settings.mode === 'server' && settings.serverUrl) {
+    return normalizeBaseUrl(settings.serverUrl);
+  }
+  return `http://localhost:${BACKEND_PORT}`;
+}
+
+export { normalizeBaseUrl };
