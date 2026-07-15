@@ -20,6 +20,7 @@ const path = require('path');
 const { authenticate, authorize } = require('../middleware/auth');
 const { currentMonthRange } = require('../utils/monthRange');
 const recalcEngine = require('../engines/recalcEngine');
+const { getConfigDir } = require('../utils/configDir');
 
 const prisma = getPrisma();
 router.use(authenticate, authorize('admin'));
@@ -29,7 +30,9 @@ const TYPE_LABELS = {
   daily: 'نتائج الحضور اليومية',
   payroll: 'المرتبات والتجميعات الشهرية',
 };
-const BACKUP_DIR = path.join(__dirname, '..', '..', 'backups');
+// EP-010: backups persist under the config dir, surviving a Portable
+// re-extraction — falls back to the pre-EP-010 path when CONFIG_DIR is unset.
+const BACKUP_DIR = path.join(getConfigDir(), 'backups');
 
 function emit(io, event, payload) { if (io) io.emit(event, payload); }
 

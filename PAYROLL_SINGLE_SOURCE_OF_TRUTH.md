@@ -44,8 +44,6 @@ No third layer is permitted to independently re-aggregate `AttendanceDaily` rows
 | **Daily Rate** | `computePayroll()` — `Math.round(basicSalary / monthDays)` (HIGH #1) | `payrollEngine.js` | `dailyRate` | SalaryCard, Final Sheet |
 | **Gross Salary / Earnings Total** | Sum of three already-canonical fields (`basicSalary + overtimeAmount + bonus`) at the display layer — see Section 7 note | `routes/payroll.js` (`/final-sheet`), `payrollEngine.js` (persisted) | `earnings.total` | SalaryCard, Final Sheet, Reports |
 | **Deductions (total)** | `computeDeductionsBreakdown()`, called once, inside `computePayroll()` (HIGH #1) | `payrollEngine.js` | `deductions` | Payroll, SalaryCard, Final Sheet, Reports |
-| **Condition Penalty (day-scoped)** | `mergeEffectivePenalty()` → aggregated in `computePayroll()` | `attendanceEngine.js` / `payrollEngine.js` | `conditionAmountDay` | SalaryCard, Final Sheet |
-| **Condition Penalty (month-scoped)** | `evaluateConditionRules(..., 'month')`, evaluated once inside `computePayroll()` (HIGH #1 removed the route's duplicate call) | `payrollEngine.js` | `conditionPenaltyAmount` | Payroll, SalaryCard, Final Sheet |
 | **Manual Deduction Adjustment** | Persisted HR field, preserved (never derived) by `computePayroll()` | `payrollEngine.js` | `manualDeductionAdjustment` | Payroll, SalaryCard, Final Sheet |
 | **Advances** | `computePayroll()` — sum of `Advance` rows for the month | `payrollEngine.js` | `advances` | Payroll, SalaryCard, Final Sheet |
 | **Bonus** | Persisted HR field, preserved (never derived) by `computePayroll()` | `payrollEngine.js` | `bonus` | Payroll, SalaryCard, Final Sheet |
@@ -81,7 +79,7 @@ AttendanceDaily (raw + engine-computed per-day fields)
 attendanceEngine.js
   processDate() / computeDerivedFields() / mergeEffectivePenalty()
   → status, lateMinutes, effectiveLatePenalty, effectiveEarlyPenalty,
-    effectiveOvertimeUnits, effectiveConditionUnits, morning/eveningOvertimeHours
+    effectiveOvertimeUnits, morning/eveningOvertimeHours
         │
         ▼
 payrollEngine.js

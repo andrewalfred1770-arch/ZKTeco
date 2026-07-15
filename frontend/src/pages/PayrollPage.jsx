@@ -207,9 +207,37 @@ export default function PayrollPage() {
     finally { setLoading(false); }
   };
 
+  // EP-014: targeted refresh — refetches just the named employee's payroll
+  // row (computePayroll() narrowed server-side to one employeeId, same
+  // canonical calculation, just a smaller input set) instead of reloading
+  // every employee for the month.
+  const loadOne = async (employeeIds) => {
+    try {
+      const fetched = await Promise.all(employeeIds.map(id =>
+        api.get('/payroll', { params: { month, year, employeeId: id } }).then(r => r.data[0]).catch(() => null)
+      ));
+      setRows(rs => {
+        let next = rs;
+        for (const row of fetched) {
+          if (!row) continue;
+          const exists = next.some(r => r.employeeId === row.employeeId);
+          // A department filter is active and this employee wasn't already a
+          // visible row — don't inject it client-side without knowing
+          // whether it actually belongs to the filtered department; the next
+          // full reload (guaranteed by the other live-sync events) reconciles
+          // it correctly server-side. Updating an ALREADY-visible row is
+          // always safe (it already passed the filter).
+          if (!exists && deptId) continue;
+          next = exists ? next.map(r => (r.employeeId === row.employeeId ? row : r)) : [...next, row];
+        }
+        return next;
+      });
+    } catch { /* silent — next full reload (rules/device event) will catch up */ }
+  };
+
   useEffect(() => { load(); }, [month, year, deptId]);
   useRulesLiveSync(load, { isBusyRef: editCountRef });
-  useDeviceLiveSync(load, { silent: true, isBusyRef: editCountRef });
+  useDeviceLiveSync(load, { silent: true, isBusyRef: editCountRef, reloadOne: loadOne });
 
   const calculate = async () => {
     setCalcing(true);

@@ -57,18 +57,15 @@ async function buildDailyResponseRow(rec) {
     earlyLeaveMinutes: merged.earlyLeaveMinutes || 0,
     latePenaltyUnits: merged.latePenaltyUnits || 0,
     earlyCheckoutUnits: merged.earlyCheckoutUnits || 0,
-    conditionDeductionUnits: merged.conditionDeductionUnits || 0,
     totalDeductionUnits: merged.totalDeductionUnits || 0,
     effectiveLatePenalty: merged.effectiveLatePenalty || 0,
     effectiveEarlyPenalty: merged.effectiveEarlyPenalty || 0,
-    effectiveConditionUnits: merged.effectiveConditionUnits || 0,
     effectiveTotalDeductionUnits: merged.effectiveTotalDeductionUnits || 0,
     effectiveOvertimeUnits: merged.effectiveOvertimeUnits || 0,
     hasManualPenalty: merged.hasManualPenalty || false,
     hasManualOvertime: merged.hasManualOvertime || false,
     manualLatePenaltyUnits: merged.manualLatePenaltyUnits ?? null,
     manualEarlyPenaltyUnits: merged.manualEarlyPenaltyUnits ?? null,
-    manualConditionUnits: merged.manualConditionUnits ?? null,
     manualOvertimeUnits: merged.manualOvertimeUnits ?? null,
     manualPenaltyReason: merged.manualPenaltyReason ?? null,
     manualPenaltyByName: merged.manualPenaltyByName ?? null,
@@ -187,13 +184,12 @@ router.put('/daily/:id', authorize('admin', 'hr'), async (req, res) => {
       }
       // EF-003.2a: fall back to the row's post-processDate() state, not the
       // pre-recompute `rec` snapshot — processDate() above may have already
-      // committed different latePenaltyUnits/earlyCheckoutUnits/
-      // conditionDeductionUnits than what `rec` was read with at the top.
+      // committed different latePenaltyUnits/earlyCheckoutUnits than what
+      // `rec` was read with at the top.
       const postEngineRec = await prisma.attendanceDaily.findUnique({ where: { id: rec.id } });
       overrideData.totalDeductionUnits =
         (overrideData.latePenaltyUnits  ?? postEngineRec.latePenaltyUnits  ?? 0) +
-        (overrideData.earlyCheckoutUnits ?? postEngineRec.earlyCheckoutUnits ?? 0) +
-        (postEngineRec.conditionDeductionUnits || 0);
+        (overrideData.earlyCheckoutUnits ?? postEngineRec.earlyCheckoutUnits ?? 0);
     }
 
     if (overtimeMinutes !== undefined) {
@@ -286,7 +282,7 @@ const VALID_OVERRIDE_STATUSES = ['present', 'late', 'early_leave', 'absent', 'ho
 router.put('/:id/manual-penalty', authorize('admin', 'hr'), async (req, res) => {
   try {
     const {
-      manualLatePenaltyUnits, manualEarlyPenaltyUnits, manualConditionUnits, manualOvertimeUnits,
+      manualLatePenaltyUnits, manualEarlyPenaltyUnits, manualOvertimeUnits,
       status, reason, overrideReason, modifiedBy, modifiedByName, modifiedByRole, source,
     } = req.body;
     const effReason = reason ?? overrideReason;
@@ -299,15 +295,14 @@ router.put('/:id/manual-penalty', authorize('admin', 'hr'), async (req, res) => 
 
     if (
       manualLatePenaltyUnits === undefined && manualEarlyPenaltyUnits === undefined &&
-      manualConditionUnits === undefined && manualOvertimeUnits === undefined && status === undefined
+      manualOvertimeUnits === undefined && status === undefined
     ) {
-      return res.status(400).json({ error: 'يجب إرسال manualLatePenaltyUnits أو manualEarlyPenaltyUnits أو manualConditionUnits أو manualOvertimeUnits أو status' });
+      return res.status(400).json({ error: 'يجب إرسال manualLatePenaltyUnits أو manualEarlyPenaltyUnits أو manualOvertimeUnits أو status' });
     }
 
     for (const [key, val] of [
       ['manualLatePenaltyUnits', manualLatePenaltyUnits],
       ['manualEarlyPenaltyUnits', manualEarlyPenaltyUnits],
-      ['manualConditionUnits', manualConditionUnits],
       ['manualOvertimeUnits', manualOvertimeUnits],
     ]) {
       if (val !== undefined && val !== null) {
@@ -325,9 +320,9 @@ router.put('/:id/manual-penalty', authorize('admin', 'hr'), async (req, res) => 
         if (key === 'manualOvertimeUnits' && n > 24) {
           return res.status(400).json({ error: 'قيمة الإضافي اليدوي لا يمكن أن تتجاوز 24 ساعة لليوم الواحد' });
         }
-        // Late/early/condition penalty units must be whole hours — reject fractions (0.1, 0.5, 1.5, …)
+        // Late/early penalty units must be whole hours — reject fractions (0.1, 0.5, 1.5, …)
         if (key !== 'manualOvertimeUnits' && !Number.isInteger(n)) {
-          const LABELS = { manualLatePenaltyUnits: 'خصم التأخير', manualEarlyPenaltyUnits: 'خصم الانصراف المبكر', manualConditionUnits: 'الخصم الشرطي' };
+          const LABELS = { manualLatePenaltyUnits: 'خصم التأخير', manualEarlyPenaltyUnits: 'خصم الانصراف المبكر' };
           return res.status(400).json({ error: `${LABELS[key]} يجب أن يكون عدداً صحيحاً (0، 1، 2، 3، 4) — الكسور العشرية غير مسموح بها` });
         }
       }
@@ -343,9 +338,6 @@ router.put('/:id/manual-penalty', authorize('admin', 'hr'), async (req, res) => 
     }
     if (manualEarlyPenaltyUnits !== undefined && manualEarlyPenaltyUnits !== rec.manualEarlyPenaltyUnits) {
       changedFields.push({ field: 'manualEarlyPenaltyUnits', old: rec.manualEarlyPenaltyUnits, new: manualEarlyPenaltyUnits });
-    }
-    if (manualConditionUnits !== undefined && manualConditionUnits !== rec.manualConditionUnits) {
-      changedFields.push({ field: 'manualConditionUnits', old: rec.manualConditionUnits, new: manualConditionUnits });
     }
     if (manualOvertimeUnits !== undefined && manualOvertimeUnits !== rec.manualOvertimeUnits) {
       changedFields.push({ field: 'manualOvertimeUnits', old: rec.manualOvertimeUnits, new: manualOvertimeUnits });
@@ -370,7 +362,6 @@ router.put('/:id/manual-penalty', authorize('admin', 'hr'), async (req, res) => 
     };
     if (manualLatePenaltyUnits !== undefined)  updateData.manualLatePenaltyUnits  = manualLatePenaltyUnits;
     if (manualEarlyPenaltyUnits !== undefined) updateData.manualEarlyPenaltyUnits = manualEarlyPenaltyUnits;
-    if (manualConditionUnits !== undefined)    updateData.manualConditionUnits    = manualConditionUnits;
     if (manualOvertimeUnits !== undefined)     updateData.manualOvertimeUnits    = manualOvertimeUnits;
     if (status !== undefined) {
       updateData.status = status;

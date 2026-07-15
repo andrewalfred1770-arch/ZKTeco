@@ -11,7 +11,7 @@ const prisma = getPrisma();
 // Get monthly attendance for an employee
 router.get('/monthly', async (req, res) => {
   try {
-    const { month, year, branchId, departmentId } = req.query;
+    const { month, year, branchId, departmentId, employeeId } = req.query;
     const m = parseInt(month) || new Date().getMonth() + 1;
     const y = parseInt(year) || new Date().getFullYear();
 
@@ -20,6 +20,9 @@ router.get('/monthly', async (req, res) => {
     let empWhere = { status: true };
     if (branchId) empWhere.branchId = parseInt(branchId);
     if (departmentId) empWhere.departmentId = parseInt(departmentId);
+    // EP-014: optional narrowing for realtime single-row refresh — omitted by
+    // every existing caller (initial load, filters), who see identical results.
+    if (employeeId) empWhere.id = parseInt(employeeId);
 
     const employees = await prisma.employee.findMany({
       where: empWhere,
@@ -100,7 +103,7 @@ router.get('/monthly', async (req, res) => {
 // Flat list sorted by employee name then date; used by the Excel-like editing grid.
 router.get('/monthly-detail', async (req, res) => {
   try {
-    const { month, year, branchId, departmentId } = req.query;
+    const { month, year, branchId, departmentId, employeeId } = req.query;
     const m = parseInt(month) || new Date().getMonth() + 1;
     const y = parseInt(year) || new Date().getFullYear();
 
@@ -109,6 +112,9 @@ router.get('/monthly-detail', async (req, res) => {
     const empWhere = { status: true };
     if (branchId)     empWhere.branchId     = parseInt(branchId);
     if (departmentId) empWhere.departmentId = parseInt(departmentId);
+    // EP-014: optional narrowing for realtime single-row refresh — omitted by
+    // every existing caller (initial load, filters), who see identical results.
+    if (employeeId)   empWhere.id           = parseInt(employeeId);
 
     const employees = await prisma.employee.findMany({
       where:   empWhere,

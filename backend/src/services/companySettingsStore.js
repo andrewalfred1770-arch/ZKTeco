@@ -12,9 +12,13 @@
 const fs   = require('fs');
 const path = require('path');
 const { getPrisma } = require('../utils/prisma');
+const { getConfigDir } = require('../utils/configDir');
 const prisma = getPrisma();
 
-const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads', 'company');
+// EP-010: persists under the persistent config dir so uploaded branding
+// assets survive a Portable re-extraction — falls back to the pre-EP-010
+// backend-relative path when CONFIG_DIR isn't set (Server Mode/dev).
+const UPLOAD_DIR = path.join(getConfigDir(), 'uploads', 'company');
 const CACHE_FILE = path.join(UPLOAD_DIR, 'cache.json');
 
 const TTL_MS = 60 * 1000;

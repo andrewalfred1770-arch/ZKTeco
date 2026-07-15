@@ -357,8 +357,8 @@ export default function PrintPreviewModal({
     } finally { setPdfBusy(false); }
   };
 
-  const handleExcel = () => {
-    exportToExcel(filteredData, columns, reportTitle, reportTitle, { title: reportTitle, period: meta.period, branch: meta.branch, dept: meta.dept, brand });
+  const handleExcel = async () => {
+    await exportToExcel(filteredData, columns, reportTitle, reportTitle, { title: reportTitle, period: meta.period, branch: meta.branch, dept: meta.dept, brand });
     toast.success('تم تصدير ملف Excel');
   };
 

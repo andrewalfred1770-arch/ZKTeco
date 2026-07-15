@@ -4,9 +4,8 @@ import api from '../lib/api';
 // Same backendBase resolution as lib/api.js — needed to turn the relative
 // '/uploads/company/...' paths the backend returns into absolute URLs the
 // renderer (and the print/PDF documents) can load.
-const backendBase = window.electron?.backendPort
-  ? `http://localhost:${window.electron.backendPort}`
-  : '';
+const backendBase = window.electron?.backendBaseUrl
+  ?? (window.electron?.backendPort ? `http://localhost:${window.electron.backendPort}` : '');
 
 /** Resolves an '/uploads/...' path returned by the API into a loadable URL. */
 export function resolveCompanyAssetUrl(value) {

@@ -17,6 +17,19 @@ const api = axios.create({
   timeout: 15000,
 });
 
+// EP-011 — Manager Edition auth. Kept as a module-local variable (not read
+// from authStore directly) so this file never imports the store — authStore
+// imports api.js to make requests, and a two-way import would be circular.
+// authStore calls setAuthToken() whenever the token changes (login/logout/
+// hydrate); every request past that point picks up the current value.
+let authToken = null;
+export function setAuthToken(token) { authToken = token; }
+
+api.interceptors.request.use((config) => {
+  if (authToken) config.headers.Authorization = `Bearer ${authToken}`;
+  return config;
+});
+
 /** Per-request override for known long-running endpoints (sync/recalc/cleanup). */
 export const LONG_OP = { timeout: 10 * 60 * 1000 }; // 10 min — matches backend SYNC_TIMEOUT_MS
 

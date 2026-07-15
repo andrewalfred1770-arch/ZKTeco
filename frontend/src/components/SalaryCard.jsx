@@ -190,11 +190,6 @@ export default function SalaryCard({ data, showBorder = true }) {
     },
     { label: `خصم التأخير (${(deductions?.latePenalty ?? 0).toFixed(1)} ساعة)`, value: deductions?.lateAmount },
     { label: `خصم الانصراف المبكر (${(deductions?.earlyPenalty ?? 0).toFixed(1)} ساعة)`, value: deductions?.earlyAmount },
-    // "خصم شرطي" (condition-rule deduction) — bound to the real field the
-    // backend returns (deductions.conditionPenalty, already folded into
-    // dedTotal by computeDeductionsBreakdown). Matches the Excel export's
-    // label/field exactly (FinalSalaryModal.jsx).
-    { label: 'خصم شرطي', value: deductions?.conditionPenalty },
     { label: 'خصم إداري', value: deductions?.manualDeductionAdjustment },
     // السلف (advances) intentionally NOT listed here: deductions.total
     // (dedTotal below) deliberately excludes advances (net = basic+ot+bonus

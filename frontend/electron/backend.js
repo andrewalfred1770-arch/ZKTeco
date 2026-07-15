@@ -1,5 +1,5 @@
 import { spawn, execSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync, copyFileSync } from 'fs';
 import net from 'net';
 import http from 'http';
 import { app } from 'electron';
@@ -115,6 +115,26 @@ export function fetchHealth(baseUrl, timeoutMs = 3000) {
   });
 }
 
+// ─── Legacy .env migration (EP-010) ───────────────────────────────────────────
+// Pre-EP-010 installs (or a previous Portable temp extraction) may have a
+// resources/backend/.env. Copy it ONCE into the persistent AppData config —
+// never overwrite an existing AppData .env (that's the install's real,
+// already-migrated config and must win), never delete the legacy file
+// (a Setup install's resources/ dir may not be writable/deletable without
+// elevation, and Portable's copy is discarded by Windows on its own anyway).
+function migrateLegacyEnv({ envFile, legacyEnvFile, configDir }) {
+  if (!configDir || !legacyEnvFile) return; // dev mode — nothing to migrate
+  if (existsSync(envFile)) return;          // persistent config already present — leave it untouched
+  if (!existsSync(legacyEnvFile)) return;   // nothing to migrate from
+  try {
+    if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true });
+    copyFileSync(legacyEnvFile, envFile);
+    console.log('[Electron] Migrated legacy backend/.env to persistent config:', envFile);
+  } catch (err) {
+    console.error('[Electron] Legacy .env migration failed:', err.message);
+  }
+}
+
 // ─── Backend startup ──────────────────────────────────────────────────────────
 export function startBackend(paths) {
   if (state.backendReady) {
@@ -122,12 +142,14 @@ export function startBackend(paths) {
     return;
   }
 
-  const { backendEntry, backendCwd, envFile, frontendDist } = paths;
+  const { backendEntry, backendCwd, envFile, configDir, frontendDist } = paths;
 
   if (!existsSync(backendEntry)) {
     console.error('[Electron] Backend entry not found:', backendEntry);
     return;
   }
+
+  migrateLegacyEnv(paths);
 
   const env = {
     ...process.env,
@@ -135,9 +157,18 @@ export function startBackend(paths) {
     PORT:         String(BACKEND_PORT),
     ELECTRON_APP: '1',
   };
-  if (frontendDist)          env.FRONTEND_DIST      = frontendDist;
-  if (existsSync(envFile))   env.DOTENV_CONFIG_PATH = envFile;
-  if (!IS_DEV)               env.ELECTRON_RUN_AS_NODE = '1';
+  if (frontendDist) env.FRONTEND_DIST = frontendDist;
+  // EP-010: ALWAYS point the backend at the persistent config path, whether
+  // or not it exists yet (ensureEnvFile() on the backend side creates it
+  // there if missing). Previously this was `if (existsSync(envFile))`,
+  // which meant a fresh install/extraction with no .env yet left
+  // DOTENV_CONFIG_PATH unset — the backend then fell back to its own
+  // cwd-relative default, landing squarely inside resources/backend. That
+  // was the actual root cause of configuration being lost on every
+  // Portable re-extraction.
+  env.DOTENV_CONFIG_PATH = envFile;
+  if (configDir) env.CONFIG_DIR = configDir;
+  if (!IS_DEV) env.ELECTRON_RUN_AS_NODE = '1';
 
   const [bin, args] = IS_DEV
     ? ['node',          [backendEntry]]
@@ -173,6 +204,13 @@ export function startBackend(paths) {
     if (line.includes('Server running') || line.includes('Server on port')) {
       state.backendReady = true;
     }
+    // EP-010.1: the Database Setup Wizard just persisted a new .env and is
+    // about to gracefully shut down — this distinguishes that intentional
+    // restart from a real app-quit, both of which otherwise look identical
+    // to the exit handler below (clean exit, code 0).
+    if (line.includes('[Setup] RESTART_REQUIRED')) {
+      state.pendingConfigRestart = true;
+    }
   });
 
   proc.stderr?.on('data', d => {
@@ -195,6 +233,20 @@ export function startBackend(paths) {
     if (state.backendProcess === proc) {
       state.backendProcess = null;
       state.backendReady   = false;
+    }
+
+    // EP-010.1: the Database Setup Wizard requested this exit (config was
+    // just saved) — restart regardless of exit code/signal. Checked BEFORE
+    // the crash-restart branch below and BEFORE app.isQuitting would matter,
+    // since this exit is intentional but not a real app-quit.
+    const configRestart = state.pendingConfigRestart;
+    state.pendingConfigRestart = false;
+    if (configRestart && !app.isQuitting) {
+      console.log('[Backend] Restarting after database configuration change');
+      setTimeout(() => {
+        if (!app.isQuitting && !state.backendProcess) startBackend(paths);
+      }, 1000);
+      return;
     }
 
     // Restart on crash, but NOT if quitting

@@ -3,7 +3,7 @@
  * SAP/Oracle/Odoo/Zoho HR grade — database-driven, auditable, ERP-density.
  *
  * Features: AG Grid (grouping, export, row-height, keyboard nav) •
- * Debounced search • Category chips • Multi-condition audit drawer timeline •
+ * Debounced search • Category chips • Audit drawer timeline •
  * Excel/CSV export • Quick toggle • Inline value/priority edit • ERP styling
  */
 import React, {
@@ -23,34 +23,8 @@ import { useTheme } from '../contexts/ThemeContext';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS } from '../lib/gridDefaults';
 import { fmtDate, formatDuration, westernDigits } from '../lib/formatters';
-import RuleDrawer, { CATEGORY_LABELS, CAT_COLOR, TYPE_LABELS, TYPE_ICONS, COND_FIELDS, OP_AR } from '../components/RuleDrawer';
+import RuleDrawer, { CATEGORY_LABELS, CAT_COLOR, TYPE_LABELS, TYPE_ICONS } from '../components/RuleDrawer';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
-
-// Turn a stored condition ({ field, op, value }) into a plain Arabic sentence
-// HR users can read at a glance — never the raw "lateMinutes > 30" form.
-function humanizeCondition(c) {
-  const fld = COND_FIELDS.find(f => f.val === c?.field);
-  const fieldAr = fld?.ar || c?.field || '—';
-  const opAr = OP_AR[c?.op] || c?.op || '';
-  let valueAr;
-  if (fld?.time) valueAr = formatDuration(Number(c?.value), { zero: '00:00' });
-  else if (fld?.unit) valueAr = `${westernDigits(String(c?.value ?? ''))} ${fld.unit}`;
-  else valueAr = westernDigits(String(c?.value ?? ''));
-  return `${fieldAr} ${opAr} ${valueAr}`;
-}
-function humanizeConditionGroup(raw) {
-  if (!raw) return 'بدون شرط';
-  try {
-    const conds = JSON.parse(raw);
-    const list = Array.isArray(conds) ? conds : [conds];
-    if (!list.length) return 'بدون شرط';
-    return list.map((c, i) => {
-      if (i === 0) return humanizeCondition(c);
-      const link = c?.and === 'OR' ? 'أو' : 'وكذلك';
-      return `${link} ${humanizeCondition(c)}`;
-    }).join('  ');
-  } catch { return 'بدون شرط'; }
-}
 
 const ACTOR = 'مدير النظام';
 const CHIPS = ['all', ...Object.keys(CATEGORY_LABELS)];
@@ -339,7 +313,7 @@ export default function RulesPage() {
 
   // ── Column definitions ─────────────────────────────────────────────────────
   // Default view: only what an HR user needs to understand a rule at a glance.
-  // Technical columns (key/priority/condition/...) are opt-in via "إعدادات متقدمة".
+  // Technical columns (key/priority/...) are opt-in via "إعدادات متقدمة".
   const cols = useMemo(() => {
     const nameCol = {
       field:'name', headerName:'اسم القاعدة', minWidth:200, flex:2, pinned:'right',
@@ -359,20 +333,15 @@ export default function RulesPage() {
       ),
     };
     const valueCol = {
-      // Formulas/conditions are NOT inline-editable (use the visual builder); other types are.
+      // Formulas are NOT inline-editable (use the visual builder); other types are.
       field:'value', headerName:'القيمة', width:130,
-      editable: p => p.data?.type !== 'formula' && p.data?.type !== 'condition',
+      editable: p => p.data?.type !== 'formula',
       cellRenderer: ({ data, value }) => {
         const type = data?.type;
         if (type === 'formula') {
           return <span style={{ display:'inline-flex', alignItems:'center', gap:5, padding:'2px 9px',
             borderRadius:20, fontSize:11, fontWeight:700, color:'#7c3aed', background:'rgba(124,58,237,.12)',
             fontFamily:'Cairo,sans-serif' }}>معادلة محسوبة تلقائيًا</span>;
-        }
-        if (type === 'condition') {
-          return <span style={{ display:'inline-flex', alignItems:'center', gap:5, padding:'2px 9px',
-            borderRadius:20, fontSize:11, fontWeight:700, color:'#c2410c', background:'rgba(194,65,12,.12)',
-            fontFamily:'Cairo,sans-serif' }}>خصم {westernDigits(String(value ?? ''))} {data?.unit || ''}</span>;
         }
         if (type === 'boolean') {
           const on = String(value) === 'true';
@@ -468,13 +437,6 @@ export default function RulesPage() {
       field:'priority', headerName:'الأولوية', width:88, editable:true,
       cellStyle:{ fontFamily:'Consolas', color:'var(--text-3)', textAlign:'center', direction:'ltr' },
     };
-    const conditionCol = {
-      field:'conditionJson', headerName:'الشرط', minWidth:220, flex:1.6,
-      valueFormatter: p => humanizeConditionGroup(p.value),
-      cellStyle:{ fontSize:12, color:'var(--text-2)', fontFamily:'IBM Plex Sans Arabic, Cairo, sans-serif',
-        textAlign:'right', direction:'rtl', whiteSpace:'normal', lineHeight:'1.4', display:'flex', alignItems:'center' },
-      autoHeight: true,
-    };
     const updatedCol = {
       field:'updatedAt', headerName:'آخر تعديل', width:108,
       valueFormatter: p => fmtDate(p.value),
@@ -483,7 +445,7 @@ export default function RulesPage() {
 
     return [
       nameCol, keyCol, categoryCol, typeCol, valueCol, unitCol,
-      priorityCol, conditionCol, descCol, statusCol, updatedCol, actionsCol,
+      priorityCol, descCol, statusCol, updatedCol, actionsCol,
     ];
   }, [showAdvanced]);
 

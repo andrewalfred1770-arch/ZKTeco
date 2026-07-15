@@ -7,7 +7,6 @@
  * Print → opens the unified A4 report HTML and prints it.
  * Excel → SheetJS with PETSHROW branding, RTL sheet, title rows & totals.
  */
-import * as XLSX from 'xlsx';
 import { buildReportHTML } from './reportTemplate.js';
 import { BRAND, FILE_PREFIX } from './branding.js';
 import { westernDigits, getNestedValue } from './formatters.js';
@@ -40,7 +39,10 @@ function sumKey(rows, key) {
  * @param {string}   sheetName
  * @param {Object}   meta      { title, subtitle, period, branch, dept }
  */
-export function exportToExcel(data, columns, filename = 'تقرير', sheetName = 'البيانات', meta = {}) {
+export async function exportToExcel(data, columns, filename = 'تقرير', sheetName = 'البيانات', meta = {}) {
+  // xlsx is a large library only needed at the moment of an Excel export —
+  // dynamic import keeps it out of the main bundle/startup path (EP-015).
+  const XLSX = await import('xlsx');
   // Pass `meta.brand` (useCompanyBrand() output) from the calling screen for
   // live company name/product in the exported file's metadata + title block.
   const brand = meta.brand || BRAND;

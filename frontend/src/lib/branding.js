@@ -22,7 +22,7 @@ export const BRAND = {
   module:      'الحضور والرواتب',
 
   // Meta
-  version:     '2.19.5',
+  version:     '2.22.0',
   buildMarker: 'BUILD: 2026-07-06-aggrid-callback-stability',
   copyright:   `© ${new Date().getFullYear()} PETSHROW ERP`,
 

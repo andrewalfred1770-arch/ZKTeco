@@ -14,7 +14,7 @@ router.use(authenticate, authorize('admin', 'hr'));
 
 router.get('/', async (req, res) => {
   try {
-    const { month, year, branchId, departmentId } = req.query;
+    const { month, year, branchId, departmentId, employeeId } = req.query;
     const m = parseInt(month) || new Date().getMonth() + 1;
     const y = parseInt(year) || new Date().getFullYear();
 
@@ -24,6 +24,10 @@ router.get('/', async (req, res) => {
 
     const where = { month: m, year: y };
     if (Object.keys(employeeFilter).length) where.employee = employeeFilter;
+    // EP-014: optional narrowing for realtime single-row refresh — omitted by
+    // every existing caller (initial load, filters), who see identical results.
+    // Also cuts computePayroll() calls below from N employees to 1.
+    if (employeeId) where.employeeId = parseInt(employeeId);
 
     const payrolls = await prisma.payroll.findMany({
       where,
@@ -396,7 +400,6 @@ router.get('/final-sheet', async (req, res) => {
     const totalOTHours = parseFloat((morningOT + eveningOT).toFixed(2));
     const latePenalty = effRecords.reduce((s, r) => s + (r.effectiveLatePenalty || 0), 0);
     const earlyPenalty= effRecords.reduce((s, r) => s + (r.effectiveEarlyPenalty || 0), 0);
-    const conditionUnitsDay = effRecords.reduce((s, r) => s + (r.effectiveConditionUnits || 0), 0);
     const hasManualPenalty = effRecords.some(r => r.hasManualPenalty);
     const hasManualOvertime = effRecords.some(r => r.hasManualOvertime);
 
@@ -455,12 +458,6 @@ router.get('/final-sheet', async (req, res) => {
     const absentDeduct   = computed.absentAmount;
     const lateDeduct     = computed.latePenalty;
     const earlyDeduct    = computed.earlyLeavePenalty;
-    const conditionDeductDay = computed.conditionAmountDay;
-    // conditionPenaltyAmount is payrollEngine's month-scoped condition-rule
-    // figure — already evaluated once inside computePayroll(), not re-evaluated
-    // here.
-    const conditionPenaltyMonth = computed.conditionPenaltyAmount;
-    const conditionPenalty = parseFloat((conditionDeductDay + conditionPenaltyMonth).toFixed(2));
     const advances                  = computed.advances;
     const manualDeductionAdjustment = computed.manualDeductionAdjustment;
 
@@ -506,10 +503,6 @@ router.get('/final-sheet', async (req, res) => {
         lateAmount:    lateDeduct,
         earlyPenalty,
         earlyAmount:   earlyDeduct,
-        conditionPenalty,
-        conditionUnitsDay,
-        conditionAmountDay: conditionDeductDay,
-        conditionPenaltyMonth,
         advances,
         manualDeductionAdjustment,
         total:         totalDeductions,

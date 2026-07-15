@@ -291,9 +291,34 @@ export default function AttendanceDailyPage() {
     finally { if (showLoading) setLoading(false); }
   }, [date]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // EP-014: targeted refresh for realtime events that name a single employee
+  // (attendance:realtime/processed) — fetches just that employee's row for
+  // the currently-selected date instead of the whole day's grid, then merges
+  // it in by employeeId (not `id`: a punch can create the AttendanceDaily row
+  // for the first time, so the previous placeholder row has no `id` yet).
+  // Same deferral behavior as load() while an edit is in flight, handled by
+  // useDeviceLiveSync's own guard — this callback only runs once idle.
+  const loadOne = useCallback(async (employeeIds) => {
+    try {
+      const fetched = await Promise.all(employeeIds.map(id =>
+        api.get('/attendance/daily', { params: { date, employeeId: id } }).then(r => r.data[0]).catch(() => null)
+      ));
+      setRows(rs => {
+        let next = rs;
+        for (const row of fetched) {
+          if (!row) continue;
+          next = next.some(r => r.employeeId === row.employeeId)
+            ? next.map(r => (r.employeeId === row.employeeId ? row : r))
+            : [...next, row];
+        }
+        return next;
+      });
+    } catch { /* silent — next full reload (rules/device event) will catch up */ }
+  }, [date]);
+
   useEffect(() => { load(true); }, [load]);
   useRulesLiveSync(load, { isBusyRef: editCountRef });
-  useDeviceLiveSync(load, { silent: true, isBusyRef: editCountRef });
+  useDeviceLiveSync(load, { silent: true, isBusyRef: editCountRef, reloadOne: loadOne });
 
   // Persist selected date across navigation
   useEffect(() => {

@@ -19,9 +19,13 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { logInit } = require('./firstRunLog');
 const { checkDbConnection, getPrisma } = require('../utils/prisma');
+const { getConfigDir, BACKEND_ROOT } = require('../utils/configDir');
 
-const BACKEND_ROOT = path.join(__dirname, '..', '..');
-const MARKER_PATH = path.join(BACKEND_ROOT, '.initialized.json');
+// EP-010: the marker is runtime STATE (must survive Portable re-extraction),
+// so it lives in the persistent config dir. The seeder scripts below are
+// CODE, not state — they stay relative to BACKEND_ROOT (resources/backend),
+// which is exactly where they're packaged.
+const MARKER_PATH = path.join(getConfigDir(), '.initialized.json');
 
 const BASELINE_SEEDERS = [
   path.join(BACKEND_ROOT, 'prisma', 'seed-rules.js'),

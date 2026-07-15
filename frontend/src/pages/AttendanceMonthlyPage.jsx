@@ -311,6 +311,27 @@ export default function AttendanceMonthlyPage() {
     finally { if (showLoading) setLoading(false); }
   }, [month, year, deptId]);
 
+  // EP-014: targeted refresh — refetches just the named employee's rows for
+  // the current month (still every day of that one employee, since the grid
+  // is per-day, but a small fraction of the full company × month dataset)
+  // instead of reloading every employee. Merges by replacing that employee's
+  // existing rows wholesale — safe because the narrowed response is already
+  // that employee's complete current-month row set, not a partial patch.
+  const loadOne = useCallback(async (employeeIds) => {
+    try {
+      const params = { month, year };
+      if (deptId) params.departmentId = deptId;
+      const fetched = await Promise.all(employeeIds.map(id =>
+        api.get('/attendance/monthly-detail', { params: { ...params, employeeId: id } }).then(r => r.data).catch(() => [])
+      ));
+      setRows(rs => {
+        const touchedIds = new Set(employeeIds);
+        const kept = rs.filter(r => !touchedIds.has(r.employeeId));
+        return [...kept, ...fetched.flat()];
+      });
+    } catch { /* silent — next full reload (rules/device event) will catch up */ }
+  }, [month, year, deptId]);
+
   useEffect(() => {
     api.get('/departments').then(r => {
       setDepts(r.data);
@@ -320,7 +341,7 @@ export default function AttendanceMonthlyPage() {
   useEffect(() => { load(true); }, [load]);
 
   useRulesLiveSync(load, { isBusyRef: editCountRef });
-  useDeviceLiveSync(load, { silent: true, isBusyRef: editCountRef });
+  useDeviceLiveSync(load, { silent: true, isBusyRef: editCountRef, reloadOne: loadOne });
 
   // Persist filters across navigation
   useEffect(() => {

@@ -9,14 +9,18 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:manager": "vite build --mode manager",
     "preview": "vite preview",
     "electron": "electron .",
     "electron:dev": "concurrently --kill-others --names \"VITE,ELECTRON\" -c \"cyan,yellow\" \"vite\" \"wait-on http://localhost:3002 && electron .\"",
+    "electron:dev:manager": "concurrently --kill-others --names \"VITE,ELECTRON\" -c \"cyan,yellow\" \"vite --mode manager\" \"wait-on http://localhost:3002 && cross-env EDITION=manager electron .\"",
     "electron:build": "npm run build && electron-builder --win --x64",
     "electron:build:dir": "npm run build && electron-builder --win --x64 --dir",
     "electron:build:mac": "npm run build && electron-builder --mac",
     "electron:build:mac:dir": "npm run build && electron-builder --mac --dir",
-    "electron:build:mac:legacy": "npm run build && electron-builder --mac --config electron-builder.legacy-mac.json"
+    "electron:build:mac:legacy": "npm run build && electron-builder --mac --config electron-builder.legacy-mac.json",
+    "electron:build:manager": "npm run build:manager && electron-builder --win --x64 --config electron-builder.manager.json",
+    "electron:build:manager:mac": "npm run build:manager && electron-builder --mac --config electron-builder.manager.json"
   },
   "dependencies": {
     "@fontsource/cairo": "^5.0.16",
@@ -41,6 +45,7 @@
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.19",
     "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
     "electron": "30.5.1",
     "electron-builder": "^24.13.3",
     "postcss": "^8.4.38",
@@ -106,14 +111,28 @@
         {
           "from": "dist",
           "to": "frontend/dist",
-          "filter": ["**/*"]
+          "filter": [
+            "**/*"
+          ]
         }
       ]
     },
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["x64", "arm64"] },
-        { "target": "zip", "arch": ["x64", "arm64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "icon": "assets/icon.png",
       "category": "public.app-category.business",
@@ -146,7 +165,9 @@
         {
           "from": "dist",
           "to": "frontend/dist",
-          "filter": ["**/*"]
+          "filter": [
+            "**/*"
+          ]
         }
       ]
     },

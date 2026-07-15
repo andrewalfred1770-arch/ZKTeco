@@ -10,13 +10,16 @@ const prisma = getPrisma();
 // Get daily attendance (for AG Grid)
 router.get('/daily', async (req, res) => {
   try {
-    const { date, branchId, departmentId } = req.query;
+    const { date, branchId, departmentId, employeeId } = req.query;
     const targetDate = date ? new Date(date) : new Date();
     const d = new Date(moment(targetDate).format('YYYY-MM-DD'));
 
     let empWhere = { status: true };
     if (branchId) empWhere.branchId = parseInt(branchId);
     if (departmentId) empWhere.departmentId = parseInt(departmentId);
+    // EP-014: optional narrowing for realtime single-row refresh — omitted by
+    // every existing caller (initial load, filters), who see identical results.
+    if (employeeId) empWhere.id = parseInt(employeeId);
 
     const employees = await prisma.employee.findMany({
       where: empWhere,

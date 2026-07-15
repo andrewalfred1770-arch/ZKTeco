@@ -51,13 +51,11 @@ export default function ManualPenaltyModal({ record, onClose, onSaved }) {
 
   const originalLate     = record.manualLatePenaltyUnits  ?? null;
   const originalEarly    = record.manualEarlyPenaltyUnits ?? null;
-  const originalCondition = record.manualConditionUnits   ?? null;
   const originalOvertime = record.manualOvertimeUnits     ?? null;
   const originalStatus   = record.status ?? '';
 
   const [lateStr, setLateStr]       = useState(originalLate     == null ? '' : String(originalLate));
   const [earlyStr, setEarlyStr]     = useState(originalEarly    == null ? '' : String(originalEarly));
-  const [conditionStr, setConditionStr] = useState(originalCondition == null ? '' : String(originalCondition));
   const [overtimeStr, setOvertimeStr] = useState(originalOvertime == null ? '' : String(originalOvertime));
   const [statusVal, setStatusVal]   = useState(originalStatus);
   const [reason, setReason]         = useState('');
@@ -77,20 +75,17 @@ export default function ManualPenaltyModal({ record, onClose, onSaved }) {
   // null = "restore canonical" (inherit Policy Engine value)
   const parsedLate      = lateStr      === '' ? null : Number(lateStr);
   const parsedEarly     = earlyStr     === '' ? null : Number(earlyStr);
-  const parsedCondition = conditionStr === '' ? null : Number(conditionStr);
   const parsedOvertime  = overtimeStr  === '' ? null : Number(overtimeStr);
 
   const lateChanged      = parsedLate      !== originalLate;
   const earlyChanged     = parsedEarly     !== originalEarly;
-  const conditionChanged = parsedCondition !== originalCondition;
   const overtimeChanged  = parsedOvertime  !== originalOvertime;
   const statusChanged    = statusVal !== originalStatus && statusVal !== '';
-  const needsReason  = lateChanged || earlyChanged || conditionChanged || overtimeChanged || statusChanged;
+  const needsReason  = lateChanged || earlyChanged || overtimeChanged || statusChanged;
 
   const invalid =
     (parsedLate      != null && (!Number.isFinite(parsedLate)      || parsedLate      < 0)) ||
     (parsedEarly     != null && (!Number.isFinite(parsedEarly)     || parsedEarly     < 0)) ||
-    (parsedCondition != null && (!Number.isFinite(parsedCondition) || parsedCondition < 0)) ||
     (parsedOvertime  != null && (!Number.isFinite(parsedOvertime)  || parsedOvertime  < 0 || parsedOvertime > 24));
 
   // EF-015.1: worked-hours-vs-manual-overtime mismatch is a WARNING only —
@@ -99,8 +94,8 @@ export default function ManualPenaltyModal({ record, onClose, onSaved }) {
   const workedHoursNum = parseFloat(record.workedHours);
   const overtimeMismatch = parsedOvertime != null && Number.isFinite(workedHoursNum) && parsedOvertime !== workedHoursNum;
 
-  const exemptAll = () => { setLateStr('0'); setEarlyStr('0'); setConditionStr('0'); };
-  const restoreOriginal = () => { setLateStr(''); setEarlyStr(''); setConditionStr(''); setOvertimeStr(''); setStatusVal(originalStatus); };
+  const exemptAll = () => { setLateStr('0'); setEarlyStr('0'); };
+  const restoreOriginal = () => { setLateStr(''); setEarlyStr(''); setOvertimeStr(''); setStatusVal(originalStatus); };
 
   const handleSave = async () => {
     if (parsedOvertime != null && parsedOvertime > 24) {
@@ -115,7 +110,6 @@ export default function ManualPenaltyModal({ record, onClose, onSaved }) {
       const payload = { overrideReason: reason, modifiedByName: ACTOR };
       if (lateChanged)      payload.manualLatePenaltyUnits  = parsedLate;
       if (earlyChanged)     payload.manualEarlyPenaltyUnits = parsedEarly;
-      if (conditionChanged) payload.manualConditionUnits    = parsedCondition;
       if (overtimeChanged)  payload.manualOvertimeUnits     = parsedOvertime;
       if (statusChanged)    payload.status = statusVal;
       await api.put(`/attendance/${record.id}/manual-penalty`, payload);
@@ -128,10 +122,6 @@ export default function ManualPenaltyModal({ record, onClose, onSaved }) {
   };
 
   const originalOvertimeBase = record.originalOvertimeUnits ?? record.overtimeRulesUnits ?? record.overtimeHours ?? 0;
-  // Condition-rule (e.g. penalty_excessive_late) units only ever show up on
-  // some days — keep the row hidden for the common case where there's
-  // nothing to override, exactly like the rest of this override UI.
-  const showCondition = (record.conditionDeductionUnits || 0) > 0 || originalCondition != null;
 
   return (
     <>
@@ -181,13 +171,6 @@ export default function ManualPenaltyModal({ record, onClose, onSaved }) {
                   {fmtPenaltyUnits(record.earlyCheckoutUnits)}
                 </div>
               </Field>
-              {showCondition && (
-                <Field label="خصم شرطي">
-                  <div className="input w-full" style={{ ...inputStyle, color:'var(--text-2)', background:'var(--surface-2)' }}>
-                    {fmtPenaltyUnits(record.conditionDeductionUnits)}
-                  </div>
-                </Field>
-              )}
               <Field label="الإضافي">
                 <div className="input w-full" style={{ ...inputStyle, color:'var(--text-2)', background:'var(--surface-2)' }}>
                   {fmtOvertimeUnits(originalOvertimeBase)}
@@ -209,13 +192,6 @@ export default function ManualPenaltyModal({ record, onClose, onSaved }) {
                   placeholder={fmtPenaltyUnits(record.earlyCheckoutUnits) === '—' ? '0' : String(record.earlyCheckoutUnits)}
                   value={earlyStr} onChange={e => setEarlyStr(e.target.value)} />
               </Field>
-              {showCondition && (
-                <Field label="الخصم الشرطي الفعلي" hint="ساعات كاملة فقط — اتركه فارغًا للقيمة المحسوبة">
-                  <input className="input w-full" style={inputStyle} type="number" min="0" step="1"
-                    placeholder={fmtPenaltyUnits(record.conditionDeductionUnits) === '—' ? '0' : String(record.conditionDeductionUnits)}
-                    value={conditionStr} onChange={e => setConditionStr(e.target.value)} />
-                </Field>
-              )}
               <Field label="الإضافي الفعلي" hint="اتركه فارغًا للاعتماد على القيمة المحسوبة">
                 <input className="input w-full" style={inputStyle} type="number" min="0" max="24" step="0.5"
                   placeholder={fmtOvertimeUnits(originalOvertimeBase) === '—' ? '0' : String(originalOvertimeBase)}

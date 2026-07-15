@@ -1,6 +1,6 @@
 const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
-const { getRules, parseTime, evaluateConditionRules } = require('./rulesEngine');
+const { getRules, parseTime } = require('./rulesEngine');
 const { mergeEffectivePenalty } = require('./attendanceEngine');
 const { monthRange } = require('../utils/monthRange');
 const logger = require('../utils/logger');
@@ -55,15 +55,13 @@ function applyApprovedAdjustment(r, adj) {
   // Canonical deduction-unit fields — the single implementation of the
   // approved-adjustment overlay. routes/adjustments.js imports this function
   // directly rather than maintaining its own copy, so payroll and the
-  // adjustments UI can never disagree on the effective late/early/condition
-  // penalty for this day.
-  const lateUnits  = adj.ignoreLate           ? 0 : (adj.adjLatePenalty     ?? r.latePenaltyUnits);
-  const earlyUnits = adj.ignoreEarlyLeave     ? 0 : (adj.adjEarlyPenalty    ?? r.earlyCheckoutUnits);
-  const condUnits  = adj.ignoreConditionUnits ? 0 : (adj.adjConditionUnits  ?? r.conditionDeductionUnits);
-  eff.latePenaltyUnits        = lateUnits;
-  eff.earlyCheckoutUnits      = earlyUnits;
-  eff.conditionDeductionUnits = condUnits;
-  eff.totalDeductionUnits     = adj.adjTotalDeductions ?? (lateUnits + earlyUnits + condUnits);
+  // adjustments UI can never disagree on the effective late/early penalty for
+  // this day.
+  const lateUnits  = adj.ignoreLate       ? 0 : (adj.adjLatePenalty  ?? r.latePenaltyUnits);
+  const earlyUnits = adj.ignoreEarlyLeave ? 0 : (adj.adjEarlyPenalty ?? r.earlyCheckoutUnits);
+  eff.latePenaltyUnits    = lateUnits;
+  eff.earlyCheckoutUnits  = earlyUnits;
+  eff.totalDeductionUnits = adj.adjTotalDeductions ?? (lateUnits + earlyUnits);
 
   // adjCheckIn/adjCheckOut are "HH:mm" — rebuild a Date on the row's own day so
   // the night-shift/holiday-presence checks (and the printed check-in/out
@@ -163,11 +161,6 @@ async function computePayroll(employeeId, month, year, opts = {}) {
   const totalLateMinutes = records.reduce((sum, r) => sum + (r.lateMinutes || 0), 0);
   const totalLatePenaltyUnits = records.reduce((sum, r) => sum + (r.effectiveLatePenalty || 0), 0);
   const totalEarlyCheckoutUnits = records.reduce((sum, r) => sum + (r.effectiveEarlyPenalty || 0), 0);
-  // Day-scoped condition-rule units (e.g. penalty_excessive_late), already
-  // folded into effectiveTotalDeductionUnits by mergeEffectivePenalty — kept
-  // as its own dollar-amount component too so `deductions` (money) and
-  // `penaltyUnits` (the displayed unit count) always agree exactly.
-  const totalConditionUnitsDay = records.reduce((sum, r) => sum + (r.effectiveConditionUnits || 0), 0);
   const totalEffectiveDeductionUnits = records.reduce((sum, r) => sum + (r.effectiveTotalDeductionUnits || 0), 0);
   const lateDays = records.filter(r => (r.lateMinutes || 0) > 0).length;
   const totalOvertimeHours = records.reduce((sum, r) => sum + (r.effectiveOvertimeUnits ?? r.overtimeHours ?? 0), 0);
@@ -264,24 +257,12 @@ async function computePayroll(employeeId, month, year, opts = {}) {
   const latePenalty = totalLatePenaltyUnits * hourlyRate;
   const earlyLeavePenalty = totalEarlyCheckoutUnits * hourlyRate;
 
-  // Month-scoped condition rules (e.g. penalty_excessive_absence) — the ONLY
-  // place month-scoped condition rules are evaluated. Stored as its own
-  // explicit, visible Payroll field (never silently folded into an opaque
-  // `deductions` number) — day-scoped condition rules (penalty_excessive_late,
-  // penalty_friday_absence) already flow in via totalEffectiveDeductionUnits
-  // above (attendanceEngine.mergeEffectivePenalty), so they are NOT
-  // re-evaluated here — each condition rule fires in exactly one scope.
-  const conditionMatches = await evaluateConditionRules({ absentDays, lateMinutes: totalLateMinutes, lateDays }, 'month');
-  const conditionPenaltyUnits = parseFloat(conditionMatches.reduce((sum, m) => sum + m.units, 0).toFixed(2));
-  const conditionPenaltyAmount = parseFloat((conditionPenaltyUnits * hourlyRate).toFixed(2));
-
   // penaltyUnits/penaltyAmount: EVERY deduction unit that reduces net salary —
-  // day-scoped effective units (late + early-leave + day-scoped condition
-  // rules, already summed into totalEffectiveDeductionUnits by
-  // mergeEffectivePenalty) PLUS month-scoped condition-rule units. This is the
+  // day-scoped effective units (late + early-leave, already summed into
+  // totalEffectiveDeductionUnits by mergeEffectivePenalty). This is the
   // canonical "ساعات الخصم" figure shown on PayrollPage and the final-sheet —
   // nothing that affects netSalary is ever excluded from it.
-  const penaltyUnits = parseFloat((totalEffectiveDeductionUnits + conditionPenaltyUnits).toFixed(2));
+  const penaltyUnits = parseFloat(totalEffectiveDeductionUnits.toFixed(2));
   const penaltyAmount = parseFloat((penaltyUnits * hourlyRate).toFixed(2));
 
   // Get advances for this month
@@ -298,12 +279,10 @@ async function computePayroll(employeeId, month, year, opts = {}) {
   // final-sheet route so the two can never diverge again (advances is
   // deliberately NOT a parameter here; it's always a separate top-level
   // subtraction in the net-salary formula, matching the Payroll schema).
-  const conditionAmountDay = parseFloat((totalConditionUnitsDay * hourlyRate).toFixed(2));
   const breakdown = computeDeductionsBreakdown({
     absentAmount: absentDeduction,
     lateAmount: latePenalty,
     earlyAmount: earlyLeavePenalty,
-    conditionAmount: conditionAmountDay + conditionPenaltyAmount,
     manualDeductionAdjustment,
   });
   const deductions = breakdown.total;
@@ -331,9 +310,6 @@ async function computePayroll(employeeId, month, year, opts = {}) {
     earlyLeavePenalty,
     penaltyUnits,
     penaltyAmount,
-    conditionPenaltyUnits,
-    conditionPenaltyAmount,
-    conditionAmountDay,
     overtimeHours: totalOvertimeHours,
     overtimeAmount,
     // Certification HIGH#2: the ONLY place morningOTAmount/eveningOTAmount are
@@ -359,16 +335,14 @@ async function computePayroll(employeeId, month, year, opts = {}) {
  * is intentionally not part of this total; it is always a separate top-level
  * subtraction in the net-salary formula (see Payroll schema / PayrollPage).
  */
-function computeDeductionsBreakdown({ absentAmount, lateAmount, earlyAmount, conditionAmount, manualDeductionAdjustment }) {
+function computeDeductionsBreakdown({ absentAmount, lateAmount, earlyAmount, manualDeductionAdjustment }) {
   const total = parseFloat((
-    (absentAmount || 0) + (lateAmount || 0) + (earlyAmount || 0)
-    + (conditionAmount || 0) + (manualDeductionAdjustment || 0)
+    (absentAmount || 0) + (lateAmount || 0) + (earlyAmount || 0) + (manualDeductionAdjustment || 0)
   ).toFixed(2));
   return {
     absentAmount: absentAmount || 0,
     lateAmount: lateAmount || 0,
     earlyAmount: earlyAmount || 0,
-    conditionAmount: conditionAmount || 0,
     manualDeductionAdjustment: manualDeductionAdjustment || 0,
     total,
   };
@@ -427,7 +401,7 @@ async function calculatePayrollImpl(employeeId, month, year) {
   const computed = await computePayroll(employeeId, month, year);
   const {
     basicSalary, hourlyRate, workDays, absentDays, latePenalty,
-    penaltyUnits, penaltyAmount, conditionPenaltyUnits, conditionPenaltyAmount,
+    penaltyUnits, penaltyAmount,
     overtimeHours, overtimeAmount, bonus, advances, manualDeductionAdjustment,
     deductions, netSalary, appliedAdjustments,
   } = computed;
@@ -449,8 +423,6 @@ async function calculatePayrollImpl(employeeId, month, year) {
       latePenalty,
       penaltyUnits,
       penaltyAmount,
-      conditionPenaltyUnits,
-      conditionPenaltyAmount,
       overtimeHours,
       overtimeAmount,
       bonus,
@@ -471,8 +443,6 @@ async function calculatePayrollImpl(employeeId, month, year) {
       latePenalty,
       penaltyUnits,
       penaltyAmount,
-      conditionPenaltyUnits,
-      conditionPenaltyAmount,
       overtimeHours,
       overtimeAmount,
       bonus,

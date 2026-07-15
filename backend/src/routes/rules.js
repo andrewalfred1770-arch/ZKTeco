@@ -77,36 +77,12 @@ async function detectFormulaCycle(ruleKey, newValue) {
   return graph[ruleKey].some(dep => reachable(graph, dep, ruleKey));
 }
 
-/** Two condition rules have the same real-world effect if they test the same field with the same operator+value. */
-function conditionsOverlap(a, b) {
-  if (!a || !b || !a.field || !b.field) return false;
-  return a.field === b.field && a.op === b.op && String(a.value) === String(b.value);
-}
-
-/** Find an existing ACTIVE condition rule (same scope) whose condition has the same effect as the proposed one. */
-async function findDuplicateCondition(conditionJsonStr, appliesTo, excludeId) {
-  let cond;
-  try { cond = JSON.parse(conditionJsonStr || '{}'); } catch { return null; }
-  if (!cond.field) return null;
-
-  const candidates = await prisma.rule.findMany({
-    where: {
-      isActive: true,
-      type: 'condition',
-      appliesTo: appliesTo || 'all',
-      ...(excludeId ? { id: { not: excludeId } } : {}),
-    },
-    select: { id: true, key: true, name: true, conditionJson: true },
-  });
-  for (const c of candidates) {
-    let cCond;
-    try { cCond = JSON.parse(c.conditionJson || '{}'); } catch { continue; }
-    if (conditionsOverlap(cond, cCond)) return c;
-  }
-  return null;
-}
-
 const EDITABLE = ['name', 'category', 'type', 'value', 'unit', 'priority', 'isActive', 'appliesTo', 'conditionJson', 'description'];
+
+// EP-012: "شرط" (Conditional Deduction) rule type is permanently removed —
+// reject creation even via a direct API call, not just via the (already
+// updated) UI dropdown.
+const REMOVED_RULE_TYPES = ['condition'];
 const actor = (req) => (req.body && req.body.changedByName) || 'النظام';
 
 async function audit(ruleId, ruleKey, action, fieldName, oldValue, newValue, changedByName) {
@@ -163,6 +139,9 @@ router.post('/', async (req, res) => {
   try {
     const { name, key, category, type, value, unit, priority, isActive, appliesTo, conditionJson, description } = req.body;
     if (!name || !key || !category) return res.status(400).json({ error: 'name, key, category required' });
+    if (type && REMOVED_RULE_TYPES.includes(type)) {
+      return res.status(400).json({ error: `نوع القاعدة 'شرط' لم يعد مدعوماً` });
+    }
 
     const exists = await prisma.rule.findUnique({ where: { key } });
     if (exists) return res.status(409).json({ error: `المفتاح "${key}" مستخدم بالفعل` });
@@ -180,15 +159,6 @@ router.post('/', async (req, res) => {
     if (type === 'formula' && value) {
       if (await detectFormulaCycle(key, String(value))) {
         return res.status(400).json({ error: `تعريف دائري: معادلة "${key}" تشير إلى نفسها عبر سلسلة من المعادلات الأخرى` });
-      }
-    }
-    if (type === 'condition' && conditionJson && isActive !== false) {
-      const dup = await findDuplicateCondition(
-        typeof conditionJson === 'string' ? conditionJson : JSON.stringify(conditionJson),
-        appliesTo || 'all',
-      );
-      if (dup) {
-        return res.status(409).json({ error: `تعارض: القاعدة "${dup.name}" (${dup.key}) تطبّق نفس الشرط بالفعل لنفس النطاق` });
       }
     }
 
@@ -219,6 +189,10 @@ router.put('/:id', async (req, res) => {
     const existing = await prisma.rule.findUnique({ where: { id } });
     if (!existing) return res.status(404).json({ error: 'Rule not found' });
 
+    if (req.body.type && REMOVED_RULE_TYPES.includes(req.body.type)) {
+      return res.status(400).json({ error: `نوع القاعدة 'شرط' لم يعد مدعوماً` });
+    }
+
     const data = {};
     const changes = [];
     for (const f of EDITABLE) {
@@ -245,22 +219,12 @@ router.put('/:id', async (req, res) => {
     }
 
     // ── Conflict prevention (validate the EFFECTIVE post-update row) ──────────
-    const effectiveType          = data.type ?? existing.type;
-    const effectiveValue         = ('value' in data) ? data.value : existing.value;
-    const effectiveConditionJson = ('conditionJson' in data) ? data.conditionJson : existing.conditionJson;
-    const effectiveAppliesTo     = data.appliesTo ?? existing.appliesTo;
-    const effectiveIsActive      = ('isActive' in data) ? data.isActive : existing.isActive;
+    const effectiveType  = data.type ?? existing.type;
+    const effectiveValue = ('value' in data) ? data.value : existing.value;
 
     if (effectiveType === 'formula' && effectiveValue && (data.value !== undefined || data.type !== undefined)) {
       if (await detectFormulaCycle(existing.key, String(effectiveValue))) {
         return res.status(400).json({ error: `تعريف دائري: معادلة "${existing.key}" تشير إلى نفسها عبر سلسلة من المعادلات الأخرى` });
-      }
-    }
-    if (effectiveType === 'condition' && effectiveConditionJson && effectiveIsActive
-        && (data.conditionJson !== undefined || data.appliesTo !== undefined || data.isActive !== undefined || data.type !== undefined)) {
-      const dup = await findDuplicateCondition(effectiveConditionJson, effectiveAppliesTo, id);
-      if (dup) {
-        return res.status(409).json({ error: `تعارض: القاعدة "${dup.name}" (${dup.key}) تطبّق نفس الشرط بالفعل لنفس النطاق` });
       }
     }
 

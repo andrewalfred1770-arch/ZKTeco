@@ -15,8 +15,6 @@ const prisma = getPrisma();
 const TTL_MS = 60 * 1000;
 let cache = null;
 let cachedAt = 0;
-let conditionCache = null;
-let conditionCachedAt = 0;
 
 async function getRuleMap() {
   if (cache && Date.now() - cachedAt < TTL_MS) return cache;
@@ -37,23 +35,9 @@ async function getRuleValue(key, fallback = null) {
   return map[key] !== undefined ? map[key] : fallback;
 }
 
-/** Active condition-type rules ({ key, value, conditionJson }) — feeds the generic condition evaluator. */
-async function getConditionRules() {
-  if (conditionCache && Date.now() - conditionCachedAt < TTL_MS) return conditionCache;
-  const rows = await prisma.rule.findMany({
-    where: { isActive: true, type: 'condition' },
-    orderBy: { priority: 'desc' },
-  });
-  conditionCache = rows.map(r => ({ key: r.key, value: r.value, conditionJson: r.conditionJson }));
-  conditionCachedAt = Date.now();
-  return conditionCache;
-}
-
 function invalidate() {
   cache = null;
   cachedAt = 0;
-  conditionCache = null;
-  conditionCachedAt = 0;
 }
 
-module.exports = { getRuleMap, getRuleValue, getConditionRules, invalidate };
+module.exports = { getRuleMap, getRuleValue, invalidate };

@@ -170,3 +170,46 @@ cd frontend
 npm run build
 # Serve dist/ with nginx or IIS
 ```
+
+---
+
+## Server Mode & Manager Edition (multi-machine deployments)
+
+The desktop app supports two editions built from this same repository:
+
+- **PETSHROW ERP Server** — runs Electron + React + the full backend (Express,
+  Prisma, MySQL, Socket.IO server). This is the default build
+  (`npm run electron:build`) and behaves exactly as described above.
+- **PETSHROW ERP Manager** — a thin Electron + React client with no backend
+  of its own (`npm run electron:build:manager`, in `frontend/`). It connects
+  to a Server instance over the network via REST + Socket.IO and never spawns
+  a backend process, never opens MySQL, and never runs a migration or seed.
+
+**Single-machine desktop use (one PC, one user) needs no changes** —
+`AUTH_ENABLED` stays `false` by default, exactly as today.
+
+**If you deploy a Server instance and connect one or more Manager Clients to
+it over a LAN**, you must secure that Server before doing so:
+
+1. In the Server's `.env` (`%APPDATA%\PETSHROW ERP\.env` for a packaged
+   install, or `backend/.env` in dev), set:
+   ```
+   AUTH_ENABLED=true
+   JWT_SECRET="a long random string — do not reuse the example above"
+   ```
+   The backend refuses to start with `AUTH_ENABLED=true` and no real
+   `JWT_SECRET` — this is enforced in code, not just documented here.
+2. Restart the Server. Every Manager Client connecting to it will now be
+   required to log in with a valid user account (created via the same
+   **Employees**/user-management flow as any other account) before it can
+   use the app.
+3. On each Manager Client, run the app once — it shows a first-run
+   **Connection Wizard** asking for the Server's address (e.g.
+   `http://192.168.1.10:5000`). Test the connection, then Connect; the app
+   relaunches pointed at that Server and, since `AUTH_ENABLED=true`, prompts
+   for login.
+
+If you skip step 1, Manager Clients can still connect and use the app, but
+with **no login enforced** — anyone who can reach the Server's IP on the LAN
+can use the API. The Manager app shows a visible warning banner in this case
+to make the unsecured state obvious, but does not block usage on its own.

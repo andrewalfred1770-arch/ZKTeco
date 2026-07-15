@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, AlertTriangle, Wifi, ArrowRight, Printer, Users, UserX, Clock } from 'lucide-react';
 import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { useNavigate } from 'react-router-dom';
@@ -56,6 +56,7 @@ export default function DashboardPage() {
   const todayAr = new Date().toLocaleDateString('ar-EG', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
 
   const load = async () => {
+    lastLoadRef.current = Date.now();
     try {
       const [d, dv, ros, depts] = await Promise.all([
         api.get('/dashboard'),
@@ -71,7 +72,19 @@ export default function DashboardPage() {
     finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); const t = setInterval(load, 60000); return () => clearInterval(t); }, []);
+  // EP-014: the 60s interval is a fallback safety net, not a primary refresh
+  // path — the two live-sync hooks below already reload on every relevant
+  // socket event. Without this guard, a socket-triggered load() moments
+  // before the interval tick caused two back-to-back full refetches of all 4
+  // endpoints. The interval now only fires if nothing has reloaded recently.
+  const lastLoadRef = useRef(0);
+  useEffect(() => {
+    load();
+    const t = setInterval(() => {
+      if (Date.now() - lastLoadRef.current > 20000) load();
+    }, 60000);
+    return () => clearInterval(t);
+  }, []);
   useRulesLiveSync(load, { silent: true });
   useDeviceLiveSync(load, { silent: true });
 
@@ -113,10 +126,16 @@ export default function DashboardPage() {
   const rate    = total ? Math.round((present / total) * 100) : 0;
 
   // KPI metrics — filter by dept when active (use roster counts)
-  const deptPresent = filteredRoster.filter(r => !r.isAbsent && r.checkIn).length;
-  const deptAbsent  = filteredRoster.filter(r => r.isAbsent || r.status === 'absent').length;
-  const deptLate    = filteredRoster.filter(r => (r.effectiveLatePenalty||0) > 0).length;
-  const deptOT      = filteredRoster.filter(r => (r.effectiveOvertimeUnits||0) > 0).length;
+  const { deptPresent, deptAbsent, deptLate, deptOT } = useMemo(() => {
+    let present = 0, absent = 0, late = 0, ot = 0;
+    for (const r of filteredRoster) {
+      if (!r.isAbsent && r.checkIn) present++;
+      if (r.isAbsent || r.status === 'absent') absent++;
+      if ((r.effectiveLatePenalty||0) > 0) late++;
+      if ((r.effectiveOvertimeUnits||0) > 0) ot++;
+    }
+    return { deptPresent: present, deptAbsent: absent, deptLate: late, deptOT: ot };
+  }, [filteredRoster]);
 
   const metrics = deptFilter ? [
     { label:'الموظفون',    value:filteredRoster.length,       accent:'#3b82f6', color:'var(--text)' },
@@ -134,7 +153,10 @@ export default function DashboardPage() {
     { label:'نسبة الحضور',      value:`${W(rate)}%`,   accent:'#0ea5e9', color:'#0ea5e9' },
   ];
 
-  const weeklyData = (data?.weeklyData || []).map(d => ({ ...d, day: DAY_AR[d.day] || d.day }));
+  const weeklyData = useMemo(
+    () => (data?.weeklyData || []).map(d => ({ ...d, day: DAY_AR[d.day] || d.day })),
+    [data?.weeklyData]
+  );
 
   // Print meta
   const printMeta = {

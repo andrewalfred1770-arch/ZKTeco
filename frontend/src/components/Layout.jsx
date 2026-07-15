@@ -9,8 +9,15 @@ import {
 } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { useCompanyBrand } from '../lib/branding';
+import { isManager } from '../lib/edition';
 
 // ─── Navigation tree ──────────────────────────────────────────────────────────
+// EP-011: `serverOnly: true` marks an item as server-admin functionality that
+// doesn't belong on a Manager Client — device *configuration* (only the
+// Server machine's zktecoService.js can reach a device's LAN segment), and
+// the Connection Settings page (Manager's connection is set once via the
+// mandatory ConnectionWizard on first run, not an optional settings toggle
+// alongside "spawn a local backend"). Filtered out below, per edition.
 const NAV = [
   { id: 'overview', label: 'عام', items: [
     { to: '/dashboard', icon: LayoutDashboard, label: 'الرئيسية' },
@@ -26,7 +33,7 @@ const NAV = [
   ]},
   { id: 'admin', label: 'الإدارة', items: [
     { to: '/employees',        icon: Users,          label: 'الموظفين'  },
-    { to: '/devices',          icon: Fingerprint,    label: 'أجهزة البصمة', badge: 'ZK' },
+    { to: '/devices',          icon: Fingerprint,    label: 'أجهزة البصمة', badge: 'ZK', serverOnly: true },
     { to: '/holidays',         icon: BookOpen,       label: 'الإجازات'  },
   ]},
   { id: 'policies', label: 'السياسات والإعدادات', items: [
@@ -34,10 +41,12 @@ const NAV = [
     { to: '/rules',               icon: ShieldCheck,       label: 'محرك القواعد', badge: 'ERP' },
     { to: '/maintenance/cleanup', icon: Trash2,            label: 'تنظيف الحركات', badge: 'ERP' },
     { to: '/settings/company',    icon: Building2,         label: 'بيانات الشركة' },
-    { to: '/settings/connection', icon: PlugZap,           label: 'إعدادات الاتصال', badge: 'ERP' },
+    { to: '/settings/connection', icon: PlugZap,           label: 'إعدادات الاتصال', badge: 'ERP', serverOnly: true },
     { to: '/settings',            icon: Settings,          label: 'الإعدادات' },
   ]},
-];
+]
+  .map((group) => ({ ...group, items: group.items.filter((item) => !item.serverOnly || !isManager) }))
+  .filter((group) => group.items.length > 0);
 
 // ─── Theme switcher ───────────────────────────────────────────────────────────
 function ThemeSwitcher() {

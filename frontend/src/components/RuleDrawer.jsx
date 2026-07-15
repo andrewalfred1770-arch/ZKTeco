@@ -10,7 +10,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  X, Save, Loader2, Plus, Trash2, Info, Calculator, Sliders,
+  X, Save, Loader2, Info, Calculator, Sliders,
   FileText, History, Delete, RotateCcw, Clock3,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -31,11 +31,10 @@ export const CAT_COLOR = {
 export const TYPE_LABELS = {
   number:'رقم',  percentage:'نسبة %',  boolean:'مفعّل/موقوف',
   time:'وقت',    text:'نص',            formula:'معادلة',
-  condition:'شرط',
 };
 export const TYPE_ICONS = {
   number:'#',  percentage:'%',  boolean:'⊤',  time:'⏱',
-  text:'Aب',   formula:'ƒ',     condition:'⌥',
+  text:'Aب',   formula:'ƒ',
 };
 
 // Friendly one-line explanation of each rule TYPE (shown under the picker)
@@ -46,7 +45,6 @@ const TYPE_HELP = {
   time:      'قيمة زمنية بصيغة ساعة:دقيقة.',
   text:      'نص حر.',
   formula:   'معادلة حسابية تُبنى بصريًا من الحقول.',
-  condition: 'جزاء يُطبَّق عند تحقق شرط معيّن.',
 };
 
 // ═══ Visual formula builder vocabulary ════════════════════════════════════════
@@ -144,8 +142,8 @@ function Field({ label, children, grow, hint }) {
   );
 }
 
-// Shown instead of raw formulas/conditions/expressions for normal HR users —
-// that logic stays intact, it's just edited from "إعدادات متقدمة" only.
+// Shown instead of raw formula expressions for normal HR users — that logic
+// stays intact, it's just edited from "إعدادات متقدمة" only.
 function AdvancedOnlyNotice() {
   return (
     <div style={{ display:'flex', alignItems:'flex-start', gap:10, padding:'12px 14px',
@@ -293,19 +291,6 @@ function FormulaBuilder({ value, onChange }) {
   );
 }
 
-// Condition-builder vocabulary
-export const COND_FIELDS = [
-  { val:'lateMinutes',   ar:'مدة التأخير',        time:true  },
-  { val:'absentDays',    ar:'أيام الغياب',         unit:'يوم' },
-  { val:'overtimeHours', ar:'ساعات الإضافي',       unit:'ساعة'},
-  { val:'workDays',      ar:'أيام الحضور',         unit:'يوم' },
-  { val:'isHoliday',     ar:'عطلة رسمية',          unit:''    },
-  { val:'salary',        ar:'الراتب الأساسي',      unit:'ج.م' },
-];
-const COND_OPS = ['>','>=','<','<=','==','!='];
-export const OP_AR = { '>':'أكبر من','>=':'أكبر من أو يساوي','<':'أصغر من','<=':'أصغر أو يساوي','==':'يساوي','!=':'لا يساوي' };
-const empty_cond = () => ({ field:'lateMinutes', op:'>', value:'', and:'AND' });
-
 const CATS  = Object.keys(CATEGORY_LABELS);
 const TYPES = Object.keys(TYPE_LABELS);
 const TABS  = [
@@ -318,15 +303,6 @@ const TABS  = [
 // ── Main Component ───────────────────────────────────────────────────────────
 export default function RuleDrawer({ rule, actor, advanced = false, onClose, onSaved }) {
   const isEdit = !!rule?.id;
-
-  const parseConds = () => {
-    try {
-      if (!rule?.conditionJson) return [empty_cond()];
-      const p = JSON.parse(rule.conditionJson);
-      if (Array.isArray(p)) return p.length ? p : [empty_cond()];
-      return [{ ...p, and: p.and || 'AND' }];
-    } catch { return [empty_cond()]; }
-  };
 
   const [tab, setTab] = useState('basic');
   const [form, setForm] = useState({
@@ -341,16 +317,15 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
     isActive:   rule?.isActive    ?? true,
     description:rule?.description || '',
   });
-  const [conds, setConds]   = useState(parseConds);
   const [saving, setSaving] = useState(false);
   const [audit, setAudit]   = useState(null);
 
-  // HR users only choose from plain value types — "معادلة"/"شرط" need the
-  // visual builders and stay reserved for "إعدادات متقدمة" (existing rules of
-  // these types still display correctly so nothing breaks when editing them).
+  // HR users only choose from plain value types — "معادلة" needs the visual
+  // builder and stays reserved for "إعدادات متقدمة" (existing rules of this
+  // type still display correctly so nothing breaks when editing them).
   const visibleTypes = advanced
     ? TYPES
-    : TYPES.filter(t => (t !== 'formula' && t !== 'condition') || t === form.type);
+    : TYPES.filter(t => t !== 'formula' || t === form.type);
 
   const set = useCallback((k, v) => setForm(p => ({ ...p, [k]: v })), []);
 
@@ -369,10 +344,6 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
     }
   }, [tab, isEdit, rule, audit]);
 
-  const addCond    = () => setConds(c => [...c, empty_cond()]);
-  const removeCond = (i) => setConds(c => c.filter((_, j) => j !== i));
-  const setCond    = (i, patch) => setConds(c => c.map((r, j) => j === i ? { ...r, ...patch } : r));
-
   const save = async () => {
     if (!form.name.trim()) { toast.error('اسم القاعدة مطلوب'); setTab('basic'); return; }
     if (!form.key.trim())  { toast.error('المفتاح مطلوب');     setTab('basic'); return; }
@@ -380,7 +351,6 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
     const payload = {
       ...form,
       priority: parseInt(form.priority) || 0,
-      conditionJson: form.type === 'condition' ? JSON.stringify(conds) : null,
       changedByName: actor,
     };
     try {
@@ -438,8 +408,6 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
             <FormulaBuilder value={form.value} onChange={v => set('value', v)} />
           </Field>
         ) : <AdvancedOnlyNotice />;
-      case 'condition':
-        return advanced ? null /* condition builder rendered below */ : <AdvancedOnlyNotice />;
       default:
         return (
           <Field label="القيمة" hint={form.type === 'number' ? 'قيمة رقمية.' : 'نص حر.'}>
@@ -568,77 +536,13 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
             <>
               <Card title="قيمة القاعدة" icon={Calculator} accent="#0891b2">
                 {valueEditor()}
-                {form.type !== 'boolean' && form.type !== 'formula' && form.type !== 'condition' && (
+                {form.type !== 'boolean' && form.type !== 'formula' && (
                   <Field label="الوحدة" hint="وحدة القياس التي تظهر بجوار القيمة (اختياري).">
                     <input className="input w-full" value={form.unit} placeholder="دقيقة / ساعة / يوم / ج.م"
                       onChange={e => set('unit', e.target.value)} />
                   </Field>
                 )}
               </Card>
-
-              {form.type === 'condition' && advanced && (
-                <Card title="بانيِ الشرط" icon={Sliders} accent="#c2410c">
-                  <span style={{ fontSize:12, color:'var(--text-3)' }}>
-                    يُطبَّق الجزاء عند تحقق الشروط التالية:
-                  </span>
-                  {conds.map((c, i) => {
-                    const fld = COND_FIELDS.find(f => f.val === c.field);
-                    return (
-                      <div key={i}>
-                        {i > 0 && (
-                          <div style={{ display:'flex', alignItems:'center', gap:8, margin:'6px 0' }}>
-                            <div style={{ flex:1, height:1, background:'var(--border)' }} />
-                            <select value={c.and} onChange={e => setCond(i, { and:e.target.value })}
-                              style={{ padding:'3px 10px', borderRadius:5, border:'1px solid var(--border)',
-                                background:'var(--surface)', color:'#d97706', fontWeight:700, fontSize:11.5, cursor:'pointer' }}>
-                              <option value="AND">وكذلك</option>
-                              <option value="OR">أو</option>
-                            </select>
-                            <div style={{ flex:1, height:1, background:'var(--border)' }} />
-                          </div>
-                        )}
-                        <div style={{ display:'flex', gap:6, alignItems:'center', background:'var(--surface)',
-                          border:'1px solid var(--border)', borderRadius:8, padding:'9px 10px' }}>
-                          <select value={c.field} onChange={e => setCond(i, { field:e.target.value })}
-                            style={{ flex:2, padding:'6px 8px', borderRadius:6, border:'1px solid var(--border)',
-                              background:'var(--surface-2)', color:'var(--text)', fontSize:12.5 }}>
-                            {COND_FIELDS.map(f => <option key={f.val} value={f.val}>{f.ar}</option>)}
-                          </select>
-                          <select value={c.op} onChange={e => setCond(i, { op:e.target.value })}
-                            style={{ width:120, padding:'6px 6px', borderRadius:6, border:'1px solid var(--border)',
-                              background:'var(--surface-2)', color:'#d97706', fontSize:12, fontWeight:700 }}>
-                            {COND_OPS.map(o => <option key={o} value={o}>{OP_AR[o]}</option>)}
-                          </select>
-                          <input value={c.value} onChange={e => setCond(i, { value:e.target.value })}
-                            placeholder={fld?.time ? '00:30' : '30'}
-                            style={{ flex:1, padding:'6px 8px', borderRadius:6, border:'1px solid var(--border)',
-                              background:'var(--surface-2)', color:'var(--text)', fontFamily:'Consolas', fontSize:13, textAlign:'center' }} />
-                          {conds.length > 1 && (
-                            <button onClick={() => removeCond(i)}
-                              style={{ border:'none', background:'transparent', color:'#ef4444', cursor:'pointer', padding:2 }}>
-                              <Trash2 style={{ width:15, height:15 }} />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  <button onClick={addCond}
-                    style={{ display:'flex', alignItems:'center', gap:6, border:'1px dashed var(--border)',
-                      borderRadius:8, padding:'8px 12px', background:'transparent', color:'var(--text-2)',
-                      cursor:'pointer', fontSize:12.5, fontWeight:700 }}>
-                    <Plus style={{ width:14, height:14 }} /> إضافة شرط آخر
-                  </button>
-                  <Field label="قيمة الجزاء عند تحقق الشرط" hint="عدد الوحدات/الساعات التي تُخصم.">
-                    <div style={{ display:'flex', gap:8 }}>
-                      <input type="number" step="any" className="input" style={{ flex:1, fontFamily:'Consolas' }}
-                        value={form.value} onChange={e => set('value', e.target.value)} placeholder="1" />
-                      <input className="input" style={{ width:120 }} value={form.unit}
-                        onChange={e => set('unit', e.target.value)} placeholder="وحدة / ساعة" />
-                    </div>
-                  </Field>
-                </Card>
-              )}
             </>
           )}
 

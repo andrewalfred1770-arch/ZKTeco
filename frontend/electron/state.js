@@ -15,4 +15,9 @@ export const state = {
   // modes takes effect on next launch, same as Update Center settings.
   connectionMode: 'local',
   backendBaseUrl: null,
+  // EP-010.1: set when the backend's stdout emits the Database Setup
+  // Wizard's restart marker — tells the exit handler in backend.js to
+  // restart despite a clean (code 0, SIGTERM) exit, which otherwise looks
+  // identical to a real app-quit and is deliberately never auto-restarted.
+  pendingConfigRestart: false,
 };

@@ -57,6 +57,29 @@ const io = new Server(server, {
   pingTimeout: 60000,
 });
 
+// EP-011: Socket.IO connections bypass Express middleware entirely, so
+// AUTH_ENABLED must be enforced separately here — mirrors
+// middleware/auth.js's authenticate() exactly (same JWT_SECRET, same
+// Bearer-style token, same no-op when AUTH_ENABLED=false). A Manager Client
+// sends its token via the `auth` option on the client socket
+// (frontend/src/lib/socket.js); Local Mode's desktop socket connections never
+// set one and are unaffected while AUTH_ENABLED stays false (the default).
+{
+  const jwt = require('jsonwebtoken');
+  const { AUTH_ENABLED, JWT_SECRET } = require('./middleware/auth');
+  io.use((socket, next) => {
+    if (!AUTH_ENABLED) return next();
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error('غير مصرح — يجب تسجيل الدخول أولاً'));
+    try {
+      socket.user = jwt.verify(token, JWT_SECRET);
+      next();
+    } catch {
+      next(new Error('token غير صالح'));
+    }
+  });
+}
+
 // ─── Security ─────────────────────────────────────────────────────────────────
 app.use(require('./middleware/securityHeaders'));
 
@@ -85,25 +108,35 @@ app.use('/api/dashboard',   require('./routes/dashboard'));
 app.use('/api/settings/company', require('./routes/settings-company'));
 app.use('/api/audit-logs',      require('./routes/audit'));
 app.use('/api/auth',            require('./routes/auth'));
+app.use('/api/setup',           require('./routes/setup'));
 
 // Serve uploaded company branding assets (logo/login background/stamp/print header)
-app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
+// EP-010: served from the persistent config dir (same location companySettingsStore.js
+// writes to) — falls back to the pre-EP-010 backend-relative path when CONFIG_DIR
+// is unset (Server Mode/dev).
+const { getConfigDir } = require('./utils/configDir');
+app.use('/uploads', express.static(path.join(getConfigDir(), 'uploads')));
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 // Reuses the shared Prisma singleton — the previous implementation created and
 // discarded a full PrismaClient (its own pool) on EVERY call, and Electron
 // polls this endpoint every 300ms during startup.
-const { checkDbConnection } = require('./utils/prisma');
+const { checkDbConnection, getLastDbErrorReason } = require('./utils/prisma');
 app.get('/api/health', async (_req, res) => {
   const ok = await checkDbConnection();
-  res.status(ok ? 200 : 503)
-     .json({
-       status: ok ? 'ok' : 'starting',
-       db: ok ? 'connected' : 'disconnected',
-       timestamp: new Date(),
-       version: APP_VERSION,      // product release version (informational)
-       apiVersion: API_VERSION,   // contract version — used by clients for compatibility checks
-     });
+  const body = {
+    status: ok ? 'ok' : 'starting',
+    db: ok ? 'connected' : 'disconnected',
+    timestamp: new Date(),
+    version: APP_VERSION,      // product release version (informational)
+    apiVersion: API_VERSION,   // contract version — used by clients for compatibility checks
+  };
+  // Additive only — never sent when connected. A fixed, safe category (never
+  // the raw error/connection string) so "db:disconnected" is diagnosable
+  // from the API response alone: 'auth-failed' | 'unreachable' |
+  // 'database-missing' | 'unknown'.
+  if (!ok) body.dbError = getLastDbErrorReason();
+  res.status(ok ? 200 : 503).json(body);
 });
 
 // ─── Startup status (for Electron's functional splash) ───────────────────────
@@ -278,4 +311,10 @@ if (process.stdin && !process.stdin.destroyed) {
   } catch { /* stdin unavailable (detached) — signals still work */ }
 }
 
-module.exports = { app, io };
+// `shutdown` is exported so routes/setup.js (EP-010.1 Database Setup Wizard)
+// can trigger the exact same graceful teardown after writing a new .env,
+// without relying on cross-process signals — process.kill(pid,'SIGTERM')
+// to self was verified NOT to reliably fire the SIGTERM handler on Windows
+// (consistent with the stdin-shutdown workaround above), so calling this
+// function directly is the only dependable way to self-restart.
+module.exports = { app, io, shutdown };

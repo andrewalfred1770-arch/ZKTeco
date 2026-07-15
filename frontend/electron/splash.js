@@ -57,14 +57,22 @@ export function notifyRenderer(state) {
 // snapshot doesn't exist yet (fresh install before the seed/first save runs).
 function readCompanySplashBrand() {
   try {
-    const cacheFile = join(getPaths().backendCwd, 'uploads', 'company', 'cache.json');
+    // EP-010: uploads now live in the persistent config dir (configDir),
+    // not resources/backend — falls back to the old backendCwd-relative
+    // location in dev mode, where configDir is null and uploads still sit
+    // in the source tree.
+    const paths = getPaths();
+    const uploadsRoot = paths.configDir
+      ? join(paths.configDir, 'uploads')
+      : join(paths.backendCwd, 'uploads');
+    const cacheFile = join(uploadsRoot, 'company', 'cache.json');
     if (!existsSync(cacheFile)) return null;
     const map = JSON.parse(readFileSync(cacheFile, 'utf8'));
     const name = (map.company_name_ar || '').trim();
     const logoPath = (map.logo_url || '').trim();
     let logoFileUrl = null;
     if (logoPath) {
-      const logoFile = join(getPaths().backendCwd, 'uploads', 'company', logoPath.replace(/^\/?uploads\/company\//, ''));
+      const logoFile = join(uploadsRoot, 'company', logoPath.replace(/^\/?uploads\/company\//, ''));
       if (existsSync(logoFile)) logoFileUrl = `file:///${logoFile.replace(/\\/g, '/')}`;
     }
     return { name: name || null, logoFileUrl };

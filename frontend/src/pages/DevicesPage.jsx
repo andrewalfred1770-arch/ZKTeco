@@ -1149,16 +1149,24 @@ export default function DevicesPage() {
       cellStyle: { fontWeight: 700, color: 'var(--c-name)', fontFamily: 'Cairo, sans-serif' },
     },
     {
+      // EP-014: reads live state from AG Grid's `context` prop (updated via
+      // refreshCells() in the effect below) instead of closing over
+      // liveStatus/realtimeStatus/realtimeDetail directly — keeps this
+      // column's definition (and every other column's) stable across the
+      // continuous stream of device:realtime-status pushes, instead of
+      // rebuilding all 11 column defs + cell renderer closures on every one.
       headerName: 'الحالة', width: 115, headerClass: 'ag-header-center',
-      cellRenderer: ({ data }) => {
-        const status = liveStatus[data.id] || data.status || 'offline';
+      cellRenderer: ({ data, context }) => {
+        const status = context.liveStatus[data.id] || data.status || 'offline';
         return <StatusBadge status={status} />;
       },
       cellStyle: { justifyContent: 'center' },
     },
     {
       headerName: 'البث المباشر', width: 130, headerClass: 'ag-header-center',
-      cellRenderer: ({ data }) => <RealtimeBadge status={realtimeStatus[data.id]} detail={realtimeDetail[data.id]} />,
+      cellRenderer: ({ data, context }) => (
+        <RealtimeBadge status={context.realtimeStatus[data.id]} detail={context.realtimeDetail[data.id]} />
+      ),
       cellStyle: { justifyContent: 'center' },
     },
     {
@@ -1206,12 +1214,12 @@ export default function DevicesPage() {
     {
       headerName: 'إجراءات', width: 250, pinned: 'left',
       sortable: false, filter: false,
-      cellRenderer: ({ data }) => (
+      cellRenderer: ({ data, context }) => (
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, height: '100%' }}>
           {/* Sync */}
           <button
             onClick={() => handleSync(data.id)}
-            disabled={syncing[data.id]}
+            disabled={context.syncing[data.id]}
             style={{
               display: 'flex', alignItems: 'center', gap: 4,
               padding: '3px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
@@ -1220,7 +1228,7 @@ export default function DevicesPage() {
               fontFamily: 'Cairo, sans-serif',
             }}
           >
-            {syncing[data.id]
+            {context.syncing[data.id]
               ? <Loader2 style={{ width: 11, height: 11, animation: 'spin 1s linear infinite' }} />
               : <Play style={{ width: 11, height: 11 }} />}
             مزامنة
@@ -1228,7 +1236,7 @@ export default function DevicesPage() {
           {/* Ping */}
           <button
             onClick={() => handlePing(data.id)}
-            disabled={pinging[data.id]}
+            disabled={context.pinging[data.id]}
             style={{
               display: 'flex', alignItems: 'center', gap: 4,
               padding: '3px 9px', borderRadius: 6, fontSize: 11, fontWeight: 600,
@@ -1237,7 +1245,7 @@ export default function DevicesPage() {
               fontFamily: 'Cairo, sans-serif',
             }}
           >
-            {pinging[data.id]
+            {context.pinging[data.id]
               ? <Loader2 style={{ width: 11, height: 11, animation: 'spin 1s linear infinite' }} />
               : <Radio style={{ width: 11, height: 11 }} />}
             اتصال
@@ -1272,8 +1280,20 @@ export default function DevicesPage() {
       ),
       cellStyle: { justifyContent: 'flex-start' },
     },
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [syncing, pinging, liveStatus, realtimeStatus, realtimeDetail]);
+  // EP-014: no longer depends on the live-state maps — they're read from AG
+  // Grid's `context` prop at render time (see cellRenderers above) and
+  // repainted via refreshCells() in the effect below, so columnDefs itself
+  // never needs to change after mount.
+  ], []);
+
+  // EP-014: single centralized repaint trigger for every live-state setter
+  // above (setLiveStatus/setRealtimeStatus/setRealtimeDetail/setSyncing/
+  // setPinging) — cells read the current context value directly, so a
+  // targeted refreshCells() (not a columnDefs rebuild, not a rowData
+  // replace) is all that's needed to reflect the change on screen.
+  useEffect(() => {
+    gridRef.current?.api?.refreshCells({ force: true });
+  }, [liveStatus, realtimeStatus, realtimeDetail, syncing, pinging]);
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
 
@@ -1426,6 +1446,7 @@ export default function DevicesPage() {
             rowData={devices}
             columnDefs={cols}
             defaultColDef={defaultColDef}
+            context={{ liveStatus, realtimeStatus, realtimeDetail, syncing, pinging }}
             {...ENTERPRISE_GRID_PROPS}
             getRowClass={getRowClass}
             enableRtl={true}

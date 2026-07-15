@@ -1,0 +1,91 @@
+{
+  "appId": "com.petshrow.erp.manager",
+  "productName": "PETSHROW ERP Manager",
+  "copyright": "© 2026 PETSHROW ERP",
+  "asar": true,
+  "asarUnpack": ["assets/**"],
+  "compression": "normal",
+
+  "extraMetadata": {
+    "name": "petshrow-erp-manager"
+  },
+
+  "win": {
+    "target": [
+      { "target": "nsis", "arch": ["x64"] },
+      { "target": "portable", "arch": ["x64"] },
+      { "target": "dir", "arch": ["x64"] }
+    ],
+    "icon": "assets/icon.ico",
+    "extraResources": [
+      {
+        "from": "dist",
+        "to": "frontend/dist",
+        "filter": ["**/*"]
+      }
+    ]
+  },
+
+  "mac": {
+    "target": [
+      { "target": "dmg", "arch": ["x64", "arm64"] },
+      { "target": "zip", "arch": ["x64", "arm64"] }
+    ],
+    "icon": "assets/icon.png",
+    "category": "public.app-category.business",
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "extraResources": [
+      {
+        "from": "dist",
+        "to": "frontend/dist",
+        "filter": ["**/*"]
+      }
+    ]
+  },
+
+  "dmg": {
+    "artifactName": "${productName}-${version}-${arch}.${ext}"
+  },
+
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "PETSHROW ERP Manager",
+    "installerIcon": "assets/icon.ico",
+    "uninstallerIcon": "assets/icon.ico",
+    "installerHeaderIcon": "assets/icon.ico",
+    "deleteAppDataOnUninstall": false,
+    "artifactName": "${productName}-${version}-Setup.${ext}"
+  },
+
+  "portable": {
+    "artifactName": "${productName}-${version}-Portable.${ext}"
+  },
+
+  "files": [
+    "electron.js",
+    "electron/**/*",
+    "preload.cjs",
+    "splashPreload.cjs",
+    "assets/**/*",
+    "!assets/*.psd",
+    "!**/*.map"
+  ],
+
+  "directories": {
+    "buildResources": "assets",
+    "output": "../dist-electron-manager"
+  },
+
+  "publish": [
+    {
+      "provider": "generic",
+      "url": "https://updates.petshrow.local/erp-manager/",
+      "channel": "latest"
+    }
+  ]
+}

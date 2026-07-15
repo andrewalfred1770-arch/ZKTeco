@@ -28,6 +28,12 @@ contextBridge.exposeInMainWorld('electron', {
     setSettings: (patch) => ipcRenderer.invoke('connection:set-settings', patch),
     test:        (candidate) => ipcRenderer.invoke('connection:test', candidate),
   },
+  // Session persistence (EP-011 Manager Edition auth) — encrypted JWT storage.
+  session: {
+    save:  (token) => ipcRenderer.invoke('session:save', token),
+    load:  () => ipcRenderer.invoke('session:load'),
+    clear: () => ipcRenderer.invoke('session:clear'),
+  },
   // Export an HTML document to PDF via Chromium's print engine (real Arabic shaping)
   exportPDF:   (payload) => ipcRenderer.invoke('pdf:export', payload),
   // Send HTML to the native Windows printer dialog (bypasses window.open() which is blocked)

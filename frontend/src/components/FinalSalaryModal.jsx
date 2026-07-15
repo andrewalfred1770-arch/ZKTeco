@@ -148,14 +148,14 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
   const r0 = (n) => Math.round(Number(n) || 0);
   const rowDedTotal = (row) => (
     r0(row?.deductions?.absentAmount) + r0(row?.deductions?.lateAmount) + r0(row?.deductions?.earlyAmount)
-    + r0(row?.deductions?.conditionPenalty) + r0(row?.deductions?.manualDeductionAdjustment)
+    + r0(row?.deductions?.manualDeductionAdjustment)
   );
   // EF-019.1: "صافي الراتب" is the ONE shared displayNetSalary() helper
   // applied to this row's own canonical `netSalary` field — not re-derived
   // from components (that was the proven root cause of cross-system ±1
   // divergence between this export and the Payroll Grid/Salary Card).
   const rowNet = (row) => displayNetSalary(row?.netSalary);
-  const exportExcel = () => {
+  const exportExcel = async () => {
     const sheets = bulk ? bulkData : (data ? [data] : []);
     if (!sheets.length) { toast.error('لا توجد بيانات للتصدير'); return; }
     const cols = [
@@ -171,13 +171,12 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
       { header:'خصم الغياب',     key:'deductions.absentAmount', format:v=>fmtMoney(v), total:'sum' },
       { header:'خصم التأخير',    key:'deductions.lateAmount',  format:v=>fmtMoney(v), total:'sum' },
       { header:'خصم الانصراف المبكر', key:'deductions.earlyAmount', format:v=>fmtMoney(v), total:'sum' },
-      { header:'خصم شرطي',       key:'deductions.conditionPenalty', format:v=>fmtMoney(v), total:'sum' },
       { header:'السلف',           key:'deductions.advances',                format:v=>fmtMoney(v), total:'sum' },
       { header:'خصم إداري',      key:'deductions.manualDeductionAdjustment', format:v=>fmtMoney(v), total:'sum' },
       { header:'إجمالي الخصومات', key:'deductions.total', format:(v,row)=>fmtMoney(row?.__total ? v : rowDedTotal(row)), total:(rows)=>rows.reduce((s,r)=>s+rowDedTotal(r),0) },
       { header:'صافي الراتب',    key:'netSalary', format:(v,row)=>fmtMoney(row?.__total ? v : rowNet(row)), total:(rows)=>rows.reduce((s,r)=>s+rowNet(r),0) },
     ];
-    exportToExcel(sheets, cols, `كشف_رواتب_${monthLabel}_${year}`, 'كشف الرواتب', {
+    await exportToExcel(sheets, cols, `كشف_رواتب_${monthLabel}_${year}`, 'كشف الرواتب', {
       title: `كشف رواتب ${monthLabel} ${year}`, period: `${monthLabel} ${year}`, brand,
     });
     toast.success('تم تصدير ملف Excel');

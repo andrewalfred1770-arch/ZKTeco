@@ -6,15 +6,15 @@
  */
 const fs = require('fs');
 const path = require('path');
-
-const BACKEND_ROOT = path.join(__dirname, '..', '..');
+const { getConfigDir } = require('../utils/configDir');
 
 const REQUIRED_FOLDERS = ['uploads', 'logs', 'backups', 'exports', 'temp'];
 
 function ensureFolders() {
   const created = [];
+  const root = getConfigDir();
   for (const name of REQUIRED_FOLDERS) {
-    const dir = path.join(BACKEND_ROOT, name);
+    const dir = path.join(root, name);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
       created.push(name);

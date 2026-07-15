@@ -58,14 +58,6 @@ const RULES = [
   ['annual_leave_days', 'رصيد الإجازة السنوية', 'leaves', 'number', '21', 'يوم', 20, 'all', '⚠️ غير مفعّلة بعد — تحتاج نظام إجازات (لا يوجد جدول إجازات في قاعدة البيانات حاليًا). القيمة محفوظة كإعداد فقط ولا تؤثر على أي حساب.'],
   ['sick_leave_days',   'رصيد الإجازة المرضية', 'leaves', 'number', '15', 'يوم', 20, 'all', '⚠️ غير مفعّلة بعد — تحتاج نظام إجازات (لا يوجد جدول إجازات في قاعدة البيانات حاليًا). القيمة محفوظة كإعداد فقط ولا تؤثر على أي حساب.'],
 
-  // ── Penalties (condition-based examples) ─────────────────────────────────────
-  ['penalty_excessive_late', 'جزاء التأخير الزائد', 'penalties', 'condition', '1', 'وحدة', 30, 'all',
-    'تطبيق جزاء عند تجاوز حد التأخير', JSON.stringify({ field: 'lateMinutes', op: '>', value: 30 })],
-  ['penalty_excessive_absence', 'جزاء كثرة الغياب', 'penalties', 'condition', '2', 'وحدة', 30, 'all',
-    'تطبيق جزاء عند تجاوز عدد أيام الغياب', JSON.stringify({ field: 'absentDays', op: '>', value: 3 })],
-  ['penalty_friday_absence', 'جزاء غياب الجمعة', 'penalties', 'condition', '1', 'وحدة', 20, 'all',
-    'جزاء الغياب يوم الجمعة', JSON.stringify({ field: 'dayOfWeek', op: '==', value: 5 })],
-
   // ── Shifts ───────────────────────────────────────────────────────────────────
   ['night_shift_start', 'بداية الوردية الليلية', 'shifts', 'time',       '22:00', '', 20, 'all', 'وقت بداية الوردية الليلية'],
   ['night_shift_bonus', 'بدل الوردية الليلية',   'shifts', 'percentage', '10',    '%', 20, 'all', 'نسبة بدل العمل في الوردية الليلية'],

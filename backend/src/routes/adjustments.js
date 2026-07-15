@@ -26,7 +26,7 @@ const prisma = getPrisma();
 // supplied (null/undefined = "no override", unchanged, still valid).
 const NUMERIC_ADJ_FIELDS = [
   'adjWorkedMinutes', 'adjLateMinutes', 'adjOvertimeHours', 'adjMorningOT', 'adjEveningOT',
-  'adjLatePenalty', 'adjEarlyPenalty', 'adjConditionUnits', 'adjTotalDeductions',
+  'adjLatePenalty', 'adjEarlyPenalty', 'adjTotalDeductions',
 ];
 function validateAdjustmentNumbers(body) {
   for (const key of NUMERIC_ADJ_FIELDS) {
@@ -98,7 +98,6 @@ function mergeEffective(daily, adj) {
     // canonical effective* fields onto those names so callers are unaffected.
     latePenaltyUnits:    merged.effectiveLatePenalty,
     earlyCheckoutUnits:  merged.effectiveEarlyPenalty,
-    conditionDeductionUnits: merged.effectiveConditionUnits,
     totalDeductionUnits: merged.effectiveTotalDeductionUnits,
     hasAdjustment:        true,
     adjustmentStatus:     adj.approvalStatus,
@@ -215,7 +214,6 @@ router.get('/daily', async (req, res) => {
         origEveningOT:    daily.eveningOvertimeHours,
         origLatePenalty:  daily.latePenaltyUnits,
         origEarlyPenalty: daily.earlyCheckoutUnits,
-        origConditionUnits: daily.conditionDeductionUnits,
         origDeductions:   daily.totalDeductionUnits,
         origStatus:       daily.status,
         origIsAbsent:     daily.isAbsent,
@@ -227,7 +225,6 @@ router.get('/daily', async (req, res) => {
         otHours:          effective.overtimeHours,
         latePenalty:      effective.latePenaltyUnits,
         earlyPenalty:     effective.earlyCheckoutUnits,
-        conditionUnits:   effective.conditionDeductionUnits,
         totalDeductions:  effective.totalDeductionUnits,
         status:           effective.status,
         isAbsent:         effective.isAbsent,
@@ -283,9 +280,9 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
       attendanceDailyId, reason, hrComment,
       adjCheckIn, adjCheckOut, adjWorkedMinutes, adjLateMinutes,
       adjOvertimeHours, adjMorningOT, adjEveningOT,
-      adjLatePenalty, adjEarlyPenalty, adjConditionUnits, adjTotalDeductions,
+      adjLatePenalty, adjEarlyPenalty, adjTotalDeductions,
       adjStatus, adjIsAbsent,
-      ignoreLate, ignoreEarlyLeave, ignoreConditionUnits, forcePresent,
+      ignoreLate, ignoreEarlyLeave, forcePresent,
       createdBy = 0, createdByName = 'HR', createdByRole = 'hr',
     } = req.body;
 
@@ -338,14 +335,12 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
         adjEveningOT:     adjEveningOT     != null ? parseFloat(adjEveningOT)     : null,
         adjLatePenalty:   adjLatePenalty   != null ? parseFloat(adjLatePenalty)   : null,
         adjEarlyPenalty:  adjEarlyPenalty  != null ? parseFloat(adjEarlyPenalty)  : null,
-        adjConditionUnits: adjConditionUnits != null ? parseFloat(adjConditionUnits) : null,
         adjTotalDeductions: adjTotalDeductions != null ? parseFloat(adjTotalDeductions) : null,
         adjStatus, adjIsAbsent,
         // Flags
-        ignoreLate:           !!ignoreLate,
-        ignoreEarlyLeave:     !!ignoreEarlyLeave,
-        ignoreConditionUnits: !!ignoreConditionUnits,
-        forcePresent:         !!forcePresent,
+        ignoreLate:       !!ignoreLate,
+        ignoreEarlyLeave: !!ignoreEarlyLeave,
+        forcePresent:     !!forcePresent,
         // Workflow
         reason, hrComment,
         approvalStatus: 'pending',
@@ -378,9 +373,9 @@ router.put('/:id', authorize('admin', 'hr'), async (req, res) => {
       reason, hrComment,
       adjCheckIn, adjCheckOut, adjWorkedMinutes, adjLateMinutes,
       adjOvertimeHours, adjMorningOT, adjEveningOT,
-      adjLatePenalty, adjEarlyPenalty, adjConditionUnits, adjTotalDeductions,
+      adjLatePenalty, adjEarlyPenalty, adjTotalDeductions,
       adjStatus, adjIsAbsent,
-      ignoreLate, ignoreEarlyLeave, ignoreConditionUnits, forcePresent,
+      ignoreLate, ignoreEarlyLeave, forcePresent,
       changedBy = 0, changedByName = 'HR', changedByRole = 'hr',
     } = req.body;
 
@@ -404,14 +399,12 @@ router.put('/:id', authorize('admin', 'hr'), async (req, res) => {
         adjEveningOT:     adjEveningOT     != null ? parseFloat(adjEveningOT)     : undefined,
         adjLatePenalty:   adjLatePenalty   != null ? parseFloat(adjLatePenalty)   : undefined,
         adjEarlyPenalty:  adjEarlyPenalty  != null ? parseFloat(adjEarlyPenalty)  : undefined,
-        adjConditionUnits: adjConditionUnits != null ? parseFloat(adjConditionUnits) : undefined,
         adjTotalDeductions: adjTotalDeductions != null ? parseFloat(adjTotalDeductions) : undefined,
         adjStatus: adjStatus ?? undefined,
         adjIsAbsent: adjIsAbsent ?? undefined,
-        ignoreLate:           ignoreLate           !== undefined ? !!ignoreLate           : undefined,
-        ignoreEarlyLeave:     ignoreEarlyLeave     !== undefined ? !!ignoreEarlyLeave     : undefined,
-        ignoreConditionUnits: ignoreConditionUnits !== undefined ? !!ignoreConditionUnits : undefined,
-        forcePresent:         forcePresent         !== undefined ? !!forcePresent         : undefined,
+        ignoreLate:       ignoreLate       !== undefined ? !!ignoreLate       : undefined,
+        ignoreEarlyLeave: ignoreEarlyLeave !== undefined ? !!ignoreEarlyLeave : undefined,
+        forcePresent:     forcePresent     !== undefined ? !!forcePresent     : undefined,
         approvalStatus: 'pending', // reset to pending on edit
         updatedAt: new Date(),
       },
@@ -507,7 +500,7 @@ router.post('/:id/flag', authorize('admin', 'hr'), async (req, res) => {
     const id = parseInt(req.params.id);
     const { flag, value, userId = 0, userName = 'HR' } = req.body;
 
-    const validFlags = ['ignoreLate', 'ignoreEarlyLeave', 'ignoreConditionUnits', 'forcePresent'];
+    const validFlags = ['ignoreLate', 'ignoreEarlyLeave', 'forcePresent'];
     if (!validFlags.includes(flag)) return res.status(400).json({ error: 'Invalid flag' });
 
     const existing = await prisma.attendanceAdjustment.findUnique({ where: { id } });

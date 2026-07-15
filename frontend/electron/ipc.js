@@ -1,5 +1,5 @@
-import { app, ipcMain, dialog, shell, contentTracing, BrowserWindow } from 'electron';
-import { existsSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
+import { app, ipcMain, dialog, shell, contentTracing, BrowserWindow, safeStorage } from 'electron';
+import { existsSync, writeFileSync, unlinkSync, mkdirSync, readFileSync } from 'fs';
 import os from 'os';
 import { join } from 'path';
 import { io as socketIOClient } from 'socket.io-client';
@@ -38,6 +38,54 @@ ipcMain.handle('connection:set-settings', (_e, patch) => writeConnectionSettings
 // need to change their "read once at import time" pattern.
 ipcMain.on('connection:get-effective-base-url-sync', (e) => {
   e.returnValue = state.backendBaseUrl || getEffectiveBackendBaseUrl();
+});
+
+// ─── Session persistence (EP-011 Manager Edition auth) ───────────────────────
+// Persists the JWT issued by POST /api/auth/login so a Manager Client doesn't
+// force a fresh login on every launch. Encrypted at rest via Electron's
+// safeStorage (OS credential vault — DPAPI on Windows, Keychain on macOS),
+// stored next to connection-settings.json under the same persistent config
+// directory. Never falls back to plaintext: if safeStorage isn't available on
+// this OS/config, session:save silently no-ops and the renderer just prompts
+// for login again on the next launch — no on-disk token in that case at all.
+function sessionFile() {
+  const dir = join(app.getPath('userData'), 'config');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return join(dir, 'session.enc');
+}
+
+ipcMain.handle('session:save', (_e, token) => {
+  if (!token || !safeStorage.isEncryptionAvailable()) return { ok: false };
+  try {
+    writeFileSync(sessionFile(), safeStorage.encryptString(token));
+    return { ok: true };
+  } catch (err) {
+    console.warn('[Session] save failed:', err.message);
+    return { ok: false };
+  }
+});
+
+ipcMain.handle('session:load', () => {
+  try {
+    const p = sessionFile();
+    if (!existsSync(p) || !safeStorage.isEncryptionAvailable()) return { token: null };
+    const token = safeStorage.decryptString(readFileSync(p));
+    return { token: token || null };
+  } catch (err) {
+    console.warn('[Session] load failed:', err.message);
+    return { token: null };
+  }
+});
+
+ipcMain.handle('session:clear', () => {
+  try {
+    const p = sessionFile();
+    if (existsSync(p)) unlinkSync(p);
+    return { ok: true };
+  } catch (err) {
+    console.warn('[Session] clear failed:', err.message);
+    return { ok: false };
+  }
 });
 
 function testSocketReachable(baseUrl, timeoutMs = 3000) {

@@ -22,6 +22,13 @@
       "runtimeArgs": ["src/index.js"],
       "port": 5000,
       "cwd": "C:\\Users\\Admin\\Desktop\\ZKTeco\\backend"
+    },
+    {
+      "name": "frontend-manager",
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
+      "runtimeArgs": ["node_modules/vite/bin/vite.js", "--mode", "manager", "--port", "3003", "--strictPort"],
+      "port": 3003,
+      "cwd": "C:\\Users\\Admin\\Desktop\\ZKTeco\\frontend"
     }
   ]
 }

@@ -202,12 +202,11 @@ model AttendanceDaily {
   eveningOvertimeHours Float     @default(0)
   latePenaltyUnits     Float     @default(0)
   earlyCheckoutUnits   Float     @default(0)
-  // Day-scoped condition-rule result (e.g. penalty_excessive_late, penalty_friday_absence),
-  // evaluated ONCE here by attendanceEngine.computeDerivedFields — the only place
-  // day-scoped condition rules are ever evaluated. Folded into effectiveTotalDeductionUnits
-  // via mergeEffectivePenalty(), exactly like latePenaltyUnits/earlyCheckoutUnits.
+  // DEPRECATED (EP-012) — Conditional Deduction feature removed permanently.
+  // Column retained only for historical rows; never written or read by app
+  // code after this change.
   conditionDeductionUnits Float  @default(0)
-  totalDeductionUnits  Float     @default(0)   // latePenalty + earlyCheckout + conditionDeductionUnits
+  totalDeductionUnits  Float     @default(0)   // latePenalty + earlyCheckout
   // Graduated overtime-rule result (PenaltyRule type='overtime'), in bonus units.
   // null = no overtime rules configured for this policy — effective overtime
   // falls back to overtimeHours (1 unit = 1 hour, unchanged legacy behavior).
@@ -215,6 +214,9 @@ model AttendanceDaily {
   // Manual Penalty Override — highest-precedence overlay (HR direct edit)
   manualLatePenaltyUnits   Float?
   manualEarlyPenaltyUnits  Float?
+  // DEPRECATED (EP-012) — Conditional Deduction feature removed permanently.
+  // Column retained only for historical rows; never written or read by app
+  // code after this change.
   manualConditionUnits     Float?
   manualOvertimeUnits      Float?
   manualPenaltyReason      String?   @db.Text
@@ -278,6 +280,9 @@ model AttendanceAdjustment {
   adjEveningOT        Float?
   adjLatePenalty      Float?
   adjEarlyPenalty     Float?
+  // DEPRECATED (EP-012) — Conditional Deduction feature removed permanently.
+  // Column retained only for historical rows; never written or read by app
+  // code after this change.
   adjConditionUnits   Float?
   adjTotalDeductions  Float?
   adjStatus           String?
@@ -286,7 +291,10 @@ model AttendanceAdjustment {
   // ── Quick-action flags ─────────────────────────────────────────────────────
   ignoreLate          Boolean  @default(false)  // zero out late penalty
   ignoreEarlyLeave    Boolean  @default(false)  // zero out early checkout penalty
-  ignoreConditionUnits Boolean @default(false)  // zero out day-scoped condition-rule penalty
+  // DEPRECATED (EP-012) — Conditional Deduction feature removed permanently.
+  // Column retained only for historical rows; never written or read by app
+  // code after this change.
+  ignoreConditionUnits Boolean @default(false)
   forcePresent        Boolean  @default(false)  // mark absent as present
 
   // ── Workflow ───────────────────────────────────────────────────────────────
@@ -377,7 +385,8 @@ model AttendanceRule {
 
 // ─── Dynamic Rules Engine ──────────────────────────────────────────────────────
 /// Database-driven business rules created/managed from the Rules page.
-/// type    = number | percentage | boolean | time | text | formula | condition
+/// type    = number | percentage | boolean | time | text | formula
+/// ('condition' removed permanently in EP-012 — no longer a valid value for new/edited rules)
 /// value   = stored as String; `type` tells consumers how to coerce it
 /// category= attendance | overtime | deductions | payroll | leaves | penalties | shifts | holidays
 model Rule {
@@ -469,15 +478,13 @@ model Payroll {
   overtimeHours       Float     @default(0)
   overtimeAmount      Float     @default(0)
   // penaltyUnits/penaltyAmount = the FULL "ساعات الخصم" figure shown everywhere —
-  // day-scoped effective units (late+early+conditionDeductionUnits, aggregated
-  // from AttendanceDaily) PLUS conditionPenaltyUnits below. Every unit that
-  // reduces netSalary is represented in this one visible figure.
+  // day-scoped effective units (late+early, aggregated from AttendanceDaily).
+  // Every unit that reduces netSalary is represented in this one visible figure.
   penaltyUnits        Float     @default(0)
   penaltyAmount       Float     @default(0)
-  // Month-scoped condition-rule result (e.g. penalty_excessive_absence),
-  // evaluated ONCE here by payrollEngine.computePayroll — the only place
-  // month-scoped condition rules are ever evaluated. Explicit, visible line
-  // item — never silently folded into `deductions` anonymously.
+  // DEPRECATED (EP-012) — Conditional Deduction feature removed permanently.
+  // Columns retained only for historical rows; never written or read by app
+  // code after this change.
   conditionPenaltyUnits  Float   @default(0)
   conditionPenaltyAmount Float   @default(0)
   bonus               Float     @default(0)

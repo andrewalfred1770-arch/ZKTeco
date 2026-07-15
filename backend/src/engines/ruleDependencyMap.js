@@ -71,32 +71,6 @@ module.exports = {
   annual_leave_days:   entry([], []),
   sick_leave_days:     entry([], []),
 
-  // ── Penalties (condition-based, evaluated generically via evaluateConditionRules) ──
-  // Every condition rule's conditionJson carries an explicit `scope` ('day' |
-  // 'month') so the same field name (e.g. "lateMinutes") can never be
-  // reinterpreted across a day/month boundary — evaluateConditionRules(context,
-  // scope) only matches rules whose scope equals the caller's scope.
-  //
-  // scope='day'   — evaluated ONCE by attendanceEngine.computeDerivedFields,
-  //                  per day, against that day's own fields (lateMinutes =
-  //                  that day's lateness, dayOfWeek, etc). Stored on
-  //                  AttendanceDaily.conditionDeductionUnits and folded into
-  //                  effectiveTotalDeductionUnits — flows through the
-  //                  existing attendance pipeline (Daily/Monthly/Movement/
-  //                  Payroll/Reports/Dashboard/Print) automatically.
-  //   penalty_excessive_late, penalty_friday_absence
-  //
-  // scope='month' — evaluated ONCE by payrollEngine.computePayroll, per
-  //                  month, against monthly aggregates (absentDays,
-  //                  lateDays, summed lateMinutes) that have no per-day
-  //                  meaning. Stored as its own explicit, visible
-  //                  Payroll.conditionPenaltyUnits/conditionPenaltyAmount —
-  //                  never silently folded into `deductions` anonymously.
-  //   penalty_excessive_absence
-  penalty_excessive_late:    entry(['attendance', 'payroll'], [...ATTENDANCE_SCREENS, ...PAYROLL_SCREENS]),
-  penalty_excessive_absence: entry(['payroll'], PAYROLL_SCREENS),
-  penalty_friday_absence:    entry(['attendance', 'payroll'], [...ATTENDANCE_SCREENS, ...PAYROLL_SCREENS]),
-
   // ── Shifts ────────────────────────────────────────────────────────────────
   // night_shift_start/_bonus are evaluated against stored check-in times during payroll calculation
   night_shift_start:  entry(['payroll'], PAYROLL_SCREENS),

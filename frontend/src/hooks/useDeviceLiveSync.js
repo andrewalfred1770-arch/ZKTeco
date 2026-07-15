@@ -37,15 +37,61 @@ import { createGuardedReload } from './liveSyncGuard';
  *   whose `.current` is nonzero while the page has an edit/save in flight.
  *   While truthy, this hook defers the reload instead of swapping rowData
  *   mid-edit — see liveSyncGuard.js for why this exists.
+ * @param {(employeeIds: number[]) => void} [opts.reloadOne] - EP-014: optional
+ *   targeted-update callback. When provided, `attendance:processed` and
+ *   `attendance:realtime` events that name a single `employeeId` call this
+ *   instead of the full `reload()` — the page re-fetches/merges just that
+ *   employee's row (e.g. `GET /attendance/daily?...&employeeId=X`) rather
+ *   than the whole list. Events with no employeeId (the 10-min cron's
+ *   `attendance:processed`, `device:synced`, `relink:done`) always fall back
+ *   to the existing full `reload()` — unchanged. Omitting `reloadOne`
+ *   preserves today's behavior exactly (always full reload).
  */
 export function useDeviceLiveSync(reload, opts = {}) {
-  const { silent = false, isBusyRef } = opts;
+  const { silent = false, isBusyRef, reloadOne } = opts;
   const reloadRef = useRef(reload);
   reloadRef.current = reload;
+  const reloadOneRef = useRef(reloadOne);
+  reloadOneRef.current = reloadOne;
 
   useEffect(() => {
     const socket = getSocket();
     const guard = createGuardedReload(reloadRef, isBusyRef);
+
+    // EP-014: targeted per-employee path — mirrors the full-reload debounce/
+    // busy-guard above, but coalesces into a small set of employeeIds instead
+    // of one blind full reload. Purely additive; the full-reload path and its
+    // guard above are completely unchanged for every event/page that doesn't
+    // use this.
+    const pendingEmployeeIds = new Set();
+    let oneTimer = null;
+    let onePollTimer = null;
+    const fireReloadOne = () => {
+      if (isBusyRef?.current) {
+        if (!onePollTimer) {
+          onePollTimer = setInterval(() => {
+            if (!isBusyRef?.current) {
+              clearInterval(onePollTimer);
+              onePollTimer = null;
+              fireReloadOne();
+            }
+          }, 250);
+        }
+        return;
+      }
+      if (!pendingEmployeeIds.size) return;
+      const ids = [...pendingEmployeeIds];
+      pendingEmployeeIds.clear();
+      reloadOneRef.current?.(ids);
+    };
+    const requestReloadOne = (employeeId) => {
+      pendingEmployeeIds.add(employeeId);
+      if (oneTimer) clearTimeout(oneTimer);
+      oneTimer = setTimeout(() => {
+        oneTimer = null;
+        fireReloadOne();
+      }, 400);
+    };
 
     // Trailing debounce: a recovery sync emits device:synced + relink:done +
     // attendance:processed back-to-back, and a morning rush is a punch every
@@ -83,16 +129,18 @@ export function useDeviceLiveSync(reload, opts = {}) {
     // reload for external sources (scheduler, recovery sync, rules recalc)
     // that the page did not initiate.
     const INLINE_SOURCES = ['manual-edit', 'manual-penalty', 'absence-type'];
-    const onProcessed = ({ source } = {}) => {
+    const onProcessed = ({ source, employeeId } = {}) => {
       if (INLINE_SOURCES.includes(source)) return;
-      requestReload();
+      if (reloadOneRef.current && employeeId) requestReloadOne(employeeId);
+      else requestReload();
     };
 
-    const onRealtime = ({ employeeName, duplicate } = {}) => {
+    const onRealtime = ({ employeeId, employeeName, duplicate } = {}) => {
       if (!silent && employeeName && !duplicate) {
         toast.success(`📡 بصمة جديدة: ${employeeName}`, { id: `rt-${employeeName}`, duration: 2500 });
       }
-      requestReload();
+      if (reloadOneRef.current && employeeId) requestReloadOne(employeeId);
+      else requestReload();
     };
 
     socket.on('device:synced', onSynced);
@@ -106,6 +154,8 @@ export function useDeviceLiveSync(reload, opts = {}) {
       socket.off('attendance:processed', onProcessed);
       socket.off('attendance:realtime', onRealtime);
       if (reloadTimer) clearTimeout(reloadTimer);
+      if (oneTimer) clearTimeout(oneTimer);
+      if (onePollTimer) clearInterval(onePollTimer);
       guard.cleanup();
     };
   }, [silent]);

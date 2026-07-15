@@ -119,7 +119,7 @@ export function fmtMoney(n) {
  * mathematically exact and identical everywhere it's returned (Payroll API,
  * /final-sheet API); the only divergence found was screens independently
  * re-deriving a display value from separately-rounded sub-components (basic/
- * OT/deductions/advances, or an itemized late/early/absence/condition/manual
+ * OT/deductions/advances, or an itemized late/early/absence/manual
  * breakdown) — each screen picked a different set of components, so the
  * accumulated rounding remainder differed between screens by ±1 on a small
  * number of rows. The fix is not a different formula; it's rounding the

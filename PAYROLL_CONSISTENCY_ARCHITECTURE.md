@@ -59,9 +59,9 @@ Every consumer of "compute this employee's payroll for this month" should call t
 | `GET /final-sheet` | Calls `computePayroll()` directly — never persists. |
 | `POST /attendance/daily/:id/preview` | Already called `computePayroll()` directly (current vs. proposed), a pre-existing correct usage that predates this fix. |
 
-There is now exactly **one** place late/early/absence/condition/overtime/net-salary formulas exist in this codebase. `computeDeductionsBreakdown()` — the final summation step — likewise now has exactly one call site (inside `computePayroll()`).
+There is now exactly **one** place late/early/absence/overtime/net-salary formulas exist in this codebase. `computeDeductionsBreakdown()` — the final summation step — likewise now has exactly one call site (inside `computePayroll()`).
 
-**Rule for future work:** if you need "this employee's payroll for this month," call `computePayroll()` (read-only) or `calculatePayroll()` (persists). Never re-derive absent/late/early/condition/overtime money from `AttendanceDaily` anywhere else. If a new consumer needs a field `computePayroll()` doesn't currently return, add it to `computePayroll()`'s return object (it likely already computes it as a local variable) — do not recompute it independently.
+**Rule for future work:** if you need "this employee's payroll for this month," call `computePayroll()` (read-only) or `calculatePayroll()` (persists). Never re-derive absent/late/early/overtime money from `AttendanceDaily` anywhere else. If a new consumer needs a field `computePayroll()` doesn't currently return, add it to `computePayroll()`'s return object (it likely already computes it as a local variable) — do not recompute it independently.
 
 ## 6. Known Technical Debt
 

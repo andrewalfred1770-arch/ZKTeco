@@ -109,46 +109,6 @@ function isWeekend(date, weekendDays) {
   return days.includes(date.getDay());
 }
 
-// ─── Generic condition-rule evaluator ────────────────────────────────────────
-// Reads active `type: 'condition'` rules (conditionJson = {field, op, value, scope})
-// and matches them against an arbitrary `context` object. New condition rules
-// work automatically — callers just need to include the relevant field in
-// their context (e.g. { lateMinutes, absentDays, dayOfWeek }).
-//
-// `scope` is a required discriminator ('day' | 'month') that keeps the same
-// field name from ever being reinterpreted across a day/month boundary again —
-// e.g. "lateMinutes" means one day's lateness under scope='day' (evaluated
-// only by attendanceEngine, per-day) and the month's summed lateness under
-// scope='month' (evaluated only by payrollEngine, once per month). A rule
-// missing the key (legacy row, pre-scope) defaults to 'day' — today's
-// per-day rules are unaffected.
-function compareCondition(actual, op, expected) {
-  switch (op) {
-    case '>':  return actual >  expected;
-    case '>=': return actual >= expected;
-    case '<':  return actual <  expected;
-    case '<=': return actual <= expected;
-    case '==': return actual == expected;
-    case '!=': return actual != expected;
-    default:   return false;
-  }
-}
-
-async function evaluateConditionRules(context = {}, scope = 'day') {
-  const rows = await ruleStore.getConditionRules().catch(() => []);
-  const matched = [];
-  for (const row of rows) {
-    let cond;
-    try { cond = JSON.parse(row.conditionJson || '{}'); } catch { continue; }
-    if ((cond.scope || 'day') !== scope) continue;
-    if (!cond.field || !(cond.field in context)) continue;
-    if (compareCondition(context[cond.field], cond.op, cond.value)) {
-      matched.push({ key: row.key, units: parseFloat(row.value) || 0, condition: cond });
-    }
-  }
-  return matched;
-}
-
 async function isHoliday(date, branchId) {
   const src = new Date(date);
   // Holiday.date is stored at UTC midnight (date-only strings parse as UTC).
@@ -167,4 +127,4 @@ async function isHoliday(date, branchId) {
   return !!holiday;
 }
 
-module.exports = { getRules, parseTime, calcOvertimeHours, isWeekend, isHoliday, evaluateConditionRules };
+module.exports = { getRules, parseTime, calcOvertimeHours, isWeekend, isHoliday };

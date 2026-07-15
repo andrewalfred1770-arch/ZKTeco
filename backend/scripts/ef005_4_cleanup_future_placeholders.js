@@ -5,8 +5,8 @@
  * Deletes ONLY rows that are unambiguously empty placeholders:
  *   - date > today
  *   - checkIn = null, checkOut = null, workedMinutes = 0, manualEdit = false
- *   - manualLatePenaltyUnits/manualEarlyPenaltyUnits/manualConditionUnits/
- *     manualOvertimeUnits all null (no HR override ever applied)
+ *   - manualLatePenaltyUnits/manualEarlyPenaltyUnits/manualOvertimeUnits
+ *     all null (no HR override ever applied)
  *   - zero AttendanceAdjustment rows referencing it
  *   - zero ManualEditAuditLog rows referencing it (the most conservative
  *     signal — if anything was ever audited against this row, it is
@@ -57,7 +57,6 @@ async function main() {
     if (r.manualEdit) reasons.push('manualEdit=true');
     if (r.manualLatePenaltyUnits !== null) reasons.push('manualLatePenaltyUnits set');
     if (r.manualEarlyPenaltyUnits !== null) reasons.push('manualEarlyPenaltyUnits set');
-    if (r.manualConditionUnits !== null) reasons.push('manualConditionUnits set');
     if (r.manualOvertimeUnits !== null) reasons.push('manualOvertimeUnits set');
     if (adjustedIds.has(r.id)) reasons.push('has an AttendanceAdjustment');
     if (auditedIds.has(r.id)) reasons.push('has a ManualEditAuditLog entry');

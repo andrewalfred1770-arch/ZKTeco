@@ -187,9 +187,9 @@ function Card({ d, monthLabel, year }) {
   const absAmt  = r0(ded.absentAmount);
   const adv     = r0(ded.advances);
   // "خصم إداري" groups every remaining named deduction component (early-leave,
-  // condition-rule penalties, HR manual adjustment) — an explicit sum of known
-  // fields, not `total` minus what's shown elsewhere. Row display only.
-  const admDed  = r0(ded.earlyAmount) + r0(ded.conditionPenalty) + r0(ded.manualDeductionAdjustment);
+  // HR manual adjustment) — an explicit sum of known fields, not `total`
+  // minus what's shown elsewhere. Row display only.
+  const admDed  = r0(ded.earlyAmount) + r0(ded.manualDeductionAdjustment);
   // EF-019.1: "الصافي" is the ONE shared displayNetSalary() helper applied to
   // this card's own canonical `netSalary` field — not re-derived from the
   // rows above (which, notably, never included `bonus` in the old formula

@@ -202,8 +202,8 @@ function validateRuleValue(rule, value, allRules) {
       }
       return [];
     default:
-      // text / formula / condition — formula cycles and duplicate conditions
-      // are already validated separately in routes/rules.js
+      // text / formula — formula cycles are already validated separately in
+      // routes/rules.js
       return [];
   }
 }

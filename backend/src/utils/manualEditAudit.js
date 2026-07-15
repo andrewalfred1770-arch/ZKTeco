@@ -80,7 +80,7 @@ function hasVerifiedManualEdit(rec, verifiedIds, hasApprovedAdjustment) {
   if (verifiedIds.has(rec.id)) return true;
   if (hasApprovedAdjustment) return true;
   if (rec.manualLatePenaltyUnits != null || rec.manualEarlyPenaltyUnits != null
-    || rec.manualOvertimeUnits != null || rec.manualConditionUnits != null) return true;
+    || rec.manualOvertimeUnits != null) return true;
   return false;
 }
 

@@ -8,9 +8,9 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { getConfigDir } = require('../utils/configDir');
 
-const BACKEND_ROOT = path.join(__dirname, '..', '..');
-const LOG_DIR = path.join(BACKEND_ROOT, 'logs');
+const LOG_DIR = path.join(getConfigDir(), 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'first-run.log');
 
 function timestamp() {

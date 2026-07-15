@@ -1,6 +1,6 @@
 const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
-const { getRules, parseTime, isWeekend, isHoliday, evaluateConditionRules } = require('./rulesEngine');
+const { getRules, parseTime, isWeekend, isHoliday } = require('./rulesEngine');
 const {
   calcMorningOT, calcEveningOT, calcLatePenalty, calcEarlyCheckout, calcOvertimeUnits,
   timeToMinutes, hoursWithTolerance,
@@ -184,11 +184,6 @@ async function processDateImpl(date, employeeId, opts = {}) {
     : logCheckOut;
 
   if (!effCheckIn) {
-    // penalty_friday_absence (and any future dayOfWeek-based absence penalty) plugs in here.
-    // On non-working days (weekend/holiday), absence penalties never apply even for
-    // checkout-only punches — the employee is not expected to be present.
-    const absenceMatches = (weekend || holiday) ? [] : await evaluateConditionRules({ dayOfWeek }, 'day');
-    const absenceExtraUnits = absenceMatches.reduce((s, m) => s + m.units, 0);
     const isNonWorkingAbsent = weekend || holiday ? false : true;
     const absentStatus = weekend ? 'weekend' : holiday ? 'holiday' : 'absent';
     if (!manual) {
@@ -200,8 +195,7 @@ async function processDateImpl(date, employeeId, opts = {}) {
       checkOut: effCheckOut,
       isAbsent: isNonWorkingAbsent, status: manual?.status || absentStatus,
       isWeekend: weekend, isHoliday: holiday,
-      conditionDeductionUnits: absenceExtraUnits,
-      totalDeductionUnits: absenceExtraUnits,
+      totalDeductionUnits: 0,
       ...(manual ? { manualEdit: true } : {}),
     });
     if (manual) logger.info(`[MANUAL-EDIT] applied (absent): employee=${employeeId} date=${dateStr}`);
@@ -227,7 +221,6 @@ async function processDateImpl(date, employeeId, opts = {}) {
   if (weekend || holiday) {
     fields.latePenaltyUnits    = 0;
     fields.earlyCheckoutUnits  = 0;
-    fields.conditionDeductionUnits = 0;
     fields.totalDeductionUnits = 0;
     fields.lateMinutes         = 0;
     fields.earlyLeaveMinutes   = 0;
@@ -435,15 +428,7 @@ async function computeDerivedFields(employee, dateStr, { checkIn, checkOut, week
     ? calcOvertimeUnits(checkOutMin, penaltyRules)
     : null;
 
-  // penalty_excessive_late (and any future day-scoped condition rule) plugs in
-  // here — the ONLY place day-scoped condition rules are evaluated. Stored as
-  // its own field (conditionDeductionUnits) and folded into
-  // effectiveTotalDeductionUnits by mergeEffectivePenalty(), exactly like
-  // latePenaltyUnits/earlyCheckoutUnits — never re-evaluated downstream.
-  const dayMatches = await evaluateConditionRules({ lateMinutes, earlyLeaveMinutes, workedMinutes }, 'day');
-  const conditionDeductionUnits = dayMatches.reduce((s, m) => s + m.units, 0);
-
-  const totalDeductions = latePenalty + earlyPenalty + conditionDeductionUnits;
+  const totalDeductions = latePenalty + earlyPenalty;
 
   // ── Total overtime (morning + evening) ──────────────────────────────────────
   const totalOTHours = morningOT + eveningOT;
@@ -484,7 +469,6 @@ async function computeDerivedFields(employee, dateStr, { checkIn, checkOut, week
     eveningOvertimeHours: eveningOT,
     latePenaltyUnits:     latePenalty,
     earlyCheckoutUnits:   earlyPenalty,
-    conditionDeductionUnits,
     totalDeductionUnits:  totalDeductions,
     isAbsent:             manual?.status ? manual.status === 'absent' : isAbsent,
     isWeekend:            weekend,
@@ -516,7 +500,6 @@ const DAILY_RESET = {
   eveningOvertimeHours: 0,
   latePenaltyUnits: 0,
   earlyCheckoutUnits: 0,
-  conditionDeductionUnits: 0,
   totalDeductionUnits: 0,
   isAbsent: false,
   isHoliday: false,
@@ -601,15 +584,13 @@ function mergeEffectivePenalty(record) {
   if (!record) return record;
   const baseLat  = record.latePenaltyUnits        || 0;
   const baseEar  = record.earlyCheckoutUnits      || 0;
-  const baseCond = record.conditionDeductionUnits || 0;
   const baseTot  = record.totalDeductionUnits     || 0;
 
   const hasManualLate      = record.manualLatePenaltyUnits  != null;
   const hasManualEarly     = record.manualEarlyPenaltyUnits != null;
-  const hasManualCondition = record.manualConditionUnits    != null;
   const hasManualOvertime  = record.manualOvertimeUnits      != null;
 
-  // Rule A: absent records — no late/early-leave/condition deductions (only absence policy applies).
+  // Rule A: absent records — no late/early-leave deductions (only absence policy applies).
   // Rule B/C: weekend/holiday records — no attendance deductions (OT still applies).
   // Manual overrides on these statuses are intentionally ignored — the business rule is absolute.
   const isNonWorkingOrAbsent = record.isAbsent || record.isWeekend || record.isHoliday;
@@ -618,13 +599,6 @@ function mergeEffectivePenalty(record) {
     : (hasManualLate  ? record.manualLatePenaltyUnits  : baseLat);
   const effectiveEarlyPenalty = isNonWorkingOrAbsent ? 0
     : (hasManualEarly ? record.manualEarlyPenaltyUnits : baseEar);
-  // Day-scoped condition-rule units (e.g. penalty_excessive_late) — folded into
-  // the same effective pipeline as late/early so every downstream consumer
-  // (Daily/Monthly/Movement/Payroll/Reports/Dashboard/Print) that already reads
-  // effectiveTotalDeductionUnits picks this up automatically, with the same
-  // HR-override precedence as late/early.
-  const effectiveConditionUnits = isNonWorkingOrAbsent ? 0
-    : (hasManualCondition ? record.manualConditionUnits : baseCond);
 
   // Overtime: graduated PenaltyRule (type='overtime') result if configured
   // for this policy, else falls back to the raw hour-based overtimeHours.
@@ -635,21 +609,18 @@ function mergeEffectivePenalty(record) {
     ...record,
     originalLatePenaltyUnits:    baseLat,
     originalEarlyCheckoutUnits:  baseEar,
-    originalConditionUnits:      baseCond,
     originalTotalDeductionUnits: baseTot,
     originalOvertimeUnits:       baseOvertime,
     effectiveLatePenalty,
     effectiveEarlyPenalty,
-    effectiveConditionUnits,
     effectiveOvertimeUnits,
-    effectiveTotalDeductionUnits: effectiveLatePenalty + effectiveEarlyPenalty + effectiveConditionUnits,
+    effectiveTotalDeductionUnits: effectiveLatePenalty + effectiveEarlyPenalty,
     // hasManualPenalty is false for absent/weekend/holiday — the override is suppressed,
     // so the UI should not show the "manual override active" indicator for those rows.
-    hasManualPenalty:  !isNonWorkingOrAbsent && (hasManualLate || hasManualEarly || hasManualCondition),
+    hasManualPenalty:  !isNonWorkingOrAbsent && (hasManualLate || hasManualEarly),
     hasManualOvertime,
     manualLatePenaltyUnits:  record.manualLatePenaltyUnits  ?? null,
     manualEarlyPenaltyUnits: record.manualEarlyPenaltyUnits ?? null,
-    manualConditionUnits:    record.manualConditionUnits    ?? null,
     manualOvertimeUnits:     record.manualOvertimeUnits     ?? null,
     manualPenaltyReason:     record.manualPenaltyReason     ?? null,
     manualPenaltyBy:         record.manualPenaltyBy         ?? null,

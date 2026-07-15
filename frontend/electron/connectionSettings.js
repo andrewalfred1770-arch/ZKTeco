@@ -2,19 +2,29 @@ import { app } from 'electron';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { BACKEND_PORT } from './constants.js';
+import { isManager } from './edition.js';
 
 // ─── Connection Layer settings (EP-003 Hybrid Client/Server) ─────────────────
 // mode:      'local'  — Electron spawns and owns a backend process on this
-//                        machine (100% today's behavior, and the default).
+//                        machine (100% today's Server-edition behavior, and
+//                        its default).
 //            'server' — Electron does NOT spawn a backend; the frontend talks
-//                        to an existing backend reachable at serverUrl.
+//                        to an existing backend reachable at serverUrl. This
+//                        is the ONLY mode a Manager build can meaningfully
+//                        run in — Manager installs never bundle backend/, so
+//                        a 'local' default would spawn nothing and dead-end.
 // serverUrl: full base URL of the remote backend, e.g.
 //            "http://192.168.1.10:5000" or "https://erp.company.com".
 // Persisted the same way updateSettings.js persists Update Center prefs:
 // a small JSON file under userData/config, independent of the DB — it must
 // be readable before the DB/backend even exists yet.
+//
+// EP-011: default mode is edition-aware (Server keeps 'local' unchanged;
+// Manager defaults to 'server' so a first launch with no saved settings
+// still lands on the connect-to-a-server path instead of trying — and
+// failing — to spawn a backend that was never packaged).
 const DEFAULTS = {
-  mode: 'local',
+  mode: isManager ? 'server' : 'local',
   serverUrl: '',
 };
 
