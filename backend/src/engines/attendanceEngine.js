@@ -183,16 +183,18 @@ async function processDateImpl(date, employeeId, opts = {}) {
     ? manual.checkOut
     : logCheckOut;
 
-  if (!effCheckIn) {
+  // Absent ONLY when there is no punch at all (no checkIn AND no checkOut).
+  // A single punch of either kind — checkIn-only or checkOut-only — means the
+  // employee was physically present that day, so status must be 'present'
+  // (with the missing side reflected by the null checkIn/checkOut field, not
+  // by the status). See canonical business rule, EP business-rule audit.
+  if (!effCheckIn && !effCheckOut) {
     const isNonWorkingAbsent = weekend || holiday ? false : true;
     const absentStatus = weekend ? 'weekend' : holiday ? 'holiday' : 'absent';
     if (!manual) {
-      logger.info(effCheckOut
-        ? `[RULE-MATCH] employee=${employeeId} date=${dateStr} → status=${absentStatus} (checkout-only punch at ${toHHMM(effCheckOut)} recorded, no valid checkIn)`
-        : `[RULE-MATCH] employee=${employeeId} date=${dateStr} → status=${absentStatus} (no punches)`);
+      logger.info(`[RULE-MATCH] employee=${employeeId} date=${dateStr} → status=${absentStatus} (no punches)`);
     }
     await upsertDaily(employeeId, dateStr, {
-      checkOut: effCheckOut,
       isAbsent: isNonWorkingAbsent, status: manual?.status || absentStatus,
       isWeekend: weekend, isHoliday: holiday,
       totalDeductionUnits: 0,
@@ -203,6 +205,8 @@ async function processDateImpl(date, employeeId, opts = {}) {
   }
 
   // ── Extract first/last punch (or manual overrides) ──────────────────────────
+  // Either side may still be null here (checkIn-only or checkOut-only) —
+  // computeDerivedFields is null-safe for both and yields status='present'.
   const checkIn  = effCheckIn;
   const checkOut = effCheckOut;
 
@@ -343,7 +347,9 @@ async function computeDerivedFields(employee, dateStr, { checkIn, checkOut, week
 
   const checkInStr  = toHHMM(checkIn);
   const checkOutStr = toHHMM(checkOut);
-  const checkInMin  = checkIn.getHours() * 60 + checkIn.getMinutes();
+  const checkInMin  = checkIn
+    ? checkIn.getHours() * 60 + checkIn.getMinutes()
+    : null;
   const checkOutMin = checkOut
     ? checkOut.getHours() * 60 + checkOut.getMinutes()
     : null;
@@ -374,13 +380,17 @@ async function computeDerivedFields(employee, dateStr, { checkIn, checkOut, week
   const workEndMin   = timeToMinutes(policyConfig.shiftEndTime   || '17:00');
 
   // ── Shift-relative deduction fields ─────────────────────────────────────────
-  const lateMinutes = Math.max(0, checkInMin - workStartMin);
+  // No checkIn → no late calculation is possible (there is nothing to compare
+  // against work_start); lateMinutes stays 0 and status is never 'late'.
+  const lateMinutes = checkInMin !== null ? Math.max(0, checkInMin - workStartMin) : 0;
   const earlyLeaveMinutes = (checkOutMin !== null && checkOutMin < workEndMin)
     ? workEndMin - checkOutMin : 0;
   // early_leave_grace: minutes tolerated before an early checkout counts as a violation
   const earlyLeaveGraceMin = parseInt(legacyRules.early_leave_grace) || 0;
   const earlyLeaveExceedsGrace = earlyLeaveMinutes > earlyLeaveGraceMin;
-  const rawWorkedMinutes = checkOut
+  // Worked duration requires BOTH punches — a single-sided punch (missing
+  // checkIn or missing checkOut) has no measurable duration.
+  const rawWorkedMinutes = (checkIn && checkOut)
     ? Math.round((checkOut.getTime() - checkIn.getTime()) / 60000)
     : 0;
 
@@ -390,7 +400,7 @@ async function computeDerivedFields(employee, dateStr, { checkIn, checkOut, week
   const effectiveOTStart = policyConfig.shiftEndTime || legacyRules.overtime_start || '17:00';
   const eveningPolicyConfig = { ...policyConfig, shiftEndTime: effectiveOTStart };
 
-  let morningOT = calcMorningOT(checkInMin, policyConfig);
+  let morningOT = checkInMin !== null ? calcMorningOT(checkInMin, policyConfig) : 0;
   let eveningOT = checkOutMin !== null ? calcEveningOT(checkOutMin, eveningPolicyConfig) : 0;
 
   // overtime_minimum: discard overtime below the configured floor (in minutes)
@@ -413,7 +423,7 @@ async function computeDerivedFields(employee, dateStr, { checkIn, checkOut, week
   // see the certified production defect this fixed. calcLatePenalty's own
   // tier lookup is the only gate now; empty lateAbsRules falls back to
   // DEFAULT_LATE_RULES (policyEngine.js).
-  const latePenalty = calcLatePenalty(checkInMin, lateAbsRules);
+  const latePenalty = checkInMin !== null ? calcLatePenalty(checkInMin, lateAbsRules) : 0;
 
   // Early leave: tiered rule table lookup (key: early_rules).
   // Falls back to DEFAULT_EARLY_CHECKOUT_RULES when no custom rules are configured.
@@ -438,12 +448,29 @@ async function computeDerivedFields(employee, dateStr, { checkIn, checkOut, week
   // Status is now: present | late | early_leave | absent | weekend | holiday
   let status = 'present';
   let isAbsent = false;
-  if (lateMinutes > (parseInt(legacyRules.late_grace) || 0)) status = 'late';
+  if (checkInMin !== null && lateMinutes > (parseInt(legacyRules.late_grace) || 0)) status = 'late';
   if (earlyLeaveExceedsGrace && status === 'present') status = 'early_leave';
 
-  if (checkOut === null) {
+  if (checkIn === null) {
+    logger.info(`[MISSING-CHECKIN] employee=${employeeId} date=${dateStr} checkOut=${checkOutStr} present with no checkin punch — workedMinutes=0, status=${manual?.status || status}`);
+  } else if (checkOut === null) {
     logger.info(`[MISSING-CHECKOUT] employee=${employeeId} date=${dateStr} checkIn=${checkInStr} present with no checkout punch — workedMinutes=0, status=${manual?.status || status}`);
   }
+
+  // ── ABSOLUTE POLICY (no exceptions — not manual override, not legacy data,
+  // not HR judgment): a day with at least one punch (checkIn or checkOut) can
+  // NEVER be 'absent'. This is enforced here, at the single canonical
+  // computation point every write path (automatic, realtime, rebuild, manual
+  // edit) funnels through, so no current or future caller can bypass it —
+  // a `manual.status: 'absent'` override is silently ignored (falls back to
+  // the naturally-computed present/late/early_leave status) whenever a punch
+  // exists on the row. Callers that need to reject such a request outright
+  // with a clear error (rather than a silent override) validate before
+  // calling in (see routes/attendance/manual.js).
+  const hasPunch = !!(checkIn || checkOut);
+  let finalStatus = manual?.status || status;
+  if (hasPunch && finalStatus === 'absent') finalStatus = status;
+  const finalIsAbsent = hasPunch ? false : (manual?.status ? manual.status === 'absent' : isAbsent);
 
   // overtime_start / friday_ot_multiplier: Friday is a special overtime workday —
   // OT earned on Friday is paid at friday_ot_multiplier (handled in payrollEngine),
@@ -470,10 +497,10 @@ async function computeDerivedFields(employee, dateStr, { checkIn, checkOut, week
     latePenaltyUnits:     latePenalty,
     earlyCheckoutUnits:   earlyPenalty,
     totalDeductionUnits:  totalDeductions,
-    isAbsent:             manual?.status ? manual.status === 'absent' : isAbsent,
+    isAbsent:             finalIsAbsent,
     isWeekend:            weekend,
     isHoliday:            holiday,
-    status:               manual?.status || status,
+    status:               finalStatus,
   };
 }
 

@@ -139,6 +139,11 @@ router.put('/daily/:id', authorize('admin', 'hr'), async (req, res) => {
       checkOut: checkOut !== undefined ? (checkOut ? new Date(`${dateStr}T${checkOut}`) : null) : rec.checkOut,
       ...(status ? { status } : {}),
     };
+    // ABSOLUTE POLICY, no exceptions: reject outright rather than let the
+    // engine's clamp silently reinterpret it — see manual-penalty above.
+    if (manual.status === 'absent' && (manual.checkIn || manual.checkOut)) {
+      return res.status(400).json({ error: 'لا يمكن تصنيف يوم به بصمة حضور أو انصراف كـ"غائب" — الموظف حاضر ببصمة واحدة على الأقل' });
+    }
 
     await processDate(rec.date, rec.employeeId, { manual });
 
@@ -331,6 +336,14 @@ router.put('/:id/manual-penalty', authorize('admin', 'hr'), async (req, res) => 
     if (status !== undefined && !VALID_OVERRIDE_STATUSES.includes(status)) {
       return res.status(400).json({ error: `status يجب أن يكون أحد: ${VALID_OVERRIDE_STATUSES.join(', ')}` });
     }
+    // ABSOLUTE POLICY, no exceptions: a day with a checkIn or checkOut punch
+    // can never be marked 'absent' — not even by HR manual override. Reject
+    // outright with a clear error rather than silently reinterpreting it (the
+    // canonical engine also enforces this as defense-in-depth, but a rejected
+    // request here gives HR an actionable reason instead of a silent no-op).
+    if (status === 'absent' && (rec.checkIn || rec.checkOut)) {
+      return res.status(400).json({ error: 'لا يمكن تصنيف يوم به بصمة حضور أو انصراف كـ"غائب" — الموظف حاضر ببصمة واحدة على الأقل' });
+    }
 
     const changedFields = [];
     if (manualLatePenaltyUnits !== undefined && manualLatePenaltyUnits !== rec.manualLatePenaltyUnits) {
@@ -365,6 +378,14 @@ router.put('/:id/manual-penalty', authorize('admin', 'hr'), async (req, res) => 
     if (manualOvertimeUnits !== undefined)     updateData.manualOvertimeUnits    = manualOvertimeUnits;
     if (status !== undefined) {
       updateData.status = status;
+      // Keep isAbsent in lockstep with status — this endpoint used to write
+      // status alone, leaving isAbsent stale (e.g. status flipped to 'present'
+      // while isAbsent stayed true, or vice versa), which double-counted the
+      // row in payrollEngine (workDays reads status, absentDays reads isAbsent
+      // independently). Weekend/holiday overrides never count as absent.
+      if (!rec.isWeekend && !rec.isHoliday) {
+        updateData.isAbsent = status === 'absent';
+      }
       updateData.manualEdit = true;
     }
 

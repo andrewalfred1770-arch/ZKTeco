@@ -156,12 +156,31 @@ export function useAttendanceFilter() {
     if (f.monitored === 'only' && !row.isMonitored) return false;
     if (f.monitored === 'hide' &&  row.isMonitored) return false;
 
-    // ── Biometric ───────────────────────────────────────────────────────────
-    for (const bm of f.biometric) {
-      if (bm === 'missing_checkin'  && row.checkIn)                   return false;
-      if (bm === 'missing_checkout' && row.checkOut)                  return false;
-      if (bm === 'no_punches'       && (row.checkIn || row.checkOut)) return false;
-      if (bm === 'incomplete'       && row.checkIn && row.checkOut)   return false;
+    // ── Biometric / missing-punch state ─────────────────────────────────────
+    // Canonical definitions (EP-018, matching the EP-017 attendance-status
+    // rule): a bucket depends on BOTH checkIn and checkOut together, never on
+    // one field alone — otherwise a fully-absent row (neither punch) leaks
+    // into "missing checkin" and "missing checkout" simultaneously.
+    //   missing_checkin  : no checkIn  AND checkOut exists
+    //   missing_checkout : checkIn exists AND no checkOut
+    //   no_punches       : no checkIn  AND no checkOut        (= Absent)
+    //   incomplete       : missing_checkin OR missing_checkout (exactly one side present)
+    // Multiple selected biometric options are OR'd together — a row passes if
+    // it matches ANY selected bucket. This is what lets the "Incomplete
+    // Punches" quick chip combine missing_checkin + missing_checkout to mean
+    // "either side is missing"; ANDing them (the old behavior) collapsed to
+    // "both sides missing", which is just Absent again.
+    if (f.biometric.length) {
+      const hasCheckIn  = !!row.checkIn;
+      const hasCheckOut = !!row.checkOut;
+      const matchesAny = f.biometric.some((bm) => {
+        if (bm === 'missing_checkin')  return !hasCheckIn && hasCheckOut;
+        if (bm === 'missing_checkout') return hasCheckIn && !hasCheckOut;
+        if (bm === 'no_punches')       return !hasCheckIn && !hasCheckOut;
+        if (bm === 'incomplete')       return hasCheckIn !== hasCheckOut;
+        return false;
+      });
+      if (!matchesAny) return false;
     }
 
     // ── Departments ─────────────────────────────────────────────────────────

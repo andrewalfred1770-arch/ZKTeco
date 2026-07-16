@@ -129,7 +129,11 @@ export default function DashboardPage() {
   const { deptPresent, deptAbsent, deptLate, deptOT } = useMemo(() => {
     let present = 0, absent = 0, late = 0, ot = 0;
     for (const r of filteredRoster) {
-      if (!r.isAbsent && r.checkIn) present++;
+      // isAbsent is the single canonical absence flag — a checkIn-only or
+      // checkOut-only day is present, not absent, so this must not re-derive
+      // presence from checkIn alone (was silently excluding checkOut-only
+      // employees from this KPI count).
+      if (!r.isAbsent) present++;
       if (r.isAbsent || r.status === 'absent') absent++;
       if ((r.effectiveLatePenalty||0) > 0) late++;
       if ((r.effectiveOvertimeUnits||0) > 0) ot++;

@@ -120,6 +120,9 @@ export default function DataCleanupPage() {
         from: form.from, to: form.to, types: form.types,
         backupFirst, executedByName: executedByName.trim(),
         confirmCurrentPeriod, confirmFinalizedPayroll,
+        // EP-019: the backend now requires this — previously only checked
+        // client-side to enable/disable the button, never actually sent.
+        confirmText: confirmText.trim(),
       }, { timeout: 6 * 60 * 1000 });
       setResult(data);
       setStep(5);

@@ -100,6 +100,12 @@ function buildMovementDays(employee, recMap, yearStr, monthStr, totalDays) {
       penaltyDays:   rec?.penaltyDays   ?? null,
       absenceReason: rec?.absenceReason || null,
       absenceSetBy:  rec?.absenceSetBy  || null,
+      // EP-018: was missing from this row builder (unlike daily.js/monthly.js,
+      // which already stamp it) — every day-row on this page silently had
+      // isMonitored=undefined, so both the "Distinguished" filter and the
+      // name-cell highlight never matched any employee here.
+      isMonitored:   employee.isMonitored  || false,
+      monitorColor:  employee.monitorColor || null,
     });
   }
   return days;
@@ -109,8 +115,11 @@ function buildMovementDays(employee, recMap, yearStr, monthStr, totalDays) {
 // company-wide "All Employees" summary).
 function summarizeMovementDays(days, hourlyRate, multipliers, totalDays) {
   const workDays = days.filter(d => !d.isWeekend && !d.isHoliday);
-  const presentDays  = workDays.filter(d => d.checkIn && !d.isAbsent).length;
-  const absentDays   = workDays.filter(d => !d.checkIn || d.isAbsent).length;
+  // isAbsent is the single canonical absence flag (attendanceEngine) — a
+  // checkIn-only or checkOut-only day is present, not absent, so this must
+  // not re-derive absence from checkIn presence.
+  const presentDays  = workDays.filter(d => !d.isAbsent).length;
+  const absentDays   = workDays.filter(d => d.isAbsent).length;
   // Canonical: "late" is defined by the effective (post-override) penalty,
   // never by raw lateMinutes — see PART 3 (canonical penalty runtime).
   const lateDays     = days.filter(d => d.effectiveLatePenalty > 0).length;

@@ -329,6 +329,10 @@ export default function AttendanceDailyPage() {
   useKeyboardShortcut('r', () => load(true), { ctrl: true, shift: true });
 
   const handleCellEdit = async ({ data, colDef, newValue, oldValue, node }) => {
+    // A cancelled edit (Escape) also fires cellEditingStopped, with
+    // newValue === undefined (a cleared field commits '' instead) — without
+    // this guard the workedMinutes branch coerces undefined → 0 and saves it.
+    if (newValue === undefined) return;
     if (!data?.id) return;
     const field = colDef.field;
 

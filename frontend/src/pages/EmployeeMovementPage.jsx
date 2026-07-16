@@ -128,10 +128,10 @@ function normalizeDailyUpdate(updated) {
 function computeSummaryFromDays(days, prevSummary) {
   const hourlyRate = prevSummary?.hourlyRate || 0;
   const presentDays = days.filter(d =>
-    !d.isWeekend && !d.isHoliday && !d.isAbsent && d.checkIn
+    !d.isWeekend && !d.isHoliday && !d.isAbsent
   ).length;
   const absentDays = days.filter(d =>
-    !d.isWeekend && !d.isHoliday && (d.isAbsent || !d.checkIn)
+    !d.isWeekend && !d.isHoliday && d.isAbsent
   ).length;
   const totalWorkedHours = parseFloat(
     days.reduce((s, d) => s + (d.workedMinutes || 0) / 60, 0).toFixed(2)
@@ -183,7 +183,7 @@ function getEffectiveStatus(d) {
   if (!d) return null;
   if (d.isWeekend) return 'weekend';
   if (d.isHoliday) return 'holiday';
-  if (d.isAbsent || !d.checkIn) return 'absent';
+  if (d.isAbsent) return 'absent';
   return d.status || 'present';
 }
 
@@ -217,7 +217,7 @@ const StatusCell = ({ data }) => {
   if (!data) return null;
   if (data.isWeekend) return <span className="badge badge-gray">إجازة أسبوعية</span>;
   if (data.isHoliday) return <span className="badge badge-blue">عطلة رسمية</span>;
-  if (data.isAbsent || !data.checkIn) return <span className="badge badge-red">غائب</span>;
+  if (data.isAbsent) return <span className="badge badge-red">غائب</span>;
   const s = STATUS_MAP[data.status];
   if (s) return <span className={`badge ${s.cls}`}>{s.ar}</span>;
   return <span className="badge badge-gray">{data.status}</span>;
@@ -586,7 +586,7 @@ export default function EmployeeMovementPage() {
       field: 'absenceType', headerName: 'نوع الغياب', width: 140,
       valueFormatter: p => {
         if (!p.data || p.data.isWeekend || p.data.isHoliday) return '';
-        return (p.data.isAbsent || !p.data.checkIn) ? (ABSENCE_TYPE_LABELS[p.value] || '—') : '';
+        return p.data.isAbsent ? (ABSENCE_TYPE_LABELS[p.value] || '—') : '';
       },
       cellStyle: p => ({
         ...NUM, fontFamily: 'Cairo, sans-serif', fontSize: '12px',
@@ -598,7 +598,7 @@ export default function EmployeeMovementPage() {
       }),
       onCellClicked: ({ data }) => {
         if (!data?.id || data.isWeekend || data.isHoliday) return;
-        if (!data.isAbsent && data.checkIn) return;
+        if (!data.isAbsent) return;
         setAbsenceModal({
           id: data.id,
           employeeName: data.employeeName,
@@ -614,11 +614,11 @@ export default function EmployeeMovementPage() {
       field: 'penaltyDays', headerName: 'أيام الخصم', width: 100,
       valueFormatter: p => {
         if (!p.data || p.data.isWeekend || p.data.isHoliday) return '';
-        return (p.data.isAbsent || !p.data.checkIn) && p.value != null ? String(p.value) : '';
+        return p.data.isAbsent && p.value != null ? String(p.value) : '';
       },
       cellStyle: p => ({
         ...NUM, justifyContent: 'center', fontWeight: '700',
-        color: (p.data?.isAbsent || !p.data?.checkIn) ? 'var(--c-red)' : 'var(--erp-text-faint)',
+        color: p.data?.isAbsent ? 'var(--c-red)' : 'var(--erp-text-faint)',
       }),
     },
     {
@@ -642,7 +642,7 @@ export default function EmployeeMovementPage() {
     if      (data.isMonitored) classes.push('row-monitored');
     if      (data.isHoliday)   classes.push('row-holiday');
     else if (data.isWeekend)   classes.push('row-weekend');
-    else if (data.isAbsent || !data.checkIn) classes.push('row-absent');
+    else if (data.isAbsent) classes.push('row-absent');
     else if ((data.effectiveLatePenalty  || 0) > 0) classes.push('row-late');
     else if ((data.effectiveOvertimeUnits|| 0) > 0) classes.push('row-overtime');
     return classes.join(' ');
@@ -789,6 +789,10 @@ export default function EmployeeMovementPage() {
 
   // ── Cell edit handler ─────────────────────────────────────────────────────
   const handleCellEdit = useCallback(async ({ data: rowData, colDef, newValue, oldValue, node }) => {
+    // A cancelled edit (Escape) also fires cellEditingStopped, with
+    // newValue === undefined (a cleared field commits '' instead) — without
+    // this guard the workedMinutes branch coerces undefined → 0 and saves it.
+    if (newValue === undefined) return;
     if (!rowData?.id) return;
     const field = colDef.field;
 

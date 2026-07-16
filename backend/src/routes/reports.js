@@ -4,7 +4,7 @@ const moment = require('moment');
 const XLSX = require('xlsx');
 const { authenticate, authorize } = require('../middleware/auth');
 const { mergeEffectivePenalty } = require('../engines/attendanceEngine');
-const { applyApprovedAdjustment } = require('../engines/payrollEngine');
+const { applyApprovedAdjustment, computePayroll } = require('../engines/payrollEngine');
 const { monthRange } = require('../utils/monthRange');
 const prisma = getPrisma();
 router.use(authenticate);
@@ -118,24 +118,42 @@ router.get('/payroll/export', async (req, res) => {
     let filtered = payrolls;
     if (branchId) filtered = filtered.filter(p => p.employee.branchId === parseInt(branchId));
 
-    const rows = filtered.map(p => ({
-      'Employee Code': p.employee.code || '',
-      'Employee Name': p.employee.name,
-      'Department': p.employee.department?.name || '',
-      'Branch': p.employee.branch?.name || '',
-      'Work Days': p.workDays,
-      'Absent Days': p.absentDays,
-      'Basic Salary': Math.round(p.basicSalary || 0),
-      'Hourly Rate': Math.round(p.hourlyRate || 0),
-      'OT Hours': Math.round(p.overtimeHours || 0),
-      'OT Amount': Math.round(p.overtimeAmount || 0),
-      'Late Penalty': Math.round(p.latePenalty || 0),
-      'Penalty Units': p.penaltyUnits || 0,
-      'Manual Deduction': Math.round(p.manualDeductionAdjustment || 0),
-      'Deductions': Math.round(p.deductions || 0),
-      'Advances': Math.round(p.advances || 0),
-      'Net Salary': Math.round(p.netSalary || 0),
-    }));
+    // EP-022 Phase 8: this export previously read straight off the stored
+    // Payroll row — a write-time snapshot that goes stale the moment
+    // attendance changes after the last "احتساب المرتبات" run, exactly the
+    // class of bug fixed under EF-017 for GET /payroll. Overlaid fresh here
+    // for the same reason: computePayroll() is the single canonical source,
+    // so the exported Excel numbers can never diverge from the grid/print.
+    const fresh = await Promise.all(filtered.map(p => computePayroll(p.employeeId, p.month, p.year)));
+
+    // Column order mirrors the grid's canonical order (EP-022): كود، اسم
+    // الموظف، الراتب الأساسي، أجر الساعة، أيام الحضور، الغياب، ساعات
+    // الإضافي، قيمة الإضافي، ساعات الخصم، الخصومات، السلف، الخصم الإداري،
+    // صافي المرتب (13 canonical columns). Department/Branch (not grid
+    // columns) stay after identity; Late Penalty (not among the 13
+    // canonical grid columns) is appended after Net Salary rather than
+    // interleaved.
+    const rows = filtered.map((p, i) => {
+      const c = fresh[i];
+      return {
+        'Employee Code': p.employee.code || '',
+        'Employee Name': p.employee.name,
+        'Department': p.employee.department?.name || '',
+        'Branch': p.employee.branch?.name || '',
+        'Basic Salary': Math.round(c.basicSalary || 0),
+        'Hourly Rate': Math.round(c.hourlyRate || 0),
+        'Work Days': c.workDays,
+        'Absent Days': c.absentDays,
+        'OT Hours': Math.round(c.overtimeHours || 0),
+        'OT Amount': Math.round(c.overtimeAmount || 0),
+        'Penalty Units': c.penaltyUnits || 0,
+        'Deductions': Math.round(c.deductions || 0),
+        'Advances': Math.round(c.advances || 0),
+        'Manual Deduction': Math.round(c.manualDeductionAdjustment || 0),
+        'Net Salary': Math.round(c.netSalary || 0),
+        'Late Penalty': Math.round(c.latePenalty || 0),
+      };
+    });
 
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.json_to_sheet(rows);

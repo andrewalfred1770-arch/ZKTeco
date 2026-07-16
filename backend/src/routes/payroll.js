@@ -63,6 +63,11 @@ router.get('/', async (req, res) => {
         absentDays: c.absentDays,
         overtimeHours: c.overtimeHours,
         overtimeAmount: c.overtimeAmount,
+        // EP-022: ساعات الخصم — same canonical penaltyUnits figure computePayroll()
+        // already derives for the persisted Payroll row (late+early effective units).
+        // Overlaid fresh here for the same staleness reason as the other computed
+        // fields above (EF-017) — the stored row can lag behind live attendance.
+        penaltyUnits: c.penaltyUnits,
         bonus: c.bonus,
         advances: c.advances,
         manualDeductionAdjustment: c.manualDeductionAdjustment,

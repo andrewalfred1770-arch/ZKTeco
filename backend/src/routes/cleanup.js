@@ -129,6 +129,10 @@ async function analyzeImpact({ f, t, types }) {
   return {
     from: f.format('YYYY-MM-DD'), to: t.format('YYYY-MM-DD'),
     months, counts, daysAffected, employeesAffected: employeeIds.size,
+    // EP-020: expose the actual id list (not just its count) so callers can
+    // scope a post-delete recalc to exactly the employees touched, instead
+    // of recalcScope() falling back to its "every active employee" default.
+    employeeIds: Array.from(employeeIds),
     currentPeriodOverlap: overlap, finalizedPayroll, warnings,
   };
 }
@@ -213,12 +217,20 @@ router.post('/execute', authorize('admin'), async (req, res) => {
   const startedAt = Date.now();
   try {
     const {
-      from, to, types = {}, backupFirst = true, executedByName,
+      from, to, types = {}, backupFirst = true, executedByName, confirmText,
       confirmCurrentPeriod = false, confirmFinalizedPayroll = false,
     } = req.body;
 
     if (!executedByName || !String(executedByName).trim()) {
       return res.status(400).json({ error: 'اسم منفّذ العملية مطلوب لسجل التدقيق' });
+    }
+    // EP-019: the "type حذف to confirm" gate was previously UI-only — the
+    // frontend disabled its own Execute button but this endpoint never read
+    // or checked the value, so a direct API call could destroy data with no
+    // confirmation at all. Enforce it here, at the one place every caller
+    // (UI or otherwise) goes through.
+    if (String(confirmText || '').trim() !== 'حذف') {
+      return res.status(400).json({ error: 'يجب إرسال نص التأكيد "حذف" لتنفيذ عملية الحذف' });
     }
     const range = parseRange(from, to);
     if (!range) return res.status(400).json({ error: 'نطاق تاريخ غير صالح' });
@@ -330,8 +342,14 @@ router.post('/execute', authorize('admin'), async (req, res) => {
     // without regenerating left payroll aggregates referencing data that no
     // longer existed (stale derived state until someone manually recalculated).
     if (types.rawLogs || types.daily) {
+      // EP-020: scope the recalc to exactly the employees analyzeImpact()
+      // found in this range — previously omitted, so recalcScope() fell
+      // back to its "every active employee" default and regenerated
+      // placeholder AttendanceDaily/Payroll rows company-wide for every
+      // cleanup, even ones touching a single employee.
       await recalcEngine.recalcScope({
         from: f.toDate(), to: t.toDate(), io: req.io,
+        employeeIds: impact.employeeIds,
         reason: `تنظيف الحركات: إعادة احتساب بعد الحذف (${impact.from} → ${impact.to})`,
       });
       recalcTriggered = true;

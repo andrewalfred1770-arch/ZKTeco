@@ -22,8 +22,8 @@ export const BRAND = {
   module:      'الحضور والرواتب',
 
   // Meta
-  version:     '2.22.0',
-  buildMarker: 'BUILD: 2026-07-06-aggrid-callback-stability',
+  version:     '2.26.0',
+  buildMarker: 'BUILD: 2026-07-16-ep023-release-2.26.0',
   copyright:   `© ${new Date().getFullYear()} PETSHROW ERP`,
 
   // Brand colors (kept in sync with the enterprise palette in index.css)

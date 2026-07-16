@@ -382,6 +382,10 @@ export default function AttendanceMonthlyPage() {
   // AG Grid has already committed newValue to the cell when this fires.
   // We fire the API in the background and revert on error — no cell locking.
   const handleCellEdit = useCallback(async ({ data, colDef, newValue, oldValue, node }) => {
+    // A cancelled edit (Escape) also fires cellEditingStopped, with
+    // newValue === undefined (a cleared field commits '' instead) — without
+    // this guard the workedMinutes branch coerces undefined → 0 and saves it.
+    if (newValue === undefined) return;
     if (!data?.id) return;
     const field = colDef.field;
 

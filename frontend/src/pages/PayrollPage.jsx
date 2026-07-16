@@ -7,7 +7,7 @@ import toast from 'react-hot-toast';
 import api, { LONG_OP } from '../lib/api';
 import { useTheme } from '../contexts/ThemeContext';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
-import { fmtMoney, fmtIntZero, fmtOTHours, fmtEditableZero, fmtDec, displayNetSalary } from '../lib/formatters';
+import { fmtMoney, fmtIntZero, fmtOTHours, fmtPenaltyUnits, fmtEditableZero, fmtDec, displayNetSalary } from '../lib/formatters';
 import FinalSalaryModal from '../components/FinalSalaryModal';
 import PrintPreviewModal from '../components/PrintPreviewModal';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
@@ -104,17 +104,6 @@ export default function PayrollPage() {
       field: 'employee.name', headerName: 'اسم الموظف', width: 200, minWidth: 160, pinned: 'right',
       cellStyle: { display: 'flex', alignItems: 'center', fontWeight: '700', color: 'var(--c-name)', fontFamily: 'Cairo,sans-serif' },
     },
-    // ── Attendance ────────────────────────────────────────────────────────────
-    {
-      field: 'workDays', headerName: 'أيام الحضور', width: 104, minWidth: 92, headerClass: 'ag-header-center',
-      valueFormatter: p => fmtIntZero(p.value),
-      cellStyle: { ...CENTER, ...NUM, color: 'var(--c-green)' },
-    },
-    {
-      field: 'absentDays', headerName: 'الغياب', width: 90, minWidth: 82, headerClass: 'ag-header-center',
-      valueFormatter: p => fmtIntZero(p.value),
-      cellStyle: p => ({ ...CENTER, ...NUM, color: (p.value || 0) > 0 ? 'var(--c-red)' : 'var(--c-muted)' }),
-    },
     // ── Earnings — basicSalary is editable inline ─────────────────────────────
     {
       field: 'basicSalary', headerName: 'الراتب الأساسي', width: 130, minWidth: 114,
@@ -134,6 +123,17 @@ export default function PayrollPage() {
       valueFormatter: p => fmtDec(p.value, 2),
       cellStyle: { ...NUM, ...CENTER, color: 'var(--c-code)', fontSize: '11px' },
     },
+    // ── Attendance ────────────────────────────────────────────────────────────
+    {
+      field: 'workDays', headerName: 'أيام الحضور', width: 104, minWidth: 92, headerClass: 'ag-header-center',
+      valueFormatter: p => fmtIntZero(p.value),
+      cellStyle: { ...CENTER, ...NUM, color: 'var(--c-green)' },
+    },
+    {
+      field: 'absentDays', headerName: 'الغياب', width: 90, minWidth: 82, headerClass: 'ag-header-center',
+      valueFormatter: p => fmtIntZero(p.value),
+      cellStyle: p => ({ ...CENTER, ...NUM, color: (p.value || 0) > 0 ? 'var(--c-red)' : 'var(--c-muted)' }),
+    },
     {
       field: 'overtimeHours', headerName: 'ساعات الإضافي', width: 114, minWidth: 102, headerClass: 'ag-header-center',
       valueFormatter: p => (p.value || 0) > 0 ? fmtOTHours(p.value) : '—',
@@ -143,6 +143,14 @@ export default function PayrollPage() {
       field: 'overtimeAmount', headerName: 'قيمة الإضافي', width: 118, minWidth: 104, headerClass: 'ag-header-center',
       valueFormatter: p => (p.value || 0) > 0 ? fmtMoney(p.value) : '—',
       cellStyle: p => ({ ...MONEY, color: (p.value || 0) > 0 ? 'var(--c-ot)' : 'var(--c-muted)' }),
+    },
+    // ── ساعات الخصم (EP-022): canonical penaltyUnits — late + early-leave
+    // deduction hours only (payrollEngine.computePayroll's totalEffectiveDeductionUnits).
+    // Excludes السلف/خصم إداري/absence-day penalties, which are money, not hours.
+    {
+      field: 'penaltyUnits', headerName: 'ساعات الخصم', width: 114, minWidth: 102, headerClass: 'ag-header-center',
+      valueFormatter: p => fmtPenaltyUnits(p.value),
+      cellStyle: p => ({ ...NUM, ...CENTER, color: (p.value || 0) > 0 ? 'var(--c-red)' : 'var(--c-muted)' }),
     },
     // ── Deductions (total computed by engine) ─────────────────────────────────
     {
@@ -330,6 +338,7 @@ export default function PayrollPage() {
     basic:       rows.reduce((s, r) => s + (r.basicSalary                || 0), 0),
     ot:          rows.reduce((s, r) => s + (r.overtimeAmount             || 0), 0),
     deduct:      rows.reduce((s, r) => s + (r.deductions                 || 0), 0),
+    deductHours: rows.reduce((s, r) => s + (r.penaltyUnits               || 0), 0),
     advances:    rows.reduce((s, r) => s + (r.advances                   || 0), 0),
     adminDeduct: rows.reduce((s, r) => s + (r.manualDeductionAdjustment  || 0), 0),
     net:         rows.reduce((s, r) => s + (r.netSalary                  || 0), 0),
@@ -408,6 +417,7 @@ export default function PayrollPage() {
             { label: 'إجمالي الرواتب',  value: totals.basic,       cls: 'text-slate-200'  },
             { label: 'إجمالي الإضافي',  value: totals.ot,          cls: 'text-purple-400' },
             { label: 'إجمالي الخصومات', value: totals.deduct,      cls: 'text-red-400'    },
+            { label: 'إجمالي ساعات الخصم', value: totals.deductHours, cls: 'text-red-400', penaltyHours: true },
             { label: 'إجمالي السلف',    value: totals.advances,    cls: 'text-amber-400'  },
             { label: 'إجمالي خصم إداري',value: totals.adminDeduct, cls: 'text-red-400'    },
             { label: 'إجمالي صافي',      value: totals.net,         cls: 'text-blue-400'   },
@@ -415,7 +425,7 @@ export default function PayrollPage() {
             <div key={item.label} className="flex flex-col items-end">
               <span className="text-gray-500 font-sans text-xs leading-tight">{item.label}</span>
               <span className={`font-bold text-sm ${item.cls}`} style={{ direction: 'ltr' }}>
-                {fmtMoney(item.value)}
+                {item.penaltyHours ? fmtPenaltyUnits(item.value) : fmtMoney(item.value)}
               </span>
             </div>
           ))}

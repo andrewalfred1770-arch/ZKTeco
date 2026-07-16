@@ -11,7 +11,7 @@ import toast from 'react-hot-toast';
 import { useTheme } from '../contexts/ThemeContext';
 import { printHTML, exportToPDF, exportToExcel, buildReportHTML } from '../lib/printUtils';
 import { useCompanyBrand } from '../lib/branding';
-import { fmtTime, fmtMoney, fmtOTHours, fmtMinutes, fmtPenaltyUnits, fmtOvertimeUnits, fmtWorkedHours, fmtIntZero, STATUS_LABELS, displayNetSalary } from '../lib/formatters';
+import { fmtTime, fmtMoney, fmtOTHours, fmtMinutes, fmtPenaltyUnits, fmtOvertimeUnits, fmtWorkedHours, fmtIntZero, fmtDec, STATUS_LABELS, displayNetSalary } from '../lib/formatters';
 
 const STATUS_TD = r => {
   const m = { present:'status-present', late:'status-late', absent:'status-absent',
@@ -112,32 +112,45 @@ export const REPORT_COLUMNS = {
   // the route never selects/returns those fields (employee is `{code, name}` only,
   // and only the aggregate `deductions` total is computed here, not a late-only
   // split) — referencing them rendered permanently blank columns.
+  // EP-022 Phase 7: column order mirrors PayrollPage's grid exactly — كود،
+  // اسم الموظف، الراتب الأساسي، أجر الساعة، أيام الحضور، الغياب، ساعات
+  // الإضافي، قيمة الإضافي، ساعات الخصم، الخصومات، السلف، الخصم الإداري،
+  // صافي المرتب (13 canonical columns). أجر الساعة/hourlyRate and ساعات
+  // الخصم/penaltyUnits were previously missing from print entirely — added
+  // here, sourced from the same computePayroll()-overlaid GET /payroll
+  // fields the grid already renders, no new calculation. المستحقات isn't
+  // among the 13 canonical columns — kept, appended after صافي الراتب
+  // rather than interleaved.
   payroll: [
-    { header: 'الكود',           key: 'employee.code',            thStyle: 'width:52px' },
-    { header: 'اسم الموظف',     key: 'employee.name',            thStyle: 'width:150px' },
+    { header: 'الكود',           key: 'employee.code',            thStyle: 'width:48px' },
+    { header: 'اسم الموظف',     key: 'employee.name',            thStyle: 'width:130px' },
+    { header: 'الراتب الأساسي', key: 'basicSalary',    format: v => fmtMoney(v), tdClass: ()=>'num', thStyle:'width:82px', total:'sum' },
+    { header: 'أجر الساعة',      key: 'hourlyRate',     format: v => fmtDec(v, 2),
+      tdClass: () => 'num muted', thStyle: 'width:66px' },
     { header: 'أيام الحضور',    key: 'workDays',   format: v => fmtIntZero(v),
-      tdClass: () => 'num green', thStyle: 'width:70px', total:'sum' },
+      tdClass: () => 'num green', thStyle: 'width:64px', total:'sum' },
     { header: 'الغياب',          key: 'absentDays', format: v => fmtIntZero(v),
-      tdClass: r => (r.absentDays||0)>0 ? 'num red':'num muted', thStyle:'width:60px', total:'sum' },
-    { header: 'الراتب الأساسي', key: 'basicSalary',    format: v => fmtMoney(v), tdClass: ()=>'num', thStyle:'width:92px', total:'sum' },
+      tdClass: r => (r.absentDays||0)>0 ? 'num red':'num muted', thStyle:'width:56px', total:'sum' },
     { header: 'ساعات الإضافي',  key: 'overtimeHours',  format: v => fmtOTHours(v),
-      tdClass: r=>(r.overtimeHours||0)>0?'num green':'num muted', thStyle:'width:80px', total:'sum' },
+      tdClass: r=>(r.overtimeHours||0)>0?'num green':'num muted', thStyle:'width:74px', total:'sum' },
     { header: 'قيمة الإضافي',   key: 'overtimeAmount', format: v => fmtMoney(v),
-      tdClass: r=>(r.overtimeAmount||0)>0?'num green':'num muted', thStyle:'width:84px', total:'sum' },
-    { header: 'خصم يدوي إضافي', key: 'manualDeductionAdjustment', format: v => (v||0)>0 ? fmtMoney(v):'—',
-      tdClass: r=>(r.manualDeductionAdjustment||0)>0?'num red':'num muted', thStyle:'width:84px', total:'sum' },
+      tdClass: r=>(r.overtimeAmount||0)>0?'num green':'num muted', thStyle:'width:78px', total:'sum' },
+    { header: 'ساعات الخصم',     key: 'penaltyUnits',   format: v => fmtPenaltyUnits(v),
+      tdClass: r=>(r.penaltyUnits||0)>0?'num red':'num muted', thStyle:'width:70px', total:'sum' },
     { header: 'إجمالي الخصومات', key: 'deductions',   format: v => fmtMoney(v),
-      tdClass: r=>(r.deductions||0)>0?'num red':'num muted', thStyle:'width:84px', total:'sum' },
+      tdClass: r=>(r.deductions||0)>0?'num red':'num muted', thStyle:'width:78px', total:'sum' },
     { header: 'السلف',           key: 'advances',      format: v => (v||0)>0 ? fmtMoney(v):'—',
-      tdClass: r=>(r.advances||0)>0?'num red':'num muted', thStyle:'width:72px', total:'sum' },
-    { header: 'المستحقات',       key: 'grossEntitlements', format: v => fmtMoney(v),
-      tdClass: ()=>'num green', thStyle:'width:88px', total:'sum' },
+      tdClass: r=>(r.advances||0)>0?'num red':'num muted', thStyle:'width:66px', total:'sum' },
+    { header: 'خصم يدوي إضافي', key: 'manualDeductionAdjustment', format: v => (v||0)>0 ? fmtMoney(v):'—',
+      tdClass: r=>(r.manualDeductionAdjustment||0)>0?'num red':'num muted', thStyle:'width:78px', total:'sum' },
     // EF-019.1: per-row cell uses the shared displayNetSalary() helper (same
     // as every other payroll consumer); the footer's `total:'sum'` still sums
     // the raw exact values and rounds once — the correct pattern for a grand
     // total, left unchanged.
     { header: 'صافي الراتب',    key: 'netSalary',      format: v => fmtMoney(displayNetSalary(v)),
-      tdClass: ()=>'num green', thStyle:'width:90px', total:'sum' },
+      tdClass: ()=>'num green', thStyle:'width:82px', total:'sum' },
+    { header: 'المستحقات',       key: 'grossEntitlements', format: v => fmtMoney(v),
+      tdClass: ()=>'num green', thStyle:'width:80px', total:'sum' },
   ],
 
   movement: [
