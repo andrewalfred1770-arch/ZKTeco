@@ -13,7 +13,7 @@ import PrintPreviewModal from '../components/PrintPreviewModal';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
 import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_TINY, tabToNextCell, safeRefreshCells } from '../lib/gridDefaults';
-import { MONTHS_AR } from '../lib/constants';
+import { MONTHS_AR, getYearRange } from '../lib/constants';
 
 const NUM    = { textAlign:'right', direction:'ltr', fontFamily:'Consolas,monospace' };
 const CENTER = { justifyContent:'center', textAlign:'center' };
@@ -331,8 +331,28 @@ export default function PayrollPage() {
     setModal({ row: e.data, bulk: false });
   };
 
-  const exportExcel = () =>
-    window.open(`/api/reports/payroll/export?month=${month}&year=${year}`, '_blank');
+  // EP-026: window.open() to a relative URL is silently denied by Electron's
+  // setWindowOpenHandler (new URL() throws on a non-absolute URL → caught →
+  // action:'deny') and, even served plain, bypasses api.js's Bearer-token
+  // interceptor required whenever AUTH_ENABLED=true (EP-009 LAN/Server mode).
+  // Route the request through the authenticated `api` client instead and
+  // save the returned blob via a temporary anchor — no new window involved.
+  const exportExcel = async () => {
+    try {
+      const res = await api.get('/reports/payroll/export', {
+        params: { month, year },
+        responseType: 'blob',
+      });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `payroll_${month}_${year}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error('فشل تصدير ملف Excel');
+    }
+  };
 
   const totals = useMemo(() => ({
     basic:       rows.reduce((s, r) => s + (r.basicSalary                || 0), 0),
@@ -403,7 +423,7 @@ export default function PayrollPage() {
 
           <select className="input w-auto text-xs py-1.5" value={year}
             onChange={e => setYear(parseInt(e.target.value))}>
-            {[2024, 2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
+            {getYearRange().map(y => <option key={y} value={y}>{y}</option>)}
           </select>
 
           <button onClick={load} className="btn-ghost p-1.5 rounded" title="تحديث">

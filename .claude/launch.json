@@ -2,14 +2,6 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "repro",
-      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
-      "runtimeArgs": ["node_modules/vite/bin/vite.js"],
-      "port": 4100,
-      "autoPort": true,
-      "cwd": "C:\\Users\\Admin\\Desktop\\ZKTeco\\minimal-repro"
-    },
-    {
       "name": "frontend",
       "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
       "runtimeArgs": ["node_modules/vite/bin/vite.js", "--port", "3002", "--strictPort"],

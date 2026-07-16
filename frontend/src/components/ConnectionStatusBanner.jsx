@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { RefreshCw } from 'lucide-react';
-import { getSocket, subscribeConnectionStatus } from '../lib/socket';
+import { getSocket, subscribeConnectionStatus, retryConnectionNow } from '../lib/socket';
+import api from '../lib/api';
 
 // ─── Socket connection-lifecycle indicator (EP-014) ───────────────────────────
 // Distinct from NetworkBanner.jsx (raw browser online/offline) — this reflects
@@ -11,6 +12,7 @@ import { getSocket, subscribeConnectionStatus } from '../lib/socket';
 // full-width banner) — never interrupts an in-progress edit or navigation.
 export default function ConnectionStatusBanner() {
   const [status, setStatus] = useState('connecting');
+  const [checking, setChecking] = useState(false);
   const prevStatus = useRef(status);
 
   useEffect(() => {
@@ -27,21 +29,44 @@ export default function ConnectionStatusBanner() {
 
   if (status !== 'reconnecting' && status !== 'disconnected') return null;
 
+  // EP-025 Phase 3 — manual retry. The actual banner-hide/"connected" state
+  // is still driven exclusively by the socket's own connect/reconnect events
+  // above (single source of truth) — this handler only (a) nudges socket.io
+  // to attempt right now instead of waiting out its backoff delay, and
+  // (b) gives immediate click feedback via the canonical /health endpoint,
+  // reusing the same call DatabaseSetupWizard.jsx already makes.
+  const handleRetry = async () => {
+    if (checking) return;
+    setChecking(true);
+    retryConnectionNow();
+    try {
+      await api.get('/health', { _noRetry: true });
+    } catch {
+      toast.error('لا يزال الخادم غير متاحًا — جارٍ إعادة المحاولة تلقائيًا', { id: 'retry-failed', duration: 2500 });
+    } finally {
+      setChecking(false);
+    }
+  };
+
   return (
-    <div
+    <button
       dir="rtl"
+      type="button"
+      onClick={handleRetry}
+      disabled={checking}
+      title="اضغط لإعادة المحاولة الآن"
       style={{
         position: 'fixed', bottom: 16, left: 16, zIndex: 99998,
         display: 'flex', alignItems: 'center', gap: 8,
-        padding: '7px 14px', borderRadius: 999,
+        padding: '7px 14px', borderRadius: 999, border: 'none',
         background: 'rgba(245,158,11,0.95)', color: '#fff',
         fontSize: 12.5, fontFamily: 'Cairo,sans-serif', fontWeight: 600,
         boxShadow: '0 4px 14px rgba(0,0,0,0.25)',
-        pointerEvents: 'none',
+        cursor: checking ? 'default' : 'pointer',
       }}
     >
       <RefreshCw style={{ width: 13, height: 13, animation: 'spin 1.2s linear infinite', flexShrink: 0 }} />
       جارٍ إعادة الاتصال بالخادم…
-    </div>
+    </button>
   );
 }

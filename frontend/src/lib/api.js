@@ -1,4 +1,6 @@
 import axios from 'axios';
+import toast from 'react-hot-toast';
+import { shouldBlockWrites } from './socket';
 
 // Connection Layer (EP-003 Hybrid Client/Server): window.electron.backendBaseUrl
 // is resolved once by the main process (Local Mode → localhost, Server Mode →
@@ -25,7 +27,22 @@ const api = axios.create({
 let authToken = null;
 export function setAuthToken(token) { authToken = token; }
 
+// EP-025 — Enterprise Connection Recovery: block writes (not reads) while the
+// shared socket reports the backend is down, instead of letting them fail
+// individually mid-flight against a dead connection. Mutates `config` (not a
+// fresh object) and tags it `_noRetry` so the response interceptor's retry
+// branch below — which only knows how to retry a REAL network error — doesn't
+// also fire on this synchronous, pre-network rejection.
 api.interceptors.request.use((config) => {
+  const method = (config.method || 'get').toLowerCase();
+  if (method !== 'get' && shouldBlockWrites()) {
+    toast.error('لا يمكن الحفظ الآن — جارٍ إعادة الاتصال بالخادم', { id: 'write-blocked-offline' });
+    config._noRetry = true;
+    const err = new Error('Write blocked: backend connection is down');
+    err.isConnectionBlocked = true;
+    err.config = config;
+    return Promise.reject(err);
+  }
   if (authToken) config.headers.Authorization = `Bearer ${authToken}`;
   return config;
 });

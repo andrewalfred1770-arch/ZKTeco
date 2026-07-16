@@ -133,6 +133,13 @@ function computeSummaryFromDays(days, prevSummary) {
   const absentDays = days.filter(d =>
     !d.isWeekend && !d.isHoliday && d.isAbsent
   ).length;
+  // EP-024.2: mirrors backend summarizeMovementDays' totalPenaltyDays — sums
+  // only explicit penaltyDays values (matches what the "أيام الخصم" column
+  // itself displays; a null penaltyDays row shows blank, so it contributes 0
+  // here too, keeping the footer an exact SUM of the visible grid column).
+  const totalPenaltyDays = days
+    .filter(d => !d.isWeekend && !d.isHoliday && d.isAbsent)
+    .reduce((s, d) => s + (d.penaltyDays || 0), 0);
   const totalWorkedHours = parseFloat(
     days.reduce((s, d) => s + (d.workedMinutes || 0) / 60, 0).toFixed(2)
   );
@@ -155,7 +162,7 @@ function computeSummaryFromDays(days, prevSummary) {
   const effectiveDeductAmount = Math.round(totalEffectiveDeductionUnits * hourlyRate);
   return {
     ...prevSummary,
-    presentDays, absentDays,
+    presentDays, absentDays, totalPenaltyDays,
     totalWorkedHours, totalLateMinutes,
     totalOTHours, totalEffectiveOvertimeUnits,
     totalEffectiveLatePenalty, totalEffectiveEarlyPenalty,
@@ -613,6 +620,7 @@ export default function EmployeeMovementPage() {
     {
       field: 'penaltyDays', headerName: 'أيام الخصم', width: 100,
       valueFormatter: p => {
+        if (p.node?.rowPinned) return p.value != null ? String(p.value) : '';
         if (!p.data || p.data.isWeekend || p.data.isHoliday) return '';
         return p.data.isAbsent && p.value != null ? String(p.value) : '';
       },
@@ -675,6 +683,7 @@ export default function EmployeeMovementPage() {
       effectiveOvertimeUnits:   s.totalEffectiveOvertimeUnits,
       effectiveLatePenalty:     s.totalEffectiveLatePenalty,
       effectiveEarlyPenalty:    s.totalEffectiveEarlyPenalty,
+      penaltyDays:              s.totalPenaltyDays,
       effectiveTotalDeductions: s.totalEffectiveDeductionUnits,
     }];
   }, [data?.summary]);

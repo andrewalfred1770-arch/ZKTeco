@@ -1,6 +1,6 @@
 {
   "name": "zkteco-backend",
-  "version": "2.26.0",
+  "version": "2.27.0",
   "description": "ZKTeco Attendance & Payroll Management System - Backend",
   "main": "src/index.js",
   "scripts": {

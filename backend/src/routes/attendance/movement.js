@@ -120,6 +120,11 @@ function summarizeMovementDays(days, hourlyRate, multipliers, totalDays) {
   // not re-derive absence from checkIn presence.
   const presentDays  = workDays.filter(d => !d.isAbsent).length;
   const absentDays   = workDays.filter(d => d.isAbsent).length;
+  // EP-024.2: sum of the HR-entered/rule-derived deduction-day amount per
+  // absent day (AttendanceDaily.penaltyDays) — distinct from absentDays
+  // (a pure calendar count). Same field payrollEngine.js sums independently
+  // as totalAbsencePenaltyDays; this is display-only, no money computed here.
+  const totalPenaltyDays = workDays.filter(d => d.isAbsent).reduce((s, d) => s + (d.penaltyDays || 0), 0);
   // Canonical: "late" is defined by the effective (post-override) penalty,
   // never by raw lateMinutes — see PART 3 (canonical penalty runtime).
   const lateDays     = days.filter(d => d.effectiveLatePenalty > 0).length;
@@ -145,7 +150,7 @@ function summarizeMovementDays(days, hourlyRate, multipliers, totalDays) {
   return {
     totalDays,
     workingDays: workDays.length,
-    presentDays, absentDays, lateDays,
+    presentDays, absentDays, lateDays, totalPenaltyDays,
     totalWorkedHours: totalWorkedH,
     totalOTHours:     totalOTH,
     totalEffectiveOvertimeUnits,
@@ -168,6 +173,7 @@ function aggregateMovementSummaries(summaries, totalDays) {
     workingDays: summaries[0]?.workingDays || 0,
     presentDays: sum('presentDays'),
     absentDays: sum('absentDays'),
+    totalPenaltyDays: sum('totalPenaltyDays'),
     lateDays: sum('lateDays'),
     totalWorkedHours: sum('totalWorkedHours'),
     totalOTHours: sum('totalOTHours'),

@@ -23,6 +23,31 @@ export const ENTERPRISE_DEFAULT_COL_DEF = {
 };
 
 export const ENTERPRISE_GRID_PROPS = {
+  // ── Canonical resize response (EP-025 cross-platform grid fit) ────────────
+  // The whole grid system is opted INTO sizeColumnsToFit — every column carries
+  // suppressSizeToFit:false (see ENTERPRISE_DEFAULT_COL_DEF) and the width tiers
+  // are authored as fit RATIOS, not final pixels — but the fit was never
+  // actually invoked: no page wired onGridSizeChanged and nothing ever calls
+  // api.sizeColumnsToFit(). So columns render at their raw fixed widths and any
+  // slack between their sum and the container is left as dead horizontal space.
+  //
+  // This was invisible on Windows (the maximized content width happens to sit
+  // near the column sum) but glaring on macOS, whose maximized content area is
+  // wider — hence the "large unused horizontal space" symptom. The cause is
+  // platform-independent (a missing recalculation), so the fix is too: react to
+  // AG Grid's own gridSizeChanged — the canonical signal fired by its internal
+  // ResizeObserver on EVERY container change (window resize, maximize, restore,
+  // sidebar collapse/expand, resolution change) AND on the initial layout — and
+  // refit the columns to the current width. sizeColumnsToFit only redistributes
+  // within each column's existing minWidth/maxWidth, so fixed widths, tiers and
+  // pinning are all preserved; nothing here is column-definition or OS specific.
+  //
+  // Guarded on a real width: a grid that fires this while zero-width (mounted
+  // on a not-yet-visible route, mid-transition) would otherwise trip AG Grid's
+  // "zero width" warning — the later real-size event does the actual fit.
+  onGridSizeChanged: (params) => {
+    if (params.clientWidth > 0) params.api.sizeColumnsToFit();
+  },
   // Native OS tooltip for any column with tooltipValueGetter/tooltipField
   // (e.g. the manual-override explanation) — no effect on columns without
   // one. This is a grid-level option, not a ColDef property, so it belongs

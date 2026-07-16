@@ -39,6 +39,21 @@ export function subscribeConnectionStatus(fn) {
   return () => statusListeners.delete(fn);
 }
 
+// EP-025 — single source of truth for "is it safe to write right now",
+// reused by api.js's request interceptor instead of duplicating the
+// connection-state check there.
+export function shouldBlockWrites() {
+  return connectionStatus === 'reconnecting' || connectionStatus === 'disconnected';
+}
+
+// EP-025 — manual retry (banner click). socket.io-client's own reconnection
+// manager already retries forever with backoff; calling connect() while it's
+// mid-backoff makes it attempt right now instead of waiting out the delay.
+// A no-op if already connected/connecting.
+export function retryConnectionNow() {
+  getSocket().connect();
+}
+
 /** Lazily create (once) and return the shared Socket.IO client. */
 export function getSocket() {
   if (!socket) {

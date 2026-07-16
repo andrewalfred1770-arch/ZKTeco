@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
-import { getSocket } from '../lib/socket';
+import { getSocket, subscribeConnectionStatus } from '../lib/socket';
 import { createGuardedReload } from './liveSyncGuard';
 
 /**
@@ -68,9 +68,27 @@ export function useRulesLiveSync(reload, opts = {}) {
     socket.on('rules:changed', onChanged);
     socket.on('recalc:done', onDone);
 
+    // EP-025 — Enterprise Connection Recovery: every caller of this hook
+    // already has a page/modal-scoped `reload` + busy guard set up, so the
+    // "refresh current data after the backend comes back" requirement rides
+    // the same debounced, busy-aware path rather than each page wiring its
+    // own reconnect listener. `subscribeConnectionStatus` calls back
+    // immediately with the current status, so `prevStatus` starts non-null
+    // and a normal mount (already connected) never fires a spurious reload —
+    // only a genuine reconnecting/disconnected → connected transition does.
+    // Silent by design: ConnectionStatusBanner already owns the user-facing
+    // "تم استعادة الاتصال" notification for this same transition.
+    let prevConnStatus = null;
+    const unsubscribeConn = subscribeConnectionStatus((next) => {
+      const wasDown = prevConnStatus === 'reconnecting' || prevConnStatus === 'disconnected';
+      if (wasDown && next === 'connected') requestReload();
+      prevConnStatus = next;
+    });
+
     return () => {
       socket.off('rules:changed', onChanged);
       socket.off('recalc:done', onDone);
+      unsubscribeConn();
       if (toastId) toast.dismiss(toastId);
       if (reloadTimer) clearTimeout(reloadTimer);
       guard.cleanup();

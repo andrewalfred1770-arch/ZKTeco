@@ -1,8 +1,8 @@
-version: 2.26.0
+version: 2.27.0
 files:
-  - url: PETSHROW ERP Manager-2.26.0-Setup.exe
-    sha512: +DzGFdGjNSrK98Ty1kCRsQr4pjzmK5F+6hSf/ZA4AUg4Eksl3O+sh1rEa8SDdU0/fxjap+9tndXbxETv0tYQaw==
-    size: 88487537
-path: PETSHROW ERP Manager-2.26.0-Setup.exe
-sha512: +DzGFdGjNSrK98Ty1kCRsQr4pjzmK5F+6hSf/ZA4AUg4Eksl3O+sh1rEa8SDdU0/fxjap+9tndXbxETv0tYQaw==
-releaseDate: '2026-07-16T14:23:38.224Z'
+  - url: PETSHROW ERP Manager-2.27.0-Setup.exe
+    sha512: o9tZGC3CdCjgYPL5kmmoOak2aoiZFzxMT7Kz13nbJUaRMl53vUuqPHgdeZ9UNvjrNpawxk8Dh9Wc/AkcR2T1Ww==
+    size: 88487113
+path: PETSHROW ERP Manager-2.27.0-Setup.exe
+sha512: o9tZGC3CdCjgYPL5kmmoOak2aoiZFzxMT7Kz13nbJUaRMl53vUuqPHgdeZ9UNvjrNpawxk8Dh9Wc/AkcR2T1Ww==
+releaseDate: '2026-07-16T17:34:02.321Z'

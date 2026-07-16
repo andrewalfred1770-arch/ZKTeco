@@ -29,7 +29,7 @@ import AttendanceFilterBar from '../components/AttendanceFilterBar';
 import { useAttendanceFilter } from '../hooks/useAttendanceFilter';
 import { ACTOR, HHMM_RE, OVERRIDE_FIELD_MAP, normalizeDailyUpdate, replaceAttendanceRow, applyRowFieldUpdate } from '../lib/attendanceUtils';
 import { useKeyboardShortcut } from '../hooks/useKeyboardShortcut';
-import { MONTHS_AR } from '../lib/constants';
+import { MONTHS_AR, getYearRange } from '../lib/constants';
 
 const DAYS_AR   = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
 
@@ -590,7 +590,7 @@ export default function AttendanceMonthlyPage() {
             value={year}
             onChange={e => setYear(parseInt(e.target.value))}
           >
-            {[2024, 2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
+            {getYearRange().map(y => <option key={y} value={y}>{y}</option>)}
           </select>
           <select
             className="input w-auto text-xs py-1.5"
