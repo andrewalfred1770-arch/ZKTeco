@@ -92,7 +92,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            frontend/dist-electron/*.dmg
+           dist-electron/*.dmg
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -165,7 +165,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            frontend/dist-electron-legacy/*.dmg
+           dist-electron-legacy/*.dmg
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
