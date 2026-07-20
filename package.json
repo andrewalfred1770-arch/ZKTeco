@@ -14,10 +14,10 @@
   },
   "dependencies": {
     "dotenv": "^17.4.2",
-    "electron-log": "^5.1.2"
+    "electron-log": "^5.4.4"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2",
-    "wait-on": "^7.2.0"
+    "concurrently": "^10.0.3",
+    "wait-on": "^9.0.10"
   }
 }

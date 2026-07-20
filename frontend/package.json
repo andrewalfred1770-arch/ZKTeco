@@ -7,22 +7,26 @@
   "type": "module",
   "main": "electron.js",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "build:manager": "vite build --mode manager",
-    "preview": "vite preview",
-    "electron": "electron .",
-    "electron:dev": "concurrently --kill-others --names \"VITE,ELECTRON\" -c \"cyan,yellow\" \"vite\" \"wait-on http://localhost:3002 && electron .\"",
-    "electron:dev:manager": "concurrently --kill-others --names \"VITE,ELECTRON\" -c \"cyan,yellow\" \"vite --mode manager\" \"wait-on http://localhost:3002 && cross-env EDITION=manager electron .\"",
-    "electron:build": "npm run build && electron-builder --win --x64",
-    "electron:build:dir": "npm run build && electron-builder --win --x64 --dir",
-    "electron:build:mac": "npm run build && electron-builder --mac",
-    "electron:build:mac:dir": "npm run build && electron-builder --mac --dir",
-    "electron:build:mac:legacy": "npm run build && electron-builder --mac --config electron-builder.legacy-mac.json",
-    "electron:build:manager": "npm run build:manager && electron-builder --win --x64 --config electron-builder.manager.json",
-    "electron:build:manager:mac": "npm run build:manager && electron-builder --mac --config electron-builder.manager.json"
-  },
-  "dependencies": {
+  "dev": "vite",
+  "build": "vite build",
+  "build:manager": "vite build --mode manager",
+  "preview": "vite preview",
+
+  "electron": ".\\node_modules\\electron\\dist\\electron.exe .",
+
+  "electron:dev": "concurrently --kill-others --names \"VITE,ELECTRON\" -c \"cyan,yellow\" \"vite\" \"wait-on http://localhost:3002 && .\\node_modules\\electron\\dist\\electron.exe .\"",
+
+  "electron:dev:manager": "concurrently --kill-others --names \"VITE,ELECTRON\" -c \"cyan,yellow\" \"vite --mode manager\" \"wait-on http://localhost:3002 && cross-env EDITION=manager .\\node_modules\\electron\\dist\\electron.exe .\"",
+
+  "electron:build": "npm run build && electron-builder --win --x64",
+  "electron:build:dir": "npm run build && electron-builder --win --x64 --dir",
+  "electron:build:mac": "npm run build && electron-builder --mac",
+  "electron:build:mac:dir": "npm run build && electron-builder --mac --dir",
+  "electron:build:mac:legacy": "npm run build && electron-builder --mac --config electron-builder.legacy-mac.json",
+  "electron:build:manager": "npm run build:manager && electron-builder --win --x64 --config electron-builder.manager.json",
+  "electron:build:manager:mac": "npm run build:manager && electron-builder --mac --config electron-builder.manager.json"
+},
+"dependencies": {
     "@fontsource/cairo": "^5.0.16",
     "@fontsource/ibm-plex-sans-arabic": "^5.2.9",
     "@fontsource/tajawal": "^5.2.7",

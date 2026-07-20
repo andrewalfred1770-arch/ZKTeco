@@ -1,7 +1,9 @@
 import React, { useEffect, useState, Suspense, lazy } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
+
 import { ThemeProvider, useTheme } from './contexts/ThemeContext';
+
 import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
 import NetworkBanner from './components/NetworkBanner';
@@ -10,101 +12,225 @@ import UpdateNotifications from './components/UpdateNotifications';
 import DatabaseSetupWizard from './components/DatabaseSetupWizard';
 import ConnectionWizard from './components/ConnectionWizard';
 import LoginScreen from './components/LoginScreen';
+
 import { isManager } from './lib/edition';
 import useAuthStore from './store/authStore';
-// EP-015: route-level code splitting — each page is its own chunk, fetched
-// only when navigated to, instead of one bundle containing every page
-// (AG Grid, recharts, print/xlsx code, etc.) up front at startup.
-const DashboardPage         = lazy(() => import('./pages/DashboardPage'));
-const AttendanceDailyPage   = lazy(() => import('./pages/AttendanceDailyPage'));
-const AttendanceMonthlyPage = lazy(() => import('./pages/AttendanceMonthlyPage'));
-const EmployeeMovementPage  = lazy(() => import('./pages/EmployeeMovementPage'));
-const EmployeesPage         = lazy(() => import('./pages/EmployeesPage'));
-const DevicesPage           = lazy(() => import('./pages/DevicesPage'));
-const PayrollPage           = lazy(() => import('./pages/PayrollPage'));
-const RulesPage              = lazy(() => import('./pages/RulesPage'));
-const HolidaysPage           = lazy(() => import('./pages/HolidaysPage'));
-const RawLogsPage            = lazy(() => import('./pages/RawLogsPage'));
-const SettingsPage           = lazy(() => import('./pages/SettingsPage'));
-const CompanySettingsPage    = lazy(() => import('./pages/CompanySettingsPage'));
-const DataCleanupPage        = lazy(() => import('./pages/DataCleanupPage'));
-const AttendanceSettingsPage = lazy(() => import('./pages/AttendanceSettingsPage'));
-const ConnectionSettingsPage = lazy(() => import('./pages/ConnectionSettingsPage'));
 import useCompanySettingsStore from './store/companySettingsStore';
+
 import { getSocket } from './lib/socket';
 import { BRAND } from './lib/branding';
 
-// ─── Manager Edition gate (EP-011) ────────────────────────────────────────────
-// No-op on Server builds (renders children immediately, unchanged behavior).
-// On Manager builds, blocks the app behind two existing-infrastructure checks
-// before any page/socket/company-settings fetch happens:
-//   1. Is a server address saved? (connection-settings.json, EP-003) — if not,
-//      show the first-run Connection Wizard.
-//   2. Does that server require login? (GET /api/auth/me, already implemented
-//      in backend/src/routes/auth.js) — if so and no valid session is loaded,
-//      show the Login screen.
+/* ============================================================================
+ * Boot Tracing System
+ * ========================================================================== */
+
+const TRACE_BOOT = true;
+
+function trace(step, data = null) {
+  if (!TRACE_BOOT) return;
+
+  const style =
+    'background:#2563eb;color:#fff;padding:2px 6px;border-radius:4px;font-weight:bold';
+
+  if (data === null || data === undefined) {
+    console.log('%c[BOOT]', style, step);
+  } else {
+    console.log('%c[BOOT]', style, step, data);
+  }
+}
+
+/* ============================================================================
+ * Lazy Loaded Pages
+ * ========================================================================== */
+
+const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+
+const AttendanceDailyPage = lazy(() =>
+  import('./pages/AttendanceDailyPage')
+);
+
+const AttendanceMonthlyPage = lazy(() =>
+  import('./pages/AttendanceMonthlyPage')
+);
+
+const EmployeeMovementPage = lazy(() =>
+  import('./pages/EmployeeMovementPage')
+);
+
+const EmployeesPage = lazy(() =>
+  import('./pages/EmployeesPage')
+);
+
+const DevicesPage = lazy(() =>
+  import('./pages/DevicesPage')
+);
+
+const PayrollPage = lazy(() =>
+  import('./pages/PayrollPage')
+);
+
+const RulesPage = lazy(() =>
+  import('./pages/RulesPage')
+);
+
+const HolidaysPage = lazy(() =>
+  import('./pages/HolidaysPage')
+);
+
+const RawLogsPage = lazy(() =>
+  import('./pages/RawLogsPage')
+);
+
+const SettingsPage = lazy(() =>
+  import('./pages/SettingsPage')
+);
+
+const CompanySettingsPage = lazy(() =>
+  import('./pages/CompanySettingsPage')
+);
+
+const DataCleanupPage = lazy(() =>
+  import('./pages/DataCleanupPage')
+);
+
+const AttendanceSettingsPage = lazy(() =>
+  import('./pages/AttendanceSettingsPage')
+);
+
+const ConnectionSettingsPage = lazy(() =>
+  import('./pages/ConnectionSettingsPage')
+);
+
+/* ============================================================================
+ * Manager Gate
+ * ========================================================================== */
 function ManagerGate({ children }) {
-  const [connSettings, setConnSettings] = useState(undefined); // undefined = still loading
-  const hydrate     = useAuthStore((s) => s.hydrate);
-  const hydrated    = useAuthStore((s) => s.hydrated);
+  trace("ManagerGate render");
+
+  const [connSettings, setConnSettings] = useState(undefined);
+
+  const hydrate = useAuthStore((s) => s.hydrate);
+  const hydrated = useAuthStore((s) => s.hydrated);
   const authEnabled = useAuthStore((s) => s.authEnabled);
-  const token       = useAuthStore((s) => s.token);
+  const token = useAuthStore((s) => s.token);
 
   useEffect(() => {
+    trace("ManagerGate effect", { isManager });
+
     if (!isManager) return;
-    window.electron.connection.getSettings()
-      .then(setConnSettings)
-      .catch(() => setConnSettings({ mode: 'server', serverUrl: '' }));
+
+    window.electron.connection
+      .getSettings()
+      .then((settings) => {
+        trace("Connection Settings Loaded", settings);
+        setConnSettings(settings);
+      })
+      .catch((err) => {
+        console.error("[BOOT] Failed to load connection settings", err);
+
+        setConnSettings({
+          mode: "server",
+          serverUrl: "",
+        });
+      });
   }, []);
 
   useEffect(() => {
-    if (!isManager || !connSettings?.serverUrl) return;
+    if (!isManager) return;
+    if (!connSettings?.serverUrl) return;
+
+    trace("Hydrating authentication");
+
     hydrate();
   }, [connSettings, hydrate]);
 
-  if (!isManager) return children;
-  if (connSettings === undefined) return null; // splash screen already covers this brief window
-  if (!connSettings.serverUrl) return <ConnectionWizard />;
-  if (!hydrated) return null;
-  // Server was unreachable when we probed /api/auth/me (authStore leaves
-  // authEnabled === null rather than guessing true/false in that case — see
-  // authStore.js:checkAuthRequired). Falling through to `children` here would
-  // silently render the full app against a dead backend with no feedback.
-  // Reuse the existing Connection Wizard (test/retry a server address) rather
-  // than invent a new screen.
-  if (authEnabled === null) return <ConnectionWizard />;
-  if (authEnabled === true && !token) return <LoginScreen />;
+  if (!isManager) {
+    trace("Server Edition");
+    return children;
+  }
+
+  if (connSettings === undefined) {
+    trace("Waiting for connection settings...");
+    return null;
+  }
+
+  if (!connSettings.serverUrl) {
+    trace("No server configured");
+    return <ConnectionWizard />;
+  }
+
+  if (!hydrated) {
+    trace("Waiting for auth hydration...");
+    return null;
+  }
+
+  if (authEnabled === null) {
+    trace("Server unreachable");
+    return <ConnectionWizard />;
+  }
+
+  if (authEnabled === true && !token) {
+    trace("Authentication required");
+    return <LoginScreen />;
+  }
+
+  trace("ManagerGate passed");
 
   return (
     <>
       {authEnabled === false && (
-        <div style={{
-          padding: '6px 16px', background: 'rgba(245,158,11,0.12)', borderBottom: '1px solid rgba(245,158,11,0.3)',
-          fontSize: 12, color: '#92400e', textAlign: 'center', flexShrink: 0,
-        }}>
-          ⚠ الخادم المتصل لا يتطلب تسجيل دخول (AUTH_ENABLED=false) — يُنصح بتفعيل المصادقة عند استخدام أكثر من جهاز
+        <div
+          style={{
+            padding: "6px 16px",
+            background: "rgba(245,158,11,0.12)",
+            borderBottom: "1px solid rgba(245,158,11,0.30)",
+            fontSize: 12,
+            color: "#92400e",
+            textAlign: "center",
+            flexShrink: 0,
+          }}
+        >
+          ⚠ الخادم الحالي لا يتطلب تسجيل دخول
+          (AUTH_ENABLED=false) — يُنصح بتفعيل المصادقة.
         </div>
       )}
+
       {children}
     </>
   );
 }
+/* ============================================================================
+ * App Routes
+ * ========================================================================== */
 
-// Inner component so Toaster can read theme from context
 function AppRoutes() {
+  trace("AppRoutes render");
+
   const { resolved } = useTheme();
 
-  // Temporary build marker — proves which bundle/EXE build is actually
-  // running (renderer side). Prefers the Electron main-process IPC value
-  // (guaranteed to match the packaged app.asar); falls back to the static
-  // BRAND constant in the browser/dev preview. See electron.js BUILD_MARKER.
   useEffect(() => {
+    trace("Renderer Build Marker");
+
     if (window?.electron?.buildMarker) {
-      window.electron.buildMarker()
-        .then((marker) => console.log(`%c[PETSHROW ERP] ${marker}`, 'color:#2563eb;font-weight:bold;'))
-        .catch(() => console.log(`%c[PETSHROW ERP] ${BRAND.buildMarker}`, 'color:#2563eb;font-weight:bold;'));
+      window.electron
+        .buildMarker()
+        .then((marker) => {
+          console.log(
+            `%c[PETSHROW ERP] ${marker}`,
+            "color:#2563eb;font-weight:bold;"
+          );
+        })
+        .catch(() => {
+          console.log(
+            `%c[PETSHROW ERP] ${BRAND.buildMarker}`,
+            "color:#2563eb;font-weight:bold;"
+          );
+        });
     } else {
-      console.log(`%c[PETSHROW ERP] ${BRAND.buildMarker}`, 'color:#2563eb;font-weight:bold;');
+      console.log(
+        `%c[PETSHROW ERP] ${BRAND.buildMarker}`,
+        "color:#2563eb;font-weight:bold;"
+      );
     }
   }, []);
 
@@ -113,28 +239,26 @@ function AppRoutes() {
       <Toaster
         position="top-left"
         toastOptions={{
-          style: {
-            background: resolved === 'light' ? '#ffffff' : '#1f2937',
-            color:      resolved === 'light' ? '#0f172a' : '#f3f4f6',
-            border:     resolved === 'light' ? '1px solid #e2e8f0' : '1px solid #374151',
-            fontFamily: 'Cairo, sans-serif',
-            fontSize:   '13px',
-            direction:  'rtl',
-            boxShadow:  '0 4px 12px rgba(0,0,0,0.15)',
-          },
           duration: 3000,
+          style: {
+            background:
+              resolved === "light" ? "#ffffff" : "#1f2937",
+            color:
+              resolved === "light" ? "#0f172a" : "#f3f4f6",
+            border:
+              resolved === "light"
+                ? "1px solid #e2e8f0"
+                : "1px solid #374151",
+            fontFamily: "Cairo, sans-serif",
+            fontSize: "13px",
+            direction: "rtl",
+            boxShadow: "0 4px 12px rgba(0,0,0,.15)",
+          },
         }}
       />
-      {/* EP-011: Manager builds have no server MySQL credentials to fix — a
-          Manager user seeing "DB auth failed, enter credentials" would be
-          asked to configure a machine that isn't theirs. Server builds are
-          unaffected (isManager is always false there). */}
+
       {!isManager && <DatabaseSetupWizard />}
-      {/* EP-011: gates the routed app behind connection + auth state on
-          Manager builds; a pure pass-through on Server builds. The
-          company-settings fetch + live-sync socket subscription below only
-          fire once this resolves, so Manager never calls the API before a
-          server is configured and (if required) a session exists. */}
+
       <ManagerGate>
         <AppShellRoutes />
       </ManagerGate>
@@ -142,62 +266,236 @@ function AppRoutes() {
   );
 }
 
-// Split out of AppRoutes so its company-settings fetch + socket subscription
-// only run once ManagerGate has let the app through (see AppRoutes above).
-function AppShellRoutes() {
-  const fetchCompanySettings = useCompanySettingsStore((s) => s.fetch);
+/* ============================================================================
+ * Application Shell
+ * ========================================================================== */
 
-  // Load "بيانات الشركة" once at startup, then keep it live: any edit anywhere
-  // (this window or another) broadcasts 'company-settings:changed' over the
-  // shared socket, and every screen reading useCompanyBrand()/the store
-  // re-renders instantly — no manual refresh needed.
+function AppShellRoutes() {
+  trace("AppShellRoutes render");
+
+  const fetchCompanySettings = useCompanySettingsStore(
+    (s) => s.fetch
+  );
+
   useEffect(() => {
+    trace("Loading company settings...");
+
     fetchCompanySettings();
+
     const socket = getSocket();
-    const onChanged = () => fetchCompanySettings();
-    socket.on('company-settings:changed', onChanged);
-    return () => socket.off('company-settings:changed', onChanged);
+
+    trace("Socket initialized");
+
+    const onChanged = () => {
+      trace("Company settings changed");
+
+      fetchCompanySettings();
+    };
+
+    socket.on("company-settings:changed", onChanged);
+
+    return () => {
+      trace("Socket cleanup");
+
+      socket.off("company-settings:changed", onChanged);
+    };
   }, [fetchCompanySettings]);
 
   return (
     <Suspense fallback={null}>
       <Routes>
         <Route path="/" element={<Layout />}>
-          <Route index element={<Navigate to="/dashboard" replace />} />
-          <Route path="dashboard"             element={<ErrorBoundary><DashboardPage /></ErrorBoundary>} />
-          <Route path="attendance/daily"      element={<ErrorBoundary><AttendanceDailyPage /></ErrorBoundary>} />
-          <Route path="attendance/monthly"    element={<ErrorBoundary><AttendanceMonthlyPage /></ErrorBoundary>} />
-          <Route path="attendance/movement"   element={<ErrorBoundary><EmployeeMovementPage /></ErrorBoundary>} />
-          <Route path="attendance/logs"       element={<ErrorBoundary><RawLogsPage /></ErrorBoundary>} />
-          <Route path="employees"             element={<ErrorBoundary><EmployeesPage /></ErrorBoundary>} />
-          {/* EP-011: device configuration + the local/server connection toggle
-              are server-admin functionality — routes excluded outright on
-              Manager builds (not just hidden from the sidebar), so they're
-              unreachable even by direct URL/hash navigation. */}
-          {!isManager && <Route path="devices"             element={<ErrorBoundary><DevicesPage /></ErrorBoundary>} />}
-          <Route path="payroll"               element={<ErrorBoundary><PayrollPage /></ErrorBoundary>} />
-          <Route path="attendance/settings"   element={<ErrorBoundary><AttendanceSettingsPage /></ErrorBoundary>} />
-          <Route path="rules"                 element={<ErrorBoundary><RulesPage /></ErrorBoundary>} />
-          <Route path="holidays"              element={<ErrorBoundary><HolidaysPage /></ErrorBoundary>} />
-          <Route path="settings"              element={<ErrorBoundary><SettingsPage /></ErrorBoundary>} />
-          <Route path="settings/company"      element={<ErrorBoundary><CompanySettingsPage /></ErrorBoundary>} />
-          {!isManager && <Route path="settings/connection" element={<ErrorBoundary><ConnectionSettingsPage /></ErrorBoundary>} />}
-          <Route path="maintenance/cleanup"   element={<ErrorBoundary><DataCleanupPage /></ErrorBoundary>} />
-        </Route>
-      </Routes>
-    </Suspense>
+
+          <Route
+            index
+            element={<Navigate to="/dashboard" replace />}
+          />
+
+          <Route
+            path="dashboard"
+            element={
+              <ErrorBoundary>
+                <DashboardPage />
+              </ErrorBoundary>
+            }
+          />
+
+          <Route
+            path="attendance/daily"
+            element={
+              <ErrorBoundary>
+                <AttendanceDailyPage />
+              </ErrorBoundary>
+            }
+          />
+
+          <Route
+            path="attendance/monthly"
+            element={
+              <ErrorBoundary>
+                <AttendanceMonthlyPage />
+              </ErrorBoundary>
+            }
+          />
+
+          <Route
+            path="attendance/movement"
+            element={
+              <ErrorBoundary>
+                <EmployeeMovementPage />
+              </ErrorBoundary>
+            }
+          />
+
+          <Route
+            path="attendance/logs"
+            element={
+              <ErrorBoundary>
+                <RawLogsPage />
+              </ErrorBoundary>
+            }
+          />
+
+          <Route
+            path="employees"
+            element={
+              <ErrorBoundary>
+                <EmployeesPage />
+              </ErrorBoundary>
+            }
+          />
+
+          {!isManager && (
+            <Route
+              path="devices"
+              element={
+                <ErrorBoundary>
+                  <DevicesPage />
+                </ErrorBoundary>
+              }
+            />
+          )}
+
+          <Route
+            path="payroll"
+            element={
+              <ErrorBoundary>
+                <PayrollPage />
+              </ErrorBoundary>
+            }
+          />
+
+          <Route
+            path="attendance/settings"
+            element={
+              <ErrorBoundary>
+                <AttendanceSettingsPage />
+              </ErrorBoundary>
+            }
+          />
+
+          <Route
+            path="rules"
+            element={
+              <ErrorBoundary>
+                <RulesPage />
+              </ErrorBoundary>
+            }
+          />
+
+          <Route
+            path="holidays"
+            element={
+              <ErrorBoundary>
+                <HolidaysPage />
+              </ErrorBoundary>
+            }
+          />
+
+          <Route
+            path="settings"
+            element={
+              <ErrorBoundary>
+                <SettingsPage />
+              </ErrorBoundary>
+            }
+          />
+
+          <Route
+            path="settings/company"
+            element={
+              <ErrorBoundary>
+                <CompanySettingsPage />
+              </ErrorBoundary>
+            }
+          />
+
+          {!isManager && (
+            <Route
+              path="settings/connection"
+              element={
+                <ErrorBoundary>
+                  <ConnectionSettingsPage />
+                </ErrorBoundary>
+              }
+            />
+          )}
+
+          <Route
+  path="maintenance/cleanup"
+  element={
+    <ErrorBoundary>
+      <DataCleanupPage />
+    </ErrorBoundary>
+  }
+/>
+
+</Route>
+
+</Routes>
+</Suspense>
+);
+}
+/* ============================================================================
+ * Root Application
+ * ========================================================================== */
+
+export default function App() {
+  trace("Application render started");
+
+  useEffect(() => {
+    trace("React mounted successfully");
+
+    return () => {
+      trace("React unmounted");
+    };
+  }, []);
+
+  return (
+    <ThemeProvider>
+      <AppBootstrap />
+    </ThemeProvider>
   );
 }
 
-export default function App() {
+/* ============================================================================
+ * Bootstrap
+ * ========================================================================== */
+
+function AppBootstrap() {
+  trace("ThemeProvider ready");
+
+  useEffect(() => {
+    trace("HashRouter initializing...");
+  }, []);
+
   return (
-    <ThemeProvider>
-      <HashRouter>
-        <NetworkBanner />
-        <ConnectionStatusBanner />
-        <UpdateNotifications />
-        <AppRoutes />
-      </HashRouter>
-    </ThemeProvider>
+    <HashRouter>
+      <NetworkBanner />
+      <ConnectionStatusBanner />
+      <UpdateNotifications />
+
+      <AppRoutes />
+    </HashRouter>
   );
 }

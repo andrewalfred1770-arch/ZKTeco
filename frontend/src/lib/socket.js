@@ -27,7 +27,10 @@ export function setSocketAuthToken(token) { authToken = token; }
 let connectionStatus = 'connecting'; // 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
 const statusListeners = new Set();
 function setConnectionStatus(next) {
+  console.log(`[SOCKET] STATUS ${connectionStatus} -> ${next}`);
+
   if (connectionStatus === next) return;
+
   connectionStatus = next;
   statusListeners.forEach((fn) => fn(connectionStatus));
 }
@@ -53,29 +56,54 @@ export function shouldBlockWrites() {
 export function retryConnectionNow() {
   getSocket().connect();
 }
-
 /** Lazily create (once) and return the shared Socket.IO client. */
 export function getSocket() {
+  console.log("[SOCKET] getSocket() called");
+
   if (!socket) {
+    console.log("[SOCKET] creating socket");
+    console.log("[SOCKET] backendBase =", backendBase);
+
     socket = socketIO(backendBase, {
-      transports: ['websocket', 'polling'],
       auth: () => (authToken ? { token: authToken } : {}),
-      // Explicit values for socket.io-client's own defaults — documents the
-      // reconnection policy rather than changing it (reconnection:true,
-      // delay 1000ms→5000ms backoff are what the client already did
-      // implicitly). Infinity matches a long-running desktop app: there is
-      // no reasonable point at which this app should stop trying to reach
-      // its own backend.
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
     });
-    socket.on('connect',          () => setConnectionStatus('connected'));
-    socket.on('disconnect',       () => setConnectionStatus('reconnecting'));
-    socket.on('reconnect_attempt',() => setConnectionStatus('reconnecting'));
-    socket.on('reconnect',        () => setConnectionStatus('connected'));
-    socket.on('connect_error',    () => setConnectionStatus('reconnecting'));
+
+    socket.on("connect", () => {
+      console.log("[SOCKET] CONNECT", socket.id);
+      setConnectionStatus("connected");
+    });
+
+    socket.on("disconnect", (reason) => {
+      console.log("[SOCKET] DISCONNECT", reason);
+      setConnectionStatus("disconnected");
+    });
+
+    socket.on("connect_error", (err) => {
+      console.error("[SOCKET] CONNECT_ERROR", err.message);
+    });
+
+    socket.io.on("reconnect_attempt", (n) => {
+      console.log("[SOCKET] RECONNECT_ATTEMPT", n);
+      setConnectionStatus("reconnecting");
+    });
+
+    socket.io.on("reconnect", (n) => {
+      console.log("[SOCKET] RECONNECTED", n);
+      setConnectionStatus("connected");
+    });
+
+    socket.io.on("reconnect_error", (err) => {
+      console.error("[SOCKET] RECONNECT_ERROR", err.message);
+    });
+
+    socket.io.on("error", (err) => {
+      console.error("[SOCKET] MANAGER_ERROR", err);
+    });
   }
+
   return socket;
 }

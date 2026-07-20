@@ -1,0 +1,28 @@
+{
+  "name": "petshrow-erp",
+  "version": "2.27.0",
+  "description": "PETSHROW ERP — نظام الموارد البشرية والرواتب",
+  "author": "PETSHROW",
+  "private": true,
+  "type": "module",
+  "main": "electron.js",
+  "dependencies": {
+    "@fontsource/cairo": "^5.0.16",
+    "@fontsource/ibm-plex-sans-arabic": "^5.2.9",
+    "@fontsource/tajawal": "^5.2.7",
+    "ag-grid-community": "^31.2.0",
+    "ag-grid-react": "^31.2.0",
+    "axios": "^1.6.8",
+    "date-fns": "^3.6.0",
+    "electron-updater": "^6.8.9",
+    "lucide-react": "^0.368.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-hot-toast": "^2.4.1",
+    "react-router-dom": "^6.22.3",
+    "recharts": "^2.12.3",
+    "socket.io-client": "^4.7.4",
+    "xlsx": "^0.18.5",
+    "zustand": "^4.5.2"
+  }
+}

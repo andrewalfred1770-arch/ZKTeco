@@ -195,11 +195,21 @@ app.use((err, _req, res, _next) => {
 });
 
 // ─── Socket.IO ────────────────────────────────────────────────────────────────
-io.on('connection', (socket) => {
-  logger.info(`[SOCKET] client connected: ${socket.id}`);
-  socket.on('disconnect', (reason) => logger.info(`[SOCKET] client disconnected: ${socket.id} (${reason})`));
-});
+io.on("connection", (socket) => {
+  logger.info(`[SOCKET] CONNECT ${socket.id}`);
 
+  socket.conn.on("upgrade", () => {
+    logger.info(`[ENGINE] UPGRADE ${socket.id}`);
+  });
+
+  socket.conn.on("close", (reason) => {
+    logger.warn(`[ENGINE] CLOSE ${socket.id} reason=${reason}`);
+  });
+
+  socket.on("disconnect", (reason) => {
+    logger.warn(`[SOCKET] DISCONNECT ${socket.id} reason=${reason}`);
+  });
+});
 // ─── Uncaught error handlers ──────────────────────────────────────────────────
 // Winston's printf format drops object meta — interpolate message+stack into
 // the log string so these are identifiable (previously printed as blank).

@@ -1,5 +1,5 @@
 import { BrowserWindow, nativeImage, dialog, shell, app } from 'electron';
-import { existsSync } from 'fs';
+import { existsSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { IS_DEV, APP_NAME, FRONTEND_URL, FRONTEND_ROOT } from './constants.js';
 import { state } from './state.js';
@@ -9,6 +9,7 @@ import { markSplashStep } from './splash.js';
 export async function createMainWindow(paths) {
   const iconPath = paths.iconPng;
   const icon = existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : null;
+
   // Prod: bail out before creating anything if the frontend bundle is missing.
   let frontendIndex = null;
   if (!IS_DEV) {
@@ -40,6 +41,7 @@ export async function createMainWindow(paths) {
       v8CacheOptions:   'bypassHeatCheck',
     },
   });
+  appendFileSync("C:\\temp\\electron-trace.txt", "WINDOW CREATED\n");
   console.log('******** WINDOWS.JS LOADED ********');
 mainWindow.webContents.openDevTools({ mode: 'detach' });
 

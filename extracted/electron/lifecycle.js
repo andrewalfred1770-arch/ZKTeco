@@ -1,5 +1,6 @@
+import { appendFileSync } from 'fs';
 import { app } from 'electron';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { IS_DEV, BUILD_MARKER } from './constants.js';
 import { state } from './state.js';
@@ -26,14 +27,6 @@ if (!gotInstanceLock) {
 
 // ─── App lifecycle — PARALLEL STARTUP ────────────────────────────────────────
 app.on('ready', async () => {
-  console.log("READY 1");
-
-  if (!gotInstanceLock) {
-    console.log("READY LOCK FAILED");
-    return;
-  }
-
-  console.log("READY 2");
   // 'ready' still fires after app.quit() from a failed single-instance lock.
   // Without this guard, the losing instance's killStaleBackend() can ping the
   // PRIMARY instance's backend (1s timeout) and taskkill it on a slow reply —
@@ -57,9 +50,13 @@ app.on('ready', async () => {
 
   // 2. Main window — created + shown immediately. Frontend content loads
   //    async in the background; this call does NOT block on it.
- console.log("BEFORE createMainWindow");
-createMainWindow(paths);
-console.log("AFTER createMainWindow");
+  appendFileSync("C:\\temp\\electron-trace.txt", "BEFORE\n");
+
+await createMainWindow(paths);
+
+appendFileSync("C:\\temp\\electron-trace.txt", "AFTER\n");
+  buildDebugMenu();
+
   // 3. Tray — fast, no I/O
   createTray(paths);
 

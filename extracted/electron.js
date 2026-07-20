@@ -14,13 +14,6 @@
  *   3. lifecycle.js — single-instance lock + all app.on(...) registrations
  *      (splash/window/tray/backend orchestration happens inside 'ready')
  */
-console.log("BOOT 1");
-
 import './electron/observability.js';
-console.log("BOOT 2");
-
 import './electron/ipc.js';
-console.log("BOOT 3");
-
 import './electron/lifecycle.js';
-console.log("BOOT 4");
