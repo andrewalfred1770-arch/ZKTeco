@@ -73,7 +73,7 @@ jobs:
         working-directory: frontend
         run: npx electron-builder --mac --publish=never
 
-           - name: Find Build Files
+      - name: Find Build Files
         run: |
           echo "Current directory:"
           pwd
@@ -146,7 +146,7 @@ jobs:
         working-directory: frontend
         run: npx electron-builder --mac --config electron-builder.legacy-mac.json --publish=never
 
-            - name: Find Build Files
+      - name: Find Build Files
         run: |
           echo "Current directory:"
           pwd
