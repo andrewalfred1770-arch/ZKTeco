@@ -88,7 +88,7 @@ jobs:
           find . -type d -name "dist*"
 
       - name: Upload Modern DMG to GitHub Release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -161,7 +161,7 @@ jobs:
           find . -type d -name "dist*"
 
       - name: Upload Legacy DMG to GitHub Release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           files: |
