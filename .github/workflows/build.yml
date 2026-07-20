@@ -24,74 +24,16 @@ env:
   DATABASE_URL: 'mysql://ci:ci@127.0.0.1:3306/ci_placeholder'
 
 jobs:
-  # ─── Windows Client ──────────────────────────────────────────────────────────
-  build-windows:
-    name: Build Windows Client
-    runs-on: windows-latest
-    # No `needs:` on build-macos-modern/build-macos-legacy and vice versa —
-    # all three platform jobs are independent, so a failure in any one never
-    # cancels or blocks the others.
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: |
-            backend/package-lock.json
-            frontend/package-lock.json
-
-      # Prisma's downloaded query-engine binaries live here after `generate`;
-      # keying on the schema hash + OS avoids re-downloading them every run.
-      - name: Cache Prisma engines
-        uses: actions/cache@v4
-        with:
-          path: backend/node_modules/.prisma
-          key: prisma-${{ runner.os }}-${{ hashFiles('backend/prisma/schema.prisma') }}
-
-      - name: Install backend dependencies
-        working-directory: backend
-        run: npm ci
-
-      - name: Generate Prisma client
-        working-directory: backend
-        run: npx prisma generate
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Build frontend (Vite)
-        working-directory: frontend
-        run: npm run build
-
-      - name: Build Windows installer (electron-builder)
-        working-directory: frontend
-        run: npx electron-builder --win --x64 --publish=never
-
-      - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-build
-          path: |
-            dist-electron/*.exe
-          retention-days: 30
-          if-no-files-found: error
-
-  # ─── macOS Client (Modern) ───────────────────────────────────────────────────
   build-macos-modern:
     name: Build macOS Client (Modern)
     runs-on: macos-latest
-    # No `needs:` on build-windows or build-macos-legacy — all three platform
-    # jobs are independent; one failing never cancels or blocks the others.
+
+    permissions:
+      contents: write
+
     env:
-      # No Developer ID certificate is configured in this repo — tell
-      # electron-builder not to search for one, so the build stays
-      # deterministic (unsigned) instead of failing/behaving unpredictably.
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -100,7 +42,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
+          cache: npm
           cache-dependency-path: |
             backend/package-lock.json
             frontend/package-lock.json
@@ -115,7 +57,7 @@ jobs:
         working-directory: backend
         run: npm ci
 
-      - name: Generate Prisma client
+      - name: Generate Prisma Client
         working-directory: backend
         run: npx prisma generate
 
@@ -123,37 +65,38 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Build frontend (Vite)
+      - name: Build Frontend
         working-directory: frontend
         run: npm run build
 
-      - name: Build macOS app (electron-builder)
+      - name: Build macOS DMG
         working-directory: frontend
         run: npx electron-builder --mac --publish=never
 
-      - name: Upload macOS (Modern) artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-modern-build
-          path: |
-            dist-electron/*.dmg
-            dist-electron/*.zip
-          retention-days: 30
-          if-no-files-found: error
+      - name: List Modern Build Files
+        run: |
+          ls -R frontend/dist-electron || true
 
-  # ─── macOS Client (Legacy — macOS 10.14 Mojave) ──────────────────────────────
-  # EP-008: bundles Electron 26.6.10 (the last release officially supporting
-  # macOS 10.14/10.13) instead of the project's normal Electron 30.5.1 —
-  # electron-builder's `electronVersion` config option downloads and packages
-  # that specific Electron build without touching frontend/package.json's own
-  # `electron` devDependency, so `npm run electron:dev`/the modern build are
-  # completely unaffected. x64 only: no Apple Silicon Mac has ever run 10.14.
+      - name: Upload Modern DMG to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            frontend/dist-electron/*.dmg
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build-macos-legacy:
     name: Build macOS Client (Legacy 10.14)
     runs-on: macos-latest
-    # No `needs:` here either — same independence guarantee as the other two.
+
+    permissions:
+      contents: write
+
     env:
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -162,7 +105,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
+          cache: npm
           cache-dependency-path: |
             backend/package-lock.json
             frontend/package-lock.json
@@ -177,7 +120,7 @@ jobs:
         working-directory: backend
         run: npm ci
 
-      - name: Generate Prisma client
+      - name: Generate Prisma Client
         working-directory: backend
         run: npx prisma generate
 
@@ -185,20 +128,24 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Build frontend (Vite)
+      - name: Build Frontend
         working-directory: frontend
         run: npm run build
 
-      - name: Build macOS Legacy app (electron-builder, Electron 26.6.10)
+      - name: Build macOS Legacy DMG
         working-directory: frontend
         run: npx electron-builder --mac --config electron-builder.legacy-mac.json --publish=never
 
-      - name: Upload macOS Legacy artifacts
-        uses: actions/upload-artifact@v4
+      - name: List Legacy Build Files
+        run: |
+          ls -R frontend/dist-electron-legacy || true
+
+      - name: Upload Legacy DMG to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
         with:
-          name: macos-legacy-build
-          path: |
-            dist-electron-legacy/*.dmg
-            dist-electron-legacy/*.zip
-          retention-days: 30
-          if-no-files-found: error
+          files: |
+            frontend/dist-electron-legacy/*.dmg
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
