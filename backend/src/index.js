@@ -258,11 +258,19 @@ const { runFirstRunInit } = require('./init');
   server.listen(PORT, HOST, () => {
     logger.info(`Server running on ${HOST}:${PORT} [${isProd ? 'production' : 'development'}]`);
 
-    // Start background services with delay to allow DB to be ready.
+    // Start background services. DB readiness was already confirmed above by
+    // the awaited runFirstRunInit() (checkDbConnection inside
+    // runMigrationsAndSeed) before server.listen() was even called — the
+    // previous fixed 2s setTimeout here predated that await and had become
+    // pure dead time on every startup (it directly delayed fingerprint
+    // device connection, since startSyncScheduler → realtimeListener.startAll
+    // is what kicks off the device TCP handshake). setImmediate still lets
+    // this listen() callback return before the scheduler starts, without an
+    // arbitrary wait.
     // syncScheduler is the SINGLE owner of attendance processing crons — the
     // old separate attendanceProcessor (a duplicate 15-min processToday path
     // racing the scheduler's 10-min one) has been removed.
-    setTimeout(() => {
+    setImmediate(() => {
       try { startSyncScheduler(io); }
       catch (err) { logger.error('SyncScheduler error:', err.message); }
       finally { startupState.servicesStarted = true; }
@@ -271,7 +279,7 @@ const { runFirstRunInit } = require('./init');
       // process that died mid-run (see historicalRebuildService.js).
       historicalRebuildService.resumeInterruptedJobs(io)
         .catch((err) => logger.error(`[HIST-REBUILD] resume error: ${err.message}`));
-    }, 2000);
+    });
   });
 })();
 

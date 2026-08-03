@@ -1,6 +1,6 @@
 {
   "name": "petshrow-erp",
-  "version": "2.27.0",
+  "version": "2.28.0",
   "description": "PETSHROW ERP — نظام الموارد البشرية والرواتب (workspace root — the Electron app lives in frontend/)",
   "author": "PETSHROW",
   "private": true,

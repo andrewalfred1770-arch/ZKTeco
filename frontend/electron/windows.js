@@ -40,8 +40,6 @@ export async function createMainWindow(paths) {
       v8CacheOptions:   'bypassHeatCheck',
     },
   });
-  console.log('******** WINDOWS.JS LOADED ********');
-mainWindow.webContents.openDevTools({ mode: 'detach' });
 
   // ── Instant Window ───────────────────────────────────────────────────────
   // Show the (still-empty, backgroundColor-filled) window immediately — do
@@ -50,6 +48,7 @@ mainWindow.webContents.openDevTools({ mode: 'detach' });
   // readiness signals (or the hard timeout) close it.
   mainWindow.show();
   mainWindow.maximize();
+  if (IS_DEV) mainWindow.webContents.openDevTools({ mode: 'detach' });
 
   mainWindow.webContents.once('did-finish-load', () => markSplashStep(0, true));
 

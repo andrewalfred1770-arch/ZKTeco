@@ -19,6 +19,7 @@ import {
 } from '../lib/cellStyles';
 import {
   ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_MEDIUM, tabToNextCell,
+  isAbsentRow, attendanceRowClass,
 } from '../lib/gridDefaults';
 import PrintPreviewModal from '../components/PrintPreviewModal';
 import TimeCellEditor from '../components/grid/TimeCellEditor';
@@ -97,6 +98,7 @@ export default function AttendanceMonthlyPage() {
     {
       field: 'employeeName', headerName: 'اسم الموظف', width: 195, minWidth: 160, pinned: 'right',
       cellStyle: (p) => p.data?.isMonitored ? { ...nameCell(), color: p.data.monitorColor || '#f59e0b', fontWeight: '800' } : nameCell(),
+      cellClass: (p) => (!p.data?.isMonitored && isAbsentRow(p.data)) ? 'cell-name-absent' : '',
       cellRenderer: ({ data, value }) => data?.isMonitored
         ? <span style={{ display:'flex', alignItems:'center', gap:5 }}>
             <span style={{
@@ -214,6 +216,7 @@ export default function AttendanceMonthlyPage() {
       cellClass: p => [
         editCellClass('status', () => true)(p),
         p.data?.manualEdit ? 'cell-manual-override' : '',
+        p.value === 'absent' ? 'status-absent' : '',
       ].filter(Boolean).join(' '),
       tooltipValueGetter: p => p.data?.manualEdit
         ? manualOverrideTooltip(p.data?.manualPenaltyByName, p.data?.manualPenaltyAt) : undefined,
@@ -267,17 +270,8 @@ export default function AttendanceMonthlyPage() {
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
 
-  const getRowClass = useCallback(({ data }) => {
-    if (!data) return '';
-    const classes = [];
-    if      (data.isMonitored) classes.push('row-monitored');
-    if      (data.isHoliday)   classes.push('row-holiday');
-    else if (data.isWeekend)   classes.push('row-weekend');
-    else if (data.isAbsent)    classes.push('row-absent');
-    else if ((data.effectiveLatePenalty   || 0) > 0) classes.push('row-late');
-    else if ((data.effectiveOvertimeUnits || 0) > 0) classes.push('row-overtime');
-    return classes.join(' ');
-  }, []);
+  // Shared priority chain — see gridDefaults.js#attendanceRowClass.
+  const getRowClass = useCallback(attendanceRowClass, []);
 
   const getRowStyle = useCallback(({ data }) => {
     if (!data?.isMonitored) return undefined;

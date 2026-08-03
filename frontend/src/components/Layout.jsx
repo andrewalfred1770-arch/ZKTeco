@@ -143,27 +143,32 @@ export default function Layout() {
         transition: 'width 0.2s cubic-bezier(0.4,0,0.2,1)',
         flexShrink: 0, display: 'flex', flexDirection: 'column',
       }}>
-        {/* Logo */}
+        {/* Logo — premium branding area: larger identity tile, clearer name/
+            tagline hierarchy, a soft brand-tinted backdrop behind the tile
+            instead of a flat cell, so the company mark reads as the header
+            of the whole sidebar rather than just another nav row. */}
         <div style={{
-          display:'flex', alignItems:'center', gap:10, padding: collapsed ? '14px 0' : '14px 14px',
+          display:'flex', alignItems:'center', gap:11, padding: collapsed ? '16px 0' : '18px 14px',
           borderBottom:'1px solid rgba(255,255,255,0.06)', flexShrink:0,
           justifyContent: collapsed ? 'center' : 'flex-start',
+          background:'linear-gradient(180deg,rgba(59,130,246,0.07),transparent)',
         }}>
           <div style={{
-            width:34, height:34, borderRadius:9, flexShrink:0, overflow:'hidden',
-            background: brand.logoUrl ? 'transparent' : 'linear-gradient(135deg,#3b82f6 0%,#1d4ed8 100%)',
+            width:40, height:40, borderRadius:11, flexShrink:0, overflow:'hidden',
+            background: brand.logoUrl ? 'rgba(255,255,255,0.04)' : 'linear-gradient(135deg,#3b82f6 0%,#1d4ed8 100%)',
             display:'flex', alignItems:'center', justifyContent:'center',
-            fontWeight:900, fontSize:19, color:'#fff', fontFamily:'Cairo,sans-serif',
-            boxShadow: brand.logoUrl ? 'none' : '0 2px 10px rgba(37,99,235,0.4)',
+            fontWeight:900, fontSize:21, color:'#fff', fontFamily:'Cairo,sans-serif',
+            boxShadow: brand.logoUrl ? '0 2px 12px rgba(0,0,0,0.25)' : '0 2px 12px rgba(37,99,235,0.45)',
+            border: brand.logoUrl ? '1px solid rgba(255,255,255,0.08)' : 'none',
           }}>
             {brand.logoUrl
               ? <img src={brand.logoUrl} alt={brand.name} style={{ width:'100%', height:'100%', objectFit:'contain' }} />
               : brand.mark}
           </div>
           {!collapsed && (
-            <div style={{ lineHeight:1.2 }}>
-              <p style={{ color:'#fff', fontWeight:800, fontSize:15, letterSpacing:'0.06em' }}>{brand.name}</p>
-              <p style={{ color:'rgba(148,163,184,0.7)', fontSize:10 }}>{brand.taglineEn}</p>
+            <div style={{ lineHeight:1.25, minWidth:0 }}>
+              <p style={{ color:'#fff', fontWeight:800, fontSize:16, letterSpacing:'0.04em', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{brand.name}</p>
+              <p style={{ color:'rgba(148,163,184,0.75)', fontSize:10.5, marginTop:1, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', direction:'ltr', textAlign:'left' }}>{brand.taglineEn}</p>
             </div>
           )}
         </div>

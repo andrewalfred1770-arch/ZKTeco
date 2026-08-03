@@ -69,13 +69,14 @@ function readCompanySplashBrand() {
     if (!existsSync(cacheFile)) return null;
     const map = JSON.parse(readFileSync(cacheFile, 'utf8'));
     const name = (map.company_name_ar || '').trim();
+    const tagline = (map.company_description || '').trim();
     const logoPath = (map.logo_url || '').trim();
     let logoFileUrl = null;
     if (logoPath) {
       const logoFile = join(uploadsRoot, 'company', logoPath.replace(/^\/?uploads\/company\//, ''));
       if (existsSync(logoFile)) logoFileUrl = `file:///${logoFile.replace(/\\/g, '/')}`;
     }
-    return { name: name || null, logoFileUrl };
+    return { name: name || null, tagline: tagline || null, logoFileUrl };
   } catch { return null; }
 }
 
@@ -96,12 +97,13 @@ function escapeHtml(str) {
 export function createSplash() {
   const splashBrand = readCompanySplashBrand();
   const splashName  = escapeHtml((splashBrand?.name) || 'PETSHROW');
+  const splashTag   = escapeHtml(splashBrand?.tagline || 'Enterprise Resource Planning · الحضور والرواتب');
   const splashLogo  = splashBrand?.logoFileUrl
-    ? `<img src="${escapeHtml(splashBrand.logoFileUrl)}" style="width:100%;height:100%;object-fit:contain;border-radius:22px" />`
-    : `<span style="font-size:42px;font-weight:900;color:#fff;font-family:'Segoe UI',Arial;line-height:1">P</span>`;
+    ? `<img src="${escapeHtml(splashBrand.logoFileUrl)}" style="width:100%;height:100%;object-fit:contain;border-radius:26px" />`
+    : `<span style="font-size:50px;font-weight:900;color:#fff;font-family:'Segoe UI',Arial;line-height:1">P</span>`;
 
   splashWindow = new BrowserWindow({
-    width: 460, height: 300,
+    width: 480, height: 320,
     frame: false, alwaysOnTop: true,
     resizable: false, center: true,
     backgroundColor: '#020817',
@@ -120,24 +122,30 @@ export function createSplash() {
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
 body{
-  background:linear-gradient(135deg,#020817 0%,#0c1a3a 100%);
+  background:radial-gradient(120% 140% at 50% -10%,#0f2555 0%,#020817 62%);
   color:#f1f5f9;font-family:'Segoe UI',Tahoma,Arial,sans-serif;
   display:flex;flex-direction:column;align-items:center;
-  justify-content:center;height:100vh;gap:18px;user-select:none;
+  justify-content:center;height:100vh;gap:20px;user-select:none;
   -webkit-app-region:drag;
 }
+/* Premium entrance — logo rises/settles first, identity + progress follow
+   in a short staggered cascade instead of appearing all at once. */
+@keyframes rise{from{opacity:0;transform:translateY(10px) scale(0.94);}to{opacity:1;transform:translateY(0) scale(1);}}
 .logo{
-  width:76px;height:76px;background:linear-gradient(135deg,#1d4ed8,#3b82f6);
-  border-radius:22px;display:flex;align-items:center;justify-content:center;
-  box-shadow:0 12px 40px rgba(59,130,246,0.45);
-  animation:pulse 2s ease-in-out infinite;
+  width:92px;height:92px;background:linear-gradient(135deg,#1d4ed8,#3b82f6);
+  border-radius:26px;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 16px 50px rgba(59,130,246,0.45);
+  animation:rise 0.5s cubic-bezier(0.16,1,0.3,1) both, pulse 2.4s ease-in-out 0.5s infinite;
 }
-@keyframes pulse{0%,100%{box-shadow:0 12px 40px rgba(59,130,246,0.45);}50%{box-shadow:0 12px 60px rgba(59,130,246,0.7);}}
-.title{font-size:20px;font-weight:700;letter-spacing:-0.3px;}
-.sub{font-size:12px;color:#64748b;margin-top:4px;}
-.track{width:260px;height:5px;background:#0f172a;border-radius:3px;overflow:hidden;border:1px solid #1e3a5f;}
+@keyframes pulse{0%,100%{box-shadow:0 16px 50px rgba(59,130,246,0.45);}50%{box-shadow:0 16px 66px rgba(59,130,246,0.72);}}
+.identity{animation:rise 0.5s cubic-bezier(0.16,1,0.3,1) 0.12s both;}
+.title{font-size:21px;font-weight:800;letter-spacing:1px;}
+.sub{font-size:11.5px;color:#7d8bab;margin-top:5px;}
+.track{width:264px;height:5px;background:#0f172a;border-radius:3px;overflow:hidden;border:1px solid #1e3a5f;
+  animation:rise 0.5s cubic-bezier(0.16,1,0.3,1) 0.22s both;}
 .fill{height:100%;width:0;background:linear-gradient(90deg,#1d4ed8,#60a5fa);border-radius:3px;transition:width 0.4s cubic-bezier(0.4,0,0.2,1);}
-.checklist{display:flex;flex-direction:column;gap:6px;width:260px;}
+.checklist{display:flex;flex-direction:column;gap:6px;width:264px;
+  animation:rise 0.5s cubic-bezier(0.16,1,0.3,1) 0.3s both;}
 .item{display:flex;align-items:center;gap:8px;font-size:12px;color:#475569;transition:color 0.25s;}
 .item.done{color:#cbd5e1;}
 .mark{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;
@@ -152,9 +160,9 @@ body{
 <div class="logo" ${splashBrand?.logoFileUrl ? 'style="background:#0b1a35"' : ''}>
   ${splashLogo}
 </div>
-<div style="text-align:center">
+<div class="identity" style="text-align:center">
   <div class="title" style="letter-spacing:2px">${splashName}</div>
-  <div class="sub">Enterprise Resource Planning · الحضور والرواتب</div>
+  <div class="sub">${splashTag}</div>
 </div>
 <div class="track"><div class="fill" id="fill"></div></div>
 <div class="checklist" id="checklist"></div>

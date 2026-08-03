@@ -68,6 +68,7 @@ html.dark, html:not(.light) {
   --status-late-bg:        rgba(245,158,11,0.12);
   --status-absent:         #f87171;
   --status-absent-bg:      rgba(239,68,68,0.12);
+  --row-absent-name:       #e2b8b8;   /* employee name in an absent row — dimmer/warmer than --c-name, reads as "darker" on a dark bg */
   --status-early-leave:    #fb923c;
   --status-early-leave-bg: rgba(249,115,22,0.12);
   /* --status-half-day removed 2026-06-22 */
@@ -191,6 +192,7 @@ html.light {
   --status-late-bg:        rgba(180,83,9,0.11);
   --status-absent:         #dc2626;
   --status-absent-bg:      rgba(220,38,38,0.10);
+  --row-absent-name:       #7f1d1d;   /* employee name in an absent row — dark maroon, darker than --c-name on the light row tint */
   --status-early-leave:    #c2410c;
   --status-early-leave-bg: rgba(194,65,12,0.10);
   /* --status-half-day removed 2026-06-22 */
@@ -714,6 +716,14 @@ html.dark  .ag-cell.cell-manual-override {
   font-weight: 600 !important;
 }
 
+/* Emphasis — the ONE reusable escape hatch for "this cell must render
+   genuinely bold": the base `.ag-cell{font-weight:500!important}` rule
+   above silently caps every column's cellStyle fontWeight at 500, so a
+   plain `fontWeight:'800'` in a colDef's cellStyle never actually renders
+   bold. Add `cellClass:'cell-emphasis'` instead of fighting the cascade
+   per-column. */
+.ag-cell.cell-emphasis { font-weight: 800 !important; }
+
 /* ── Light mode — extra enforcement ─────────────────────────────────────── */
 html.light .ag-row { background-color: transparent; color: var(--c-val) !important; }
 html.light .ag-cell { color: var(--c-val) !important; }
@@ -739,7 +749,17 @@ html.light .data-table tbody tr:hover td { background: rgba(29,78,216,0.06) !imp
 /* ═══════════════════════════════════════════════════════════════════════════
    ROW STATE COLORING
 ═══════════════════════════════════════════════════════════════════════════ */
-html.dark  .row-absent   { background:rgba(239,68,68,0.10) !important;   box-shadow: inset 4px 0 0 #ef4444; }
+/* Absence — reusable design token: driven entirely by --status-absent(-bg),
+   the same pair STATUS_LABELS.absent already uses for the status pill, so
+   the row tint and the status text are always the same red in both themes.
+   getRowClass (gridDefaults.js#attendanceRowClass) applies this ONE class;
+   every grid/table shares it — no per-page CSS duplication. */
+/* `.ag-row` is included in the selector (not just `.row-absent`) so this
+   out-specifies `html.<theme> .ag-row.ag-row-odd/-even` (the zebra
+   "extra enforcement" rules above, each 3 classes deep) — without it, an
+   absent row landing on an even/odd index would render with the plain
+   zebra background instead of the absence tint. */
+html.dark  .ag-row.row-absent   { background:var(--status-absent-bg) !important; box-shadow: inset 4px 0 0 var(--status-absent); }
 html.dark  .row-late     { background:rgba(245,158,11,0.09) !important;  box-shadow: inset 4px 0 0 #f59e0b; }
 html.dark  .row-overtime { background:rgba(139,92,246,0.08) !important;  box-shadow: inset 4px 0 0 #8b5cf6; }
 /* row-half-day removed 2026-06-22 */
@@ -747,8 +767,8 @@ html.dark  .row-weekend  { opacity:0.44 !important; }
 html.dark  .row-holiday  { background:rgba(59,130,246,0.09) !important;  box-shadow: inset 4px 0 0 #3b82f6; }
 html.dark  .row-monitored { background:rgba(245,158,11,0.10) !important; }
 
-/* Light mode — fully saturated, instantly distinguishable, 5px inset accent */
-html.light .row-absent   { background:#fca5a5 !important; box-shadow: inset 5px 0 0 #dc2626; color:#7f1d1d !important; }
+/* Light mode */
+html.light .ag-row.row-absent   { background:var(--status-absent-bg) !important; box-shadow: inset 4px 0 0 var(--status-absent); }
 html.light .row-late     { background:#fde68a !important; box-shadow: inset 5px 0 0 #b45309; color:#78350f !important; }
 html.light .row-overtime { background:#c7d2fe !important; box-shadow: inset 5px 0 0 #4338ca; }
 /* row-half-day removed 2026-06-22 */
@@ -756,6 +776,52 @@ html.light .row-weekend  { background:#e2e8f0 !important; opacity:0.72 !importan
 html.light .row-holiday  { background:#bfdbfe !important; box-shadow: inset 5px 0 0 #1d4ed8; color:#1e3a8a !important; }
 /* Monitored rows: highest visual priority — declared last to win over all state rows */
 html.light .row-monitored { background:rgba(245,158,11,0.18) !important; }
+
+/* ── Absence — hover: keep the red identity, only increase intensity ──────── */
+html.dark  .ag-row.row-absent:hover,
+html.dark  .ag-row.row-absent:hover:not(.ag-row-selected) { background:rgba(239,68,68,0.18) !important; }
+html.light .ag-row.row-absent:hover,
+html.light .ag-row.row-absent:hover:not(.ag-row-selected) { background:rgba(220,38,38,0.18) !important; }
+
+/* ── Absence + selected — combine, never lose the absence indication.
+   `.ag-row-selected` alone (declared earlier) wins ties on source order at
+   equal specificity, which would silently drop the red row entirely when an
+   absent row is selected — these two-class selectors outrank it. ──────── */
+html.dark  .ag-row.row-absent.ag-row-selected,
+html.dark  .ag-row.row-absent.ag-row-selected:hover {
+  background: rgba(239,68,68,0.24) !important;
+  box-shadow: inset 4px 0 0 var(--status-absent), inset 0 0 0 1.5px var(--accent);
+}
+html.light .ag-row.row-absent.ag-row-selected,
+html.light .ag-row.row-absent.ag-row-selected:hover {
+  background: rgba(220,38,38,0.22) !important;
+  box-shadow: inset 4px 0 0 var(--status-absent), inset 0 0 0 1.5px var(--accent);
+}
+
+/* ── Absence — cell-level overrides, qualified the same way as
+   .cell-manual-override above (needed to out-specify the light-theme
+   `.ag-cell{color:...!important}` enforcement rule). ──────────────────── */
+.ag-cell.status-absent,
+html.light .ag-cell.status-absent,
+html.dark  .ag-cell.status-absent {
+  color: var(--status-absent) !important;
+  font-weight: 700 !important;
+}
+.ag-cell.cell-name-absent,
+html.light .ag-cell.cell-name-absent,
+html.dark  .ag-cell.cell-name-absent {
+  color: var(--row-absent-name) !important;
+  font-weight: 700 !important;
+}
+
+/* ── Absence on plain <table class="data-table"> rows (e.g. Dashboard) ────
+   A zebra/hover rule painting a background on the <td> itself would sit on
+   top of and hide the <tr>'s own .row-absent background — make those cells
+   transparent so the row-level red shows through, then re-apply a slightly
+   stronger red specifically on hover so the identity never disappears. ── */
+.data-table tbody tr.row-absent td { background: transparent !important; }
+html.dark  .data-table tbody tr.row-absent:hover td { background: rgba(239,68,68,0.16) !important; }
+html.light .data-table tbody tr.row-absent:hover td { background: rgba(220,38,38,0.16) !important; }
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SCROLLBAR

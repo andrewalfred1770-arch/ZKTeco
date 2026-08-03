@@ -183,7 +183,7 @@ ipcMain.handle('pdf:export', async (_e, { html, filename = 'PETSHROW_report', la
 // printDocument() in printUtils.js calls window.electron.printHTML() which routes here.
 // Renders the report HTML in a hidden BrowserWindow then calls webContents.print() so
 // the OS native print dialog appears — no window.open() popup needed.
-ipcMain.handle('print:html', async (_e, { html, landscape = true } = {}) => {
+ipcMain.handle('print:html', async (_e, { html, landscape = true, copies } = {}) => {
   let pdfWin  = null;
   let tmpFile = null;
   try {
@@ -201,7 +201,11 @@ ipcMain.handle('print:html', async (_e, { html, landscape = true } = {}) => {
       );
     } catch {}
     await new Promise((resolve, reject) => {
-      pdfWin.webContents.print({ silent: false, printBackground: true }, (success, errorType) => {
+      // `copies`, when set, only pre-fills the native dialog's copies field —
+      // silent:false means the user still sees and can change it there.
+      const printOpts = { silent: false, printBackground: true };
+      if (copies > 1) printOpts.copies = copies;
+      pdfWin.webContents.print(printOpts, (success, errorType) => {
         if (!success && errorType !== 'cancelled') reject(new Error(errorType));
         else resolve();
       });

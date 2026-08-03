@@ -14,7 +14,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import {
   NUM, CENTER, nameCell, codeCell, deptCell,
   otCell, penaltyCell, timeCell, rowNumCell, mutedCell } from '../lib/cellStyles';
-import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_MEDIUM, COL_LARGE, tabToNextCell, safeRefreshCells } from '../lib/gridDefaults';
+import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_MEDIUM, COL_LARGE, tabToNextCell, safeRefreshCells, isAbsentRow, attendanceRowClass } from '../lib/gridDefaults';
 import PrintPreviewModal from '../components/PrintPreviewModal';
 import TimeCellEditor from '../components/grid/TimeCellEditor';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
@@ -91,6 +91,10 @@ export default function AttendanceDailyPage() {
     {
       field:'employeeName', headerName:'اسم الموظف', width:220, minWidth:180, pinned:'right',
       cellStyle: (p) => p.data?.isMonitored ? { ...nameCell(), color: p.data.monitorColor || '#f59e0b', fontWeight: '800' } : nameCell(),
+      // Slightly-darker name treatment for absent rows (skipped when
+      // monitored — that badge color already takes visual priority, same
+      // as the row-class chain in gridDefaults.js#attendanceRowClass).
+      cellClass: (p) => (!p.data?.isMonitored && isAbsentRow(p.data)) ? 'cell-name-absent' : '',
       cellRenderer: ({ data, value }) => data?.isMonitored
         ? <span style={{ display:'flex', alignItems:'center', gap:5 }}>
             <span style={{
@@ -189,6 +193,7 @@ export default function AttendanceDailyPage() {
       cellClass: p => [
         editCellClass('status', () => true)(p),
         p.data?.manualEdit ? 'cell-manual-override' : '',
+        p.value === 'absent' ? 'status-absent' : '',
       ].filter(Boolean).join(' '),
       tooltipValueGetter: p => p.data?.manualEdit
         ? manualOverrideTooltip(p.data?.manualPenaltyByName, p.data?.manualPenaltyAt) : undefined,
@@ -241,20 +246,13 @@ export default function AttendanceDailyPage() {
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
 
-  const getRowClass = useCallback(({ data }) => {
-    if (!data) return '';
-    const classes = [];
-    // Priority: Monitored > Holiday > Weekend > Absent > Half Day > Late > Overtime
-    // EF-018: manual-override rows no longer get a row-level highlight — only
-    // the edited cell's own text changes color (see .cell-manual-override).
-    if      (data.isMonitored)  classes.push('row-monitored');
-    if      (data.isHoliday)    classes.push('row-holiday');
-    else if (data.isWeekend)    classes.push('row-weekend');
-    else if (data.isAbsent)     classes.push('row-absent');
-    else if ((data.effectiveLatePenalty||0) > 0)  classes.push('row-late');
-    else if ((data.effectiveOvertimeUnits||0) > 0) classes.push('row-overtime');
-    return classes.join(' ');
-  }, []);
+  // Priority: Monitored > Holiday > Weekend > Absent > Late > Overtime —
+  // shared with AttendanceMonthlyPage/EmployeeMovementPage so the "entire
+  // row" absence highlight (and every other row state) is defined once
+  // (see gridDefaults.js#attendanceRowClass). EF-018: manual-override rows
+  // no longer get a row-level highlight — only the edited cell's own text
+  // changes color (see .cell-manual-override).
+  const getRowClass = useCallback(attendanceRowClass, []);
 
   const getRowStyle = useCallback(({ data }) => {
     if (!data?.isMonitored) return undefined;

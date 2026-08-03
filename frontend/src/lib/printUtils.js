@@ -119,11 +119,19 @@ export async function exportToPDF(data, columns, title, meta = {}, orientation =
     orientation,
     showSignatures: meta.showSignatures !== false,
     brand: meta.brand || BRAND,
+    // Print Experience settings (Print Preview → left sidebar) — all
+    // optional, all default inside buildReportHTML to today's exact output.
+    paperSize: meta.paperSize, margins: meta.margins, scalePercent: meta.scalePercent,
+    showHeaderFooter: meta.showHeaderFooter, repeatHeader: meta.repeatHeader,
+    printBackground: meta.printBackground, watermarkText: meta.watermarkText, showStamp: meta.showStamp,
   });
 
   const filename = `${FILE_PREFIX}_${safeName(title)}_${nowFilename()}`;
 
-  // Preferred path: Electron Chromium print engine → true Arabic PDF
+  // Preferred path: Electron Chromium print engine → true Arabic PDF.
+  // Content scale/margins/paper size are already baked into `html` above (the
+  // same @page/font-size CSS the live preview renders) — Electron gets no
+  // separate scale knob, so preview, print, and PDF always agree exactly.
   if (typeof window !== 'undefined' && window.electron?.exportPDF) {
     try {
       return await window.electron.exportPDF({ html, filename, landscape: orientation === 'landscape' });
@@ -148,14 +156,19 @@ export function printHTML(data, columns, title, meta = {}, showSignatures = true
     orientation: meta.orientation || 'landscape',
     showSignatures,
     brand: meta.brand || BRAND,
+    paperSize: meta.paperSize, margins: meta.margins, scalePercent: meta.scalePercent,
+    showHeaderFooter: meta.showHeaderFooter, repeatHeader: meta.repeatHeader,
+    printBackground: meta.printBackground, watermarkText: meta.watermarkText, showStamp: meta.showStamp,
   });
-  printDocument(html);
+  printDocument(html, meta.copies);
 }
 
-function printDocument(html) {
+function printDocument(html, copies) {
   // In Electron, window.open() is blocked by setWindowOpenHandler — use IPC instead.
+  // `copies` is a genuine Electron print() option — the native dialog still
+  // opens (silent:false in ipc.js), this only pre-fills its copies field.
   if (window.electron?.printHTML) {
-    window.electron.printHTML({ html }).catch(err => console.error('[Print] IPC failed:', err));
+    window.electron.printHTML({ html, copies }).catch(err => console.error('[Print] IPC failed:', err));
     return;
   }
   const w = window.open('', '_blank', 'width=1000,height=720');

@@ -19,7 +19,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import PrintPreviewModal from '../components/PrintPreviewModal';
 import ManualPenaltyModal from '../components/ManualPenaltyModal';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
-import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_MEDIUM, tabToNextCell, safeRefreshCells as sharedSafeRefreshCells } from '../lib/gridDefaults';
+import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_MEDIUM, tabToNextCell, safeRefreshCells as sharedSafeRefreshCells, isAbsentRow, attendanceRowClass } from '../lib/gridDefaults';
 import { nameCell, codeCell } from '../lib/cellStyles';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
 import TimeCellEditor from '../components/grid/TimeCellEditor';
@@ -449,6 +449,7 @@ export default function EmployeeMovementPage() {
     {
       field:'employeeName', headerName:'اسم الموظف', width:160, minWidth:140, pinned:'right',
       cellStyle: (p) => p.data?.isMonitored ? { ...nameCell(), color: p.data.monitorColor || '#f59e0b', fontWeight: '800' } : nameCell(),
+      cellClass: (p) => (!p.data?.isMonitored && isAbsentRow(p.data)) ? 'cell-name-absent' : '',
       cellRenderer: ({ data, value, node }) => {
         if (node.rowPinned) return value;
         return data?.isMonitored
@@ -644,17 +645,8 @@ export default function EmployeeMovementPage() {
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
 
-  const getRowClass = useCallback(({ data }) => {
-    if (!data) return '';
-    const classes = [];
-    if      (data.isMonitored) classes.push('row-monitored');
-    if      (data.isHoliday)   classes.push('row-holiday');
-    else if (data.isWeekend)   classes.push('row-weekend');
-    else if (data.isAbsent) classes.push('row-absent');
-    else if ((data.effectiveLatePenalty  || 0) > 0) classes.push('row-late');
-    else if ((data.effectiveOvertimeUnits|| 0) > 0) classes.push('row-overtime');
-    return classes.join(' ');
-  }, []);
+  // Shared priority chain — see gridDefaults.js#attendanceRowClass.
+  const getRowClass = useCallback(attendanceRowClass, []);
 
   // AttendanceDaily.id is the ONLY row identity for any row that has one —
   // never derive it from employeeId/date, since those can transiently be

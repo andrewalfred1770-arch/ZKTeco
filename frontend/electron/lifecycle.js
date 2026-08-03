@@ -1,5 +1,5 @@
 import { app } from 'electron';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import { join } from 'path';
 import { IS_DEV, BUILD_MARKER } from './constants.js';
 import { state } from './state.js';
@@ -80,12 +80,13 @@ console.log("AFTER createMainWindow");
       if (paths.frontendDist) {
         const assetsDir = join(paths.frontendDist, 'assets');
         if (existsSync(assetsDir)) {
-          const { readdirSync } = await import('fs');
-          const jsEntry = readdirSync(assetsDir).find(f => /^index-.*\.js$/.test(f));
+          const { readdir, readFile } = await import('fs/promises');
+          const files = await readdir(assetsDir);
+          const jsEntry = files.find(f => /^index-.*\.js$/.test(f));
           if (jsEntry) {
             bundleFile = jsEntry;
             const { createHash } = await import('crypto');
-            bundleHash = createHash('md5').update(readFileSync(join(assetsDir, jsEntry))).digest('hex');
+            bundleHash = createHash('md5').update(await readFile(join(assetsDir, jsEntry))).digest('hex');
           }
         }
       }

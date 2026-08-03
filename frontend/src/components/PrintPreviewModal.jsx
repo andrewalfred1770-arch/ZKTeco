@@ -5,13 +5,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, Printer, FileText, FileSpreadsheet,
-  ZoomIn, ZoomOut, RotateCcw, Loader2, RectangleHorizontal, RectangleVertical,
+  ZoomIn, ZoomOut, Maximize2, StretchHorizontal, Loader2,
+  ChevronRight, ChevronLeft, PanelLeftClose, PanelLeft, PanelRightClose, PanelRight,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useTheme } from '../contexts/ThemeContext';
 import { printHTML, exportToPDF, exportToExcel, buildReportHTML } from '../lib/printUtils';
 import { useCompanyBrand } from '../lib/branding';
 import { fmtTime, fmtMoney, fmtOTHours, fmtMinutes, fmtPenaltyUnits, fmtOvertimeUnits, fmtWorkedHours, fmtIntZero, fmtDec, STATUS_LABELS, displayNetSalary } from '../lib/formatters';
+import PrintSettingsSidebar from './print/PrintSettingsSidebar';
+import PrintThumbnails from './print/PrintThumbnails';
 
 const STATUS_TD = r => {
   const m = { present:'status-present', late:'status-late', absent:'status-absent',
@@ -228,8 +231,30 @@ export const REPORT_LABELS = {
   raw_logs:                  'سجلات البصمة',
 };
 
-// A4 content width @96dpi minus page margins (≈ template's printable area)
-const A4_W = { portrait: 760, landscape: 1080 };
+// ── Page geometry ────────────────────────────────────────────────────────────
+// Real paper dimensions (mm) so "Paper Size"/"Margins" in the settings
+// sidebar are genuine — the same numbers feed reportTemplate.js's @page rule
+// AND the on-screen page box, so the preview always matches what prints.
+const PAPER_MM  = { A4: { w: 210, h: 297 }, Letter: { w: 215.9, h: 279.4 }, Legal: { w: 215.9, h: 355.6 } };
+const MARGIN_MM = { normal: { v: 10, h: 8 }, narrow: { v: 6, h: 5 }, wide: { v: 16, h: 14 } };
+const MM_TO_PX  = 3.7795275591; // 96dpi
+
+function computePageBoxPx(paperSize, isLand, marginsKey) {
+  const paper = PAPER_MM[paperSize] || PAPER_MM.A4;
+  const m     = MARGIN_MM[marginsKey] || MARGIN_MM.normal;
+  const fullW = isLand ? paper.h : paper.w;
+  const fullH = isLand ? paper.w : paper.h;
+  return {
+    pageWidthPx:  Math.round((fullW - 2 * m.h) * MM_TO_PX),
+    pageHeightPx: Math.round((fullH - 2 * m.v) * MM_TO_PX),
+  };
+}
+
+const DEFAULT_SETTINGS = {
+  paperSize: 'A4', margins: 'normal', scalePercent: 100,
+  showHeaderFooter: true, repeatHeader: true, printBackground: true,
+  showSignatures: true, watermarkEnabled: false, watermarkText: '', showStamp: false, copies: 1,
+};
 
 export default function PrintPreviewModal({
   isOpen, onClose, data = [],
@@ -241,25 +266,59 @@ export default function PrintPreviewModal({
   const iframeRef = useRef();
   const wrapRef = useRef();
   const brand = useCompanyBrand();
-  const [zoom, setZoom] = useState(orientation === 'landscape' ? 70 : 90);
+  const [zoom, setZoom] = useState(100);
   const [ori, setOri] = useState(orientation);
   const [activeReport, setActiveReport] = useState(reportType);
   const [pdfBusy, setPdfBusy] = useState(false);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [contentHeightPx, setContentHeightPx] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [showSidebar, setShowSidebar] = useState(true);
+  const [showThumbs, setShowThumbs] = useState(true);
 
-  useEffect(() => { if (isOpen) { setActiveReport(reportType); setOri(orientation); } }, [isOpen, reportType, orientation]);
+  useEffect(() => {
+    if (isOpen) { setActiveReport(reportType); setOri(orientation); setSettings(DEFAULT_SETTINGS); setCurrentPage(1); }
+  }, [isOpen, reportType, orientation]);
+
+  const { pageWidthPx, pageHeightPx } = useMemo(
+    () => computePageBoxPx(settings.paperSize, ori === 'landscape', settings.margins),
+    [settings.paperSize, settings.margins, ori]
+  );
+  const pageCount = Math.max(1, Math.ceil(contentHeightPx / pageHeightPx) || 1);
+  useEffect(() => { if (currentPage > pageCount) setCurrentPage(pageCount); }, [pageCount, currentPage]);
+
+  // Navigating to a page (thumbnail click or the toolbar's prev/next) must
+  // actually scroll the paper viewport there — otherwise "current page"
+  // would just be a number nobody sees reflected in the document itself.
+  const goToPage = useCallback((p) => {
+    setCurrentPage(p);
+    const el = wrapRef.current;
+    if (!el) return;
+    const topPx = (p - 1) * pageHeightPx * (zoom / 100);
+    el.scrollTo({ top: Math.max(0, topPx), behavior: 'smooth' });
+  }, [pageHeightPx, zoom]);
 
   // ── Auto-fit width ────────────────────────────────────────────────────────
-  // Instead of a fixed 70%/90% default that leaves large gray gaps around a
-  // tiny page on wide screens, measure the actual preview area and pick a zoom
-  // that makes the A4 sheet use the real available width (clamped 40–150%).
+  // Measures the actual preview area and picks a zoom that makes the sheet
+  // use the real available width (clamped 40–150%) — never a tiny page
+  // floating in a big gray canvas, regardless of paper size/orientation.
   const fitToWidth = useCallback(() => {
     const el = wrapRef.current;
     if (!el) return;
-    const available = el.clientWidth - 48; // minus horizontal scroll-area padding
+    const available = el.clientWidth - 64;
     if (available <= 0) return;
-    const pct = Math.floor((available / A4_W[ori]) * 100);
-    setZoom(Math.min(150, Math.max(40, pct)));
-  }, [ori]);
+    setZoom(Math.min(150, Math.max(40, Math.floor((available / pageWidthPx) * 100))));
+  }, [pageWidthPx]);
+
+  const fitToPage = useCallback(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const availW = el.clientWidth - 64;
+    const availH = el.clientHeight - 64;
+    if (availW <= 0 || availH <= 0) return;
+    const pct = Math.min((availW / pageWidthPx) * 100, (availH / pageHeightPx) * 100);
+    setZoom(Math.min(150, Math.max(40, Math.floor(pct))));
+  }, [pageWidthPx, pageHeightPx]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -270,6 +329,22 @@ export default function PrintPreviewModal({
     ro.observe(el);
     return () => ro.disconnect();
   }, [isOpen, ori, fitToWidth]);
+
+  // Manual scrolling (not just thumbnail/toolbar navigation) also updates
+  // the current page — the highlighted thumbnail always reflects what's
+  // actually visible, the way Acrobat's page indicator does.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const pageStepPx = pageHeightPx * (zoom / 100);
+      if (pageStepPx <= 0) return;
+      const p = Math.min(pageCount, Math.max(1, Math.round(el.scrollTop / pageStepPx) + 1));
+      setCurrentPage(prev => (prev === p ? prev : p));
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [pageHeightPx, zoom, pageCount]);
 
   const columns = customColumns || REPORT_COLUMNS[activeReport] || REPORT_COLUMNS.attendance_daily;
   const reportTitle = title || REPORT_LABELS[activeReport] || 'تقرير';
@@ -317,24 +392,38 @@ export default function PrintPreviewModal({
     return null;
   }, [data, activeReport]);
 
+  const watermarkText = settings.watermarkEnabled ? (settings.watermarkText || brand.name) : '';
+
   const previewHTML = useMemo(() => {
     if (!isOpen) return '';
     if (filteredData.length === 0)
       return '<p style="padding:40px;font-family:Cairo,sans-serif;direction:rtl;text-align:center;color:#64748b">لا توجد بيانات للعرض</p>';
     return buildReportHTML({
       title: reportTitle, columns, rows: filteredData,
-      meta: { ...meta }, stats, orientation: ori, showSignatures: true, brand,
+      meta: { ...meta }, stats, orientation: ori, brand,
+      showSignatures: settings.showSignatures,
+      paperSize: settings.paperSize, margins: settings.margins, scalePercent: settings.scalePercent,
+      showHeaderFooter: settings.showHeaderFooter, repeatHeader: settings.repeatHeader,
+      printBackground: settings.printBackground, watermarkText, showStamp: settings.showStamp,
     });
-  }, [isOpen, filteredData, columns, reportTitle, meta, stats, ori, brand]);
+  }, [isOpen, filteredData, columns, reportTitle, meta, stats, ori, brand, settings, watermarkText]);
 
-  // Write into iframe and auto-fit its height to content
+  // Write into iframe, auto-fit its height, and measure the total content
+  // height — the one real input the page-count estimate and thumbnail
+  // slicing both need (see computePageBoxPx above).
   useEffect(() => {
     const ifr = iframeRef.current;
     if (!ifr || !previewHTML) return;
     const doc = ifr.contentDocument;
     if (!doc) return;
     doc.open(); doc.write(previewHTML); doc.close();
-    const fit = () => { try { ifr.style.height = doc.body.scrollHeight + 'px'; } catch {} };
+    const fit = () => {
+      try {
+        const h = doc.body.scrollHeight;
+        ifr.style.height = h + 'px';
+        setContentHeightPx(h);
+      } catch {}
+    };
     const t = setTimeout(fit, 120);
     if (doc.fonts?.ready) doc.fonts.ready.then(fit).catch(()=>{});
     return () => clearTimeout(t);
@@ -342,25 +431,31 @@ export default function PrintPreviewModal({
 
   if (!isOpen) return null;
 
+  // Every export path carries the same Print Experience settings the live
+  // preview renders, so preview/print/PDF never disagree.
+  const printMeta = {
+    ...meta, stats, orientation: ori, brand,
+    paperSize: settings.paperSize, margins: settings.margins, scalePercent: settings.scalePercent,
+    showHeaderFooter: settings.showHeaderFooter, repeatHeader: settings.repeatHeader,
+    printBackground: settings.printBackground, watermarkText, showStamp: settings.showStamp,
+    showSignatures: settings.showSignatures, copies: settings.copies,
+  };
+
+  // Routed through the one IPC print pipeline (printUtils.js → ipc.js's
+  // print:html handler) rather than calling the preview iframe's own
+  // .print() directly — that shortcut bypassed `copies` entirely (a fresh
+  // print() call on an iframe's contentWindow doesn't carry it), so with
+  // the Print Experience settings now real, this is the one path that
+  // actually honors all of them consistently.
   const handlePrint = () => {
-    const ifr = iframeRef.current;
-    if (ifr?.contentWindow) {
-      // Print directly from the already-rendered preview iframe — no window.open() needed.
-      // This works in both Electron (no popup blocker issue) and browser.
-      const go = () => { try { ifr.contentWindow.focus(); ifr.contentWindow.print(); } catch {} };
-      const doc = ifr.contentDocument;
-      if (doc?.fonts?.ready) doc.fonts.ready.then(go).catch(go);
-      else setTimeout(go, 180);
-    } else {
-      printHTML(filteredData, columns, reportTitle, { ...meta, stats, orientation: ori, brand }, true);
-    }
+    printHTML(filteredData, columns, reportTitle, printMeta, settings.showSignatures);
   };
 
   const handlePDF = async () => {
     setPdfBusy(true);
     const tid = toast.loading('جاري إنشاء ملف PDF...');
     try {
-      const res = await exportToPDF(filteredData, columns, reportTitle, { ...meta, stats, brand }, ori);
+      const res = await exportToPDF(filteredData, columns, reportTitle, printMeta, ori);
       if (res?.ok && !res.fallback) toast.success('تم حفظ ملف PDF', { id: tid });
       else if (res?.fallback) toast.success('تم فتح نافذة الطباعة (اختر حفظ كـ PDF)', { id: tid });
       else if (res?.canceled) toast.dismiss(tid);
@@ -377,56 +472,106 @@ export default function PrintPreviewModal({
 
   const showSubTabs = reportType === 'attendance_daily' || reportType === 'attendance_dashboard';
   const allTabKey   = reportType === 'attendance_dashboard' ? 'attendance_dashboard' : 'attendance_daily';
-  const tbBtn = { background:'rgba(255,255,255,0.08)', border:'none', borderRadius:6, color:'#bfdbfe', cursor:'pointer', padding:'5px 8px', display:'flex', alignItems:'center' };
+  // ── Toolbar tokens — theme-aware, so this reads as part of the app's own
+  // premium chrome instead of a hardcoded dark-navy dev-tool bar bolted onto
+  // whichever theme the user actually has active. Every button in the
+  // "view controls" zone shares this one visual language (segmented groups
+  // on a sunken track), matching the toolbar hierarchy real print previews
+  // (Acrobat/Word/Google Docs) use: identity ← view controls → export actions.
+  const segWrap  = { display:'flex', alignItems:'center', gap:2, background:'var(--surface-2)', border:'1px solid var(--border)', borderRadius:9, padding:2 };
+  const segBtn   = (active) => ({
+    display:'flex', alignItems:'center', justifyContent:'center', gap:5,
+    border:'none', borderRadius:7, cursor:'pointer', padding:'6px 9px',
+    background: active ? 'var(--surface)' : 'transparent',
+    color: active ? 'var(--accent)' : 'var(--text-3)',
+    boxShadow: active ? '0 1px 3px rgba(0,0,0,0.12)' : 'none',
+    fontSize:12, fontWeight:600, transition:'background 0.15s,color 0.15s',
+  });
+  const ghostBtn = { display:'flex', alignItems:'center', gap:6, background:'transparent', border:'1px solid var(--border)', borderRadius:8, cursor:'pointer', padding:'6px 10px', fontSize:12, fontWeight:600, color:'var(--text-2)' };
+
+  // Page-break guides: subtle dashed rules + "Page N" chips overlaid at every
+  // computed page boundary, in the SAME coordinate space as the iframe (so
+  // they scale together with zoom) — the one thing missing from a plain
+  // scrolling HTML preview that every real print-preview tool shows: where
+  // the page will actually break.
+  const pageGuides = pageCount > 1
+    ? Array.from({ length: pageCount - 1 }, (_, i) => (i + 1) * pageHeightPx)
+    : [];
 
   return (
-    <div style={{ position:'fixed', inset:0, zIndex:9999, background:'rgba(8,12,22,0.78)', display:'flex', alignItems:'center', justifyContent:'center' }}
-      onClick={e => e.target === e.currentTarget && onClose()} dir="rtl">
-      <div style={{
-        width:'94vw', height:'94vh', background: isLight ? '#eef2f8' : '#0a0f1a',
-        borderRadius:10, border: isLight ? '1px solid #cbd5e1' : '1px solid #233047',
-        display:'flex', flexDirection:'column', overflow:'hidden', boxShadow:'0 30px 70px rgba(0,0,0,0.55)',
-      }}>
-        {/* Toolbar */}
-        <div style={{ padding:'9px 14px', background:'#0f2444', display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <div style={{ width:26, height:26, borderRadius:6, background:'linear-gradient(135deg,#3b82f6,#1d4ed8)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, color:'#fff', fontSize:15 }}>P</div>
-            <span style={{ color:'#fff', fontWeight:700, fontSize:14 }}>{reportTitle}</span>
-            <span style={{ background:'rgba(59,130,246,0.2)', color:'#93c5fd', padding:'2px 8px', borderRadius:99, fontSize:11, border:'1px solid rgba(59,130,246,0.3)' }}>
+    // A full-screen WORKSPACE, not a centered dialog card — the toolbar sits
+    // flush against the real window edges like Word/Acrobat's own chrome,
+    // so nothing reads as "a modal floating over the app".
+    <div style={{ position:'fixed', inset:0, zIndex:9999, background:'var(--surface)', display:'flex', flexDirection:'column' }} dir="rtl">
+        {/* ── Toolbar — three zones: identity · view controls · export actions ── */}
+        <div style={{
+          padding:'10px 16px', background:'var(--surface)', borderBottom:'1px solid var(--border)',
+          display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0, flexWrap:'wrap', gap:10,
+        }}>
+          {/* Zone 1 — identity */}
+          <div style={{ display:'flex', alignItems:'center', gap:10, minWidth:0 }}>
+            <div style={{ width:28, height:28, borderRadius:8, flexShrink:0, background:'linear-gradient(135deg,#3b82f6,#1d4ed8)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, color:'#fff', fontSize:14 }}>P</div>
+            <span style={{ color:'var(--text)', fontWeight:700, fontSize:14, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', maxWidth:240 }}>{reportTitle}</span>
+            <span style={{ background:'var(--accent-soft)', color:'var(--accent)', padding:'2px 9px', borderRadius:99, fontSize:11, fontWeight:700, whiteSpace:'nowrap' }}>
               {filteredData.length} سجل
             </span>
           </div>
 
-          <div style={{ display:'flex', alignItems:'center', gap:7 }}>
-            {/* Orientation */}
-            <button onClick={() => setOri('portrait')}  title="عمودي"  style={{ ...tbBtn, color: ori==='portrait'  ? '#60a5fa' : '#64748b', background: ori==='portrait'  ? 'rgba(96,165,250,0.15)' : tbBtn.background }}><RectangleVertical style={{ width:15, height:15 }} /></button>
-            <button onClick={() => setOri('landscape')} title="أفقي"   style={{ ...tbBtn, color: ori==='landscape' ? '#60a5fa' : '#64748b', background: ori==='landscape' ? 'rgba(96,165,250,0.15)' : tbBtn.background }}><RectangleHorizontal style={{ width:15, height:15 }} /></button>
-            <div style={{ width:1, height:18, background:'rgba(255,255,255,0.12)', margin:'0 3px' }} />
-            {/* Zoom */}
-            <button onClick={() => setZoom(z => Math.max(40, z-10))} style={tbBtn}><ZoomOut style={{ width:14, height:14 }} /></button>
-            <span style={{ color:'#93c5fd', fontSize:12, minWidth:34, textAlign:'center' }}>{zoom}%</span>
-            <button onClick={() => setZoom(z => Math.min(150, z+10))} style={tbBtn}><ZoomIn style={{ width:14, height:14 }} /></button>
-            <button onClick={fitToWidth} title="ملائمة العرض" style={tbBtn}><RotateCcw style={{ width:13, height:13 }} /></button>
-            <div style={{ width:1, height:18, background:'rgba(255,255,255,0.12)', margin:'0 3px' }} />
-            {/* Exports */}
-            <button onClick={handleExcel} style={{ display:'flex', alignItems:'center', gap:6, background:'rgba(16,185,129,0.15)', border:'1px solid rgba(16,185,129,0.35)', color:'#34d399', borderRadius:7, cursor:'pointer', padding:'6px 12px', fontSize:12, fontWeight:700 }}>
+          {/* Zone 2 — view controls: zoom · fit · page navigation.
+              Orientation lives in the settings sidebar (Print Preview →
+              Page), not duplicated here — one setting, one place. */}
+          <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+            {pageCount > 1 && (
+              <div style={segWrap} role="group" aria-label="التنقل بين الصفحات">
+                <button onClick={() => goToPage(Math.max(1, currentPage-1))} disabled={currentPage<=1} title="الصفحة السابقة" style={{ ...segBtn(false), padding:'6px 8px', opacity: currentPage<=1?0.4:1 }}><ChevronRight style={{ width:14, height:14 }} /></button>
+                <span style={{ color:'var(--text-2)', fontSize:12, fontWeight:700, minWidth:52, textAlign:'center', fontVariantNumeric:'tabular-nums', direction:'ltr', unicodeBidi:'plaintext' }}>{currentPage} / {pageCount}</span>
+                <button onClick={() => goToPage(Math.min(pageCount, currentPage+1))} disabled={currentPage>=pageCount} title="الصفحة التالية" style={{ ...segBtn(false), padding:'6px 8px', opacity: currentPage>=pageCount?0.4:1 }}><ChevronLeft style={{ width:14, height:14 }} /></button>
+              </div>
+            )}
+
+            <div style={segWrap} role="group" aria-label="التكبير">
+              <button onClick={() => setZoom(z => Math.max(40, z-10))} title="تصغير" style={{ ...segBtn(false), padding:'6px 8px' }}><ZoomOut style={{ width:14, height:14 }} /></button>
+              <span style={{ color:'var(--text-2)', fontSize:12, fontWeight:700, minWidth:38, textAlign:'center', fontVariantNumeric:'tabular-nums' }}>{zoom}%</span>
+              <button onClick={() => setZoom(z => Math.min(150, z+10))} title="تكبير" style={{ ...segBtn(false), padding:'6px 8px' }}><ZoomIn style={{ width:14, height:14 }} /></button>
+            </div>
+
+            <button onClick={fitToWidth} title="ملائمة العرض للعرض" style={ghostBtn}>
+              <StretchHorizontal style={{ width:13, height:13 }} /> ملائمة العرض
+            </button>
+            <button onClick={fitToPage} title="ملائمة الصفحة كاملة" style={ghostBtn}>
+              <Maximize2 style={{ width:13, height:13 }} /> ملائمة الصفحة
+            </button>
+          </div>
+
+          {/* Zone 3 — export actions (secondary → primary, left-to-right by consequence) */}
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <button onClick={() => setShowSidebar(s => !s)} title={showSidebar ? 'إخفاء إعدادات الطباعة' : 'إظهار إعدادات الطباعة'} style={{ ...ghostBtn, padding:7 }}>
+              {showSidebar ? <PanelLeftClose style={{ width:15, height:15 }} /> : <PanelLeft style={{ width:15, height:15 }} />}
+            </button>
+            <button onClick={() => setShowThumbs(s => !s)} title={showThumbs ? 'إخفاء الصفحات المصغّرة' : 'إظهار الصفحات المصغّرة'} style={{ ...ghostBtn, padding:7 }}>
+              {showThumbs ? <PanelRightClose style={{ width:15, height:15 }} /> : <PanelRight style={{ width:15, height:15 }} />}
+            </button>
+            <div style={{ width:1, height:22, background:'var(--border)', margin:'0 2px' }} />
+            <button onClick={handleExcel} style={{ display:'flex', alignItems:'center', gap:6, background:'transparent', border:'1px solid rgba(16,185,129,0.4)', color: isLight ? '#059669' : '#34d399', borderRadius:8, cursor:'pointer', padding:'6px 12px', fontSize:12, fontWeight:700 }}>
               <FileSpreadsheet style={{ width:14, height:14 }} /> Excel
             </button>
-            <button onClick={handlePDF} disabled={pdfBusy} style={{ display:'flex', alignItems:'center', gap:6, background:'rgba(239,68,68,0.15)', border:'1px solid rgba(239,68,68,0.35)', color:'#f87171', borderRadius:7, cursor:'pointer', padding:'6px 12px', fontSize:12, fontWeight:700, opacity: pdfBusy?0.6:1 }}>
+            <button onClick={handlePDF} disabled={pdfBusy} style={{ display:'flex', alignItems:'center', gap:6, background:'transparent', border:'1px solid rgba(239,68,68,0.4)', color: isLight ? '#dc2626' : '#f87171', borderRadius:8, cursor:'pointer', padding:'6px 12px', fontSize:12, fontWeight:700, opacity: pdfBusy?0.6:1 }}>
               {pdfBusy ? <Loader2 style={{ width:14, height:14, animation:'spin 1s linear infinite' }} /> : <FileText style={{ width:14, height:14 }} />} PDF
             </button>
-            <button onClick={handlePrint} style={{ display:'flex', alignItems:'center', gap:6, background:'#2563eb', border:'none', color:'#fff', borderRadius:7, cursor:'pointer', padding:'6px 14px', fontSize:12, fontWeight:700 }}>
+            <div style={{ width:1, height:22, background:'var(--border)', margin:'0 2px' }} />
+            <button onClick={handlePrint} style={{ display:'flex', alignItems:'center', gap:6, background:'var(--accent)', border:'none', color:'#fff', borderRadius:8, cursor:'pointer', padding:'7px 16px', fontSize:12.5, fontWeight:700, boxShadow:'0 1px 3px rgba(37,99,235,0.35)' }}>
               <Printer style={{ width:14, height:14 }} /> طباعة
             </button>
-            <button onClick={onClose} style={{ background:'rgba(255,255,255,0.06)', border:'none', borderRadius:6, color:'#94a3b8', cursor:'pointer', padding:'6px 8px' }}>
-              <X style={{ width:16, height:16 }} />
+            <button onClick={onClose} title="إغلاق" style={{ background:'transparent', border:'none', cursor:'pointer', color:'var(--text-3)', padding:7, borderRadius:8, display:'flex' }}>
+              <X style={{ width:17, height:17 }} />
             </button>
           </div>
         </div>
 
-        {/* Sub-report tabs */}
+        {/* Sub-report tabs — a lighter secondary strip so it never competes
+            with the main toolbar above it. */}
         {showSubTabs && (
-          <div style={{ display:'flex', gap:4, padding:'7px 14px', background: isLight ? '#fff' : '#0b1220', borderBottom: isLight ? '1px solid #e2e8f0' : '1px solid #1a2435', flexShrink:0, overflowX:'auto' }}>
+          <div style={{ display:'flex', gap:6, padding:'8px 16px', background:'var(--surface-2)', borderBottom:'1px solid var(--border)', flexShrink:0, overflowX:'auto' }}>
             {[
               { key:allTabKey,                    label:'جميع الموظفين' },
               { key:'attendance_daily_absent',   label:'الغائبون',  n:data.filter(r=>r.isAbsent||r.status==='absent').length },
@@ -435,31 +580,68 @@ export default function PrintPreviewModal({
             ].map(tab => (
               <button key={tab.key} onClick={() => setActiveReport(tab.key)}
                 style={{
-                  padding:'5px 13px', borderRadius:6, fontSize:12, fontWeight:600, cursor:'pointer', whiteSpace:'nowrap',
-                  border: activeReport===tab.key ? '1px solid #2563eb' : isLight ? '1px solid #e2e8f0' : '1px solid #233047',
-                  background: activeReport===tab.key ? 'rgba(37,99,235,0.14)' : 'transparent',
-                  color: activeReport===tab.key ? '#3b82f6' : isLight ? '#475569' : '#94a3b8',
+                  padding:'5px 13px', borderRadius:7, fontSize:12, fontWeight:600, cursor:'pointer', whiteSpace:'nowrap',
+                  border: activeReport===tab.key ? '1px solid var(--accent)' : '1px solid transparent',
+                  background: activeReport===tab.key ? 'var(--accent-soft)' : 'transparent',
+                  color: activeReport===tab.key ? 'var(--accent)' : 'var(--text-3)',
                 }}>
-                {tab.label}{tab.n != null && <span style={{ marginRight:5, background:'rgba(59,130,246,0.18)', color:'#60a5fa', padding:'1px 6px', borderRadius:99, fontSize:10 }}>{tab.n}</span>}
+                {tab.label}{tab.n != null && <span style={{ marginRight:5, background: activeReport===tab.key ? 'rgba(37,99,235,0.18)' : 'var(--surface)', color: activeReport===tab.key ? 'var(--accent)' : 'var(--text-3)', padding:'1px 6px', borderRadius:99, fontSize:10, border:'1px solid var(--border)' }}>{tab.n}</span>}
               </button>
             ))}
           </div>
         )}
 
-        {/* Preview — auto-fit width: the wrapper measures its real area and
-            picks a zoom that fills it (fitToWidth), so the page uses the
-            actual available space instead of floating tiny inside a big gray
-            canvas. The outer box width tracks the scaled page exactly so
-            `margin:auto` centers it with no leftover gutters. */}
-        <div ref={wrapRef} style={{ flex:1, overflow:'auto', padding:'18px 24px', background: isLight ? '#cdd5e3' : '#05080f' }}>
-          <div style={{ width: Math.round(A4_W[ori] * zoom/100), margin:'0 auto', transition:'width 0.15s' }}>
-            <div style={{ width:A4_W[ori], transform:`scale(${zoom/100})`, transformOrigin:'top right', background:'#fff', boxShadow:'0 6px 30px rgba(0,0,0,0.4)', borderRadius:2 }}>
-              <iframe ref={iframeRef} title="preview" scrolling="no"
-                style={{ width:'100%', minHeight:400, border:'none', display:'block' }} />
+        {/* ── Workspace body: settings sidebar · paper viewport · thumbnails ── */}
+        <div style={{ flex:1, display:'flex', minHeight:0, overflow:'hidden' }}>
+          {showSidebar && (
+            <PrintSettingsSidebar
+              settings={settings} onChange={setSettings}
+              orientation={ori} onOrientationChange={setOri}
+              hasStamp={!!brand.stampUrl}
+            />
+          )}
+
+          {/* Paper viewport — a neutral, document-first surface: generous
+              whitespace around the sheet (real print previews never let the
+              page touch the canvas edge), a crisp hairline border plus a
+              soft layered elevation shadow instead of one hard black blur,
+              and near-square corners (paper doesn't have rounded corners).
+              Auto-fit width on open; Fit Width/Fit Page buttons recompute on
+              demand. Page-break guides overlay the exact same scaled
+              coordinate space as the iframe, so they track zoom perfectly. */}
+          <div ref={wrapRef} style={{ flex:1, overflow:'auto', padding:'32px 24px', background: isLight ? '#e7ebf2' : '#0b0f16' }}>
+            <div style={{ width: Math.round(pageWidthPx * zoom/100), margin:'0 auto', transition:'width 0.15s' }}>
+              <div style={{
+                position:'relative', width:pageWidthPx, transform:`scale(${zoom/100})`, transformOrigin:'top right',
+                background:'#fff', borderRadius:1,
+                border: isLight ? '1px solid rgba(15,23,42,0.08)' : '1px solid rgba(255,255,255,0.06)',
+                boxShadow: isLight
+                  ? '0 1px 2px rgba(15,23,42,0.06), 0 12px 32px rgba(15,23,42,0.16)'
+                  : '0 1px 2px rgba(0,0,0,0.3), 0 16px 40px rgba(0,0,0,0.55)',
+              }}>
+                <iframe ref={iframeRef} title="preview" scrolling="no"
+                  style={{ width:'100%', minHeight:400, border:'none', display:'block' }} />
+                {pageGuides.map((top, i) => (
+                  <div key={top} style={{ position:'absolute', insetInlineStart:0, insetInlineEnd:0, top, pointerEvents:'none' }}>
+                    <div style={{ borderTop:'1px dashed rgba(15,23,42,0.28)' }} />
+                    <span style={{
+                      position:'absolute', top:4, insetInlineEnd:8, fontSize:10, fontWeight:700,
+                      color:'#64748b', background:'rgba(255,255,255,0.9)', padding:'1px 6px', borderRadius:4,
+                    }}>صفحة {i + 2}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
+
+          {showThumbs && (
+            <PrintThumbnails
+              previewHTML={previewHTML} pageWidthPx={pageWidthPx} pageHeightPx={pageHeightPx}
+              contentHeightPx={contentHeightPx} pageCount={pageCount} currentPage={currentPage}
+              onNavigate={goToPage}
+            />
+          )}
         </div>
-      </div>
     </div>
   );
 }

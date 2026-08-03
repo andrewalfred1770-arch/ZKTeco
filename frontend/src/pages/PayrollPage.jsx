@@ -22,6 +22,53 @@ const MONEY  = { ...NUM, ...CENTER, fontWeight:'600', fontSize:'12px', fontVaria
 const ACTOR = 'مدير النظام';
 const getRowId = (p) => String(p.data.id);
 
+// Premium KPI cell — reuses the app's ONE shared metric-strip design
+// (`.metric`/`.metric-label`/`.metric-value`, see index.css — the same
+// components the Dashboard's own KPI row uses) so the payroll totals read
+// as first-class dashboard metrics instead of a small inline text row.
+// Defined outside the component (no props ever change identity per-render).
+function PayrollMetric({ label, value, accent, color, penaltyHours }) {
+  return (
+    <div className="metric" style={{ '--m-accent': accent, '--m-color': color, flex: '1 1 150px' }}>
+      <span className="metric-label">{label}</span>
+      <span className="metric-value" style={{ direction: 'ltr', fontSize: 22 }}>
+        {penaltyHours ? fmtPenaltyUnits(value) : fmtMoney(value)}
+      </span>
+    </div>
+  );
+}
+
+// Employee identity cell — a small initials chip ahead of the name gives the
+// column the same visual weight as the pinned net-salary figure, so the two
+// "who" and "how much" anchors at opposite ends of the row are equally easy
+// to scan down a long list. No per-employee color variation (that would be
+// decorative noise) — one consistent accent-tinted chip for every row.
+function EmployeeNameCell(p) {
+  if (!p.data) return null;
+  const name = p.value || '';
+  const initial = name.trim().charAt(0).toUpperCase() || '؟';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: '100%', minWidth: 0 }}>
+      <span style={{
+        width: 22, height: 22, borderRadius: 6, flexShrink: 0,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'var(--accent-soft)', color: 'var(--accent)',
+        fontSize: 11, fontWeight: 800, fontFamily: 'Cairo,sans-serif',
+      }}>{initial}</span>
+      <span style={{
+        fontWeight: 700, color: 'var(--c-name)', fontSize: 13, fontFamily: 'Cairo,sans-serif',
+        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        // Names in this roster may be Arabic or Latin-script transliterations;
+        // unicode-bidi:plaintext lets each name's own first strong character
+        // pick its paragraph direction, so a Latin name truncates at ITS end
+        // instead of inheriting the column's rtl context and clipping from
+        // the start (e.g. "Abdlrahmn..." rendering as "...rahmn").
+        unicodeBidi: 'plaintext',
+      }}>{name}</span>
+    </div>
+  );
+}
+
 // Cell renderer for the detail "بيان" button — defined outside the component
 // so AG Grid doesn't re-register it on every render.
 function DetailBtnRenderer(p) {
@@ -101,8 +148,9 @@ export default function PayrollPage() {
       cellStyle: { ...CENTER, fontFamily: 'Consolas,monospace', color: 'var(--c-muted)', fontSize: '11px', letterSpacing: '0.04em' },
     },
     {
-      field: 'employee.name', headerName: 'اسم الموظف', width: 200, minWidth: 160, pinned: 'right',
-      cellStyle: { display: 'flex', alignItems: 'center', fontWeight: '700', color: 'var(--c-name)', fontFamily: 'Cairo,sans-serif' },
+      field: 'employee.name', headerName: 'اسم الموظف', width: 210, minWidth: 170, pinned: 'right',
+      cellRenderer: EmployeeNameCell,
+      cellStyle: { display: 'flex', alignItems: 'center' },
     },
     // ── Earnings — basicSalary is editable inline ─────────────────────────────
     {
@@ -186,8 +234,17 @@ export default function PayrollPage() {
     {
       field: 'netSalary', headerName: 'صافي الراتب', width: 128, minWidth: 112, pinned: 'left',
       headerClass: 'ag-header-center',
+      // `.ag-cell{font-weight:500!important}` (index.css) beats any
+      // fontWeight set via cellStyle — same reason cell-manual-override
+      // needs a qualified class rather than an inline style. cell-emphasis
+      // is that same escape hatch, reused here for the one figure on the
+      // page that must read as genuinely bold, not merely 500-weight.
+      cellClass: 'cell-emphasis',
       valueFormatter: p => fmtMoney(displayNetSalary(p.value)),
-      cellStyle: { ...MONEY, fontSize: '13px', fontWeight: '800', color: 'var(--c-net)', borderLeft: '2px solid #2563eb' },
+      // The one number every reader ultimately scans down for — a soft
+      // tinted column (not just bold text) so it visually anchors the row
+      // the same way the pinned employee-name chip does on the other side.
+      cellStyle: { ...MONEY, fontSize: '13.5px', color: 'var(--c-net)', borderLeft: '2px solid #2563eb', background: 'var(--accent-soft)' },
     },
     // ── Action: opens the full salary statement (pinned left) ─────────────────
     {
@@ -375,24 +432,31 @@ export default function PayrollPage() {
             {MONTHS_AR[month - 1]} {year} · {rows.length} موظف
           </p>
         </div>
+        {/* Toolbar — secondary (export/report) actions grouped together,
+            separated by a hairline from the one primary action, so the
+            single most consequential button on the page (احتساب المرتبات)
+            never competes visually with the read-only export buttons. */}
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => {
-              if (rows.length === 0) {
-                toast.error('لا توجد مرتبات محسوبة لهذا الشهر');
-                return;
-              }
-              setModal({ row: null, bulk: true });
-            }}
-            className="btn-secondary text-xs py-1.5 px-3">
-            <Users className="w-3.5 h-3.5" /> كشوف الكل
-          </button>
-          <button onClick={exportExcel} className="btn-secondary text-xs py-1.5 px-3">
-            <Download className="w-3.5 h-3.5" /> Excel
-          </button>
-          <button onClick={() => setPrintOpen(true)} className="btn-secondary text-xs py-1.5 px-3">
-            <Printer className="w-3.5 h-3.5" /> طباعة
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                if (rows.length === 0) {
+                  toast.error('لا توجد مرتبات محسوبة لهذا الشهر');
+                  return;
+                }
+                setModal({ row: null, bulk: true });
+              }}
+              className="btn-secondary text-xs py-1.5 px-3">
+              <Users className="w-3.5 h-3.5" /> كشوف الكل
+            </button>
+            <button onClick={exportExcel} className="btn-secondary text-xs py-1.5 px-3">
+              <Download className="w-3.5 h-3.5" /> Excel
+            </button>
+            <button onClick={() => setPrintOpen(true)} className="btn-secondary text-xs py-1.5 px-3">
+              <Printer className="w-3.5 h-3.5" /> طباعة
+            </button>
+          </div>
+          <div style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 2px' }} />
           <button onClick={() => setCalcConfirm(true)} className="btn-primary text-xs py-1.5 px-3" disabled={calcing}>
             {calcing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
             {calcing ? 'جاري الاحتساب...' : 'احتساب المرتبات'}
@@ -400,56 +464,52 @@ export default function PayrollPage() {
         </div>
       </div>
 
-      {/* ── Filters + Totals bar ─────────────────────────────────────────────── */}
-      <div className="card p-3 flex flex-wrap items-center justify-between gap-3">
+      {/* ── KPI summary — the same premium metric-strip design as the
+          Dashboard's own KPI row (.metric/.metric-label/.metric-value in
+          index.css), so payroll totals read as first-class financial
+          figures instead of small inline text stuffed into the filter row. */}
+      <div className="card" style={{ display: 'flex', flexWrap: 'wrap', padding: 0, overflow: 'hidden' }}>
+        {[
+          { label: 'إجمالي الرواتب',     value: totals.basic,       accent: 'var(--accent)', color: 'var(--text)' },
+          { label: 'إجمالي الإضافي',     value: totals.ot,          accent: '#8b5cf6', color: '#8b5cf6' },
+          { label: 'إجمالي الخصومات',    value: totals.deduct,      accent: '#ef4444', color: '#ef4444' },
+          { label: 'إجمالي ساعات الخصم', value: totals.deductHours, accent: '#ef4444', color: '#ef4444', penaltyHours: true },
+          { label: 'إجمالي السلف',       value: totals.advances,    accent: '#f59e0b', color: '#f59e0b' },
+          { label: 'إجمالي خصم إداري',   value: totals.adminDeduct, accent: '#ef4444', color: '#ef4444' },
+          { label: 'إجمالي صافي',        value: totals.net,         accent: '#3b82f6', color: '#3b82f6' },
+        ].map((m, i) => (
+          <div key={m.label} style={{ flex: '1 1 150px', borderRight: i ? '1px solid var(--border)' : 'none' }}>
+            <PayrollMetric {...m} />
+          </div>
+        ))}
+      </div>
 
-        {/* Filters: [القسم] [الشهر] [السنة] [تحديث] */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <select
-            className="input w-auto text-xs py-1.5"
-            value={deptId}
-            onChange={e => setDeptId(parseInt(e.target.value))}
-          >
-            <option value={0}>جميع الأقسام</option>
-            {departments.map(d => (
-              <option key={d.id} value={d.id}>{d.name}</option>
-            ))}
-          </select>
-
-          <select className="input w-auto text-xs py-1.5" value={month}
-            onChange={e => setMonth(parseInt(e.target.value))}>
-            {MONTHS_AR.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
-          </select>
-
-          <select className="input w-auto text-xs py-1.5" value={year}
-            onChange={e => setYear(parseInt(e.target.value))}>
-            {getYearRange().map(y => <option key={y} value={y}>{y}</option>)}
-          </select>
-
-          <button onClick={load} className="btn-ghost p-1.5 rounded" title="تحديث">
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-          </button>
-        </div>
-
-        {/* Running totals */}
-        <div className="flex items-center gap-5 text-xs font-mono">
-          {[
-            { label: 'إجمالي الرواتب',  value: totals.basic,       cls: 'text-slate-200'  },
-            { label: 'إجمالي الإضافي',  value: totals.ot,          cls: 'text-purple-400' },
-            { label: 'إجمالي الخصومات', value: totals.deduct,      cls: 'text-red-400'    },
-            { label: 'إجمالي ساعات الخصم', value: totals.deductHours, cls: 'text-red-400', penaltyHours: true },
-            { label: 'إجمالي السلف',    value: totals.advances,    cls: 'text-amber-400'  },
-            { label: 'إجمالي خصم إداري',value: totals.adminDeduct, cls: 'text-red-400'    },
-            { label: 'إجمالي صافي',      value: totals.net,         cls: 'text-blue-400'   },
-          ].map(item => (
-            <div key={item.label} className="flex flex-col items-end">
-              <span className="text-gray-500 font-sans text-xs leading-tight">{item.label}</span>
-              <span className={`font-bold text-sm ${item.cls}`} style={{ direction: 'ltr' }}>
-                {item.penaltyHours ? fmtPenaltyUnits(item.value) : fmtMoney(item.value)}
-              </span>
-            </div>
+      {/* ── Filter bar ───────────────────────────────────────────────────────── */}
+      <div className="card p-3 flex items-center gap-2 flex-wrap">
+        <select
+          className="input w-auto text-xs py-1.5"
+          value={deptId}
+          onChange={e => setDeptId(parseInt(e.target.value))}
+        >
+          <option value={0}>جميع الأقسام</option>
+          {departments.map(d => (
+            <option key={d.id} value={d.id}>{d.name}</option>
           ))}
-        </div>
+        </select>
+
+        <select className="input w-auto text-xs py-1.5" value={month}
+          onChange={e => setMonth(parseInt(e.target.value))}>
+          {MONTHS_AR.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+        </select>
+
+        <select className="input w-auto text-xs py-1.5" value={year}
+          onChange={e => setYear(parseInt(e.target.value))}>
+          {getYearRange().map(y => <option key={y} value={y}>{y}</option>)}
+        </select>
+
+        <button onClick={load} className="btn-ghost p-1.5 rounded" title="تحديث">
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+        </button>
       </div>
 
       {/* ── Data grid ────────────────────────────────────────────────────────── */}
@@ -475,8 +535,8 @@ export default function PayrollPage() {
             enableRtl={true}
             localeText={AG_GRID_LOCALE_AR}
             animateRows={false}
-            rowHeight={36}
-            headerHeight={40}
+            rowHeight={38}
+            headerHeight={42}
             pagination
             paginationPageSize={50}
             paginationPageSizeSelector={[25, 50, 100]}

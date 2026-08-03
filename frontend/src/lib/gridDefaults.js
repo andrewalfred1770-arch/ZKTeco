@@ -90,9 +90,21 @@ export const ENTERPRISE_GRID_PROPS = {
   // removes (e.g. a full page reload swapping the dataset) are unaffected —
   // sorting/filtering/grouping still run for those as before.
   suppressModelUpdateAfterUpdateTransaction: true,
-  // Arabic no-rows overlay — shown when data loads successfully but has 0 rows
-  overlayNoRowsTemplate:
-    '<div style="font-family:Cairo,sans-serif;direction:rtl;color:#6B7280;font-size:13px;padding:32px 0">لا توجد سجلات للعرض</div>',
+  // Arabic no-rows overlay — shown when data loads successfully but has 0
+  // rows. AG Grid only accepts a raw HTML string here (no React/live brand
+  // data), so this can't embed the uploaded company logo reactively — but
+  // every grid in the system (Attendance, Payroll, Movement, Devices, Raw
+  // Logs...) shares this ONE template, so a single visual upgrade here reads
+  // consistently everywhere instead of each page inventing its own empty
+  // message. Kept quiet/muted on purpose — an empty grid is not an error.
+  overlayNoRowsTemplate: `
+    <div style="font-family:Cairo,sans-serif;direction:rtl;display:flex;flex-direction:column;align-items:center;gap:8px;padding:36px 0;color:#6B7280">
+      <div style="width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:rgba(100,116,139,0.12);border:1px solid rgba(100,116,139,0.18)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M8 4v5"/></svg>
+      </div>
+      <div style="font-size:13px;font-weight:600">لا توجد سجلات للعرض</div>
+      <div style="font-size:11px;opacity:0.75">ستظهر البيانات هنا فور توفرها</div>
+    </div>`,
 };
 
 /**
@@ -144,6 +156,39 @@ export function safeRefreshCells(gridRef, rowId, node, columns) {
  * are exhausted, Tab moves to the first editable column of the next row
  * (or last editable of the previous row for Shift+Tab).
  */
+/**
+ * isAbsentRow — the ONE canonical check for "this row represents an absent
+ * employee", shared by every grid's getRowClass, the cell-level status/name
+ * overrides, and the print template (reportTemplate.js). Different callers
+ * populate different fields (the boolean `isAbsent` flag vs. the raw
+ * `status` string), so both are checked — this is a detection change only,
+ * it never touches how either field is computed.
+ */
+export function isAbsentRow(data) {
+  return !!(data && (data.isAbsent || data.status === 'absent'));
+}
+
+/**
+ * attendanceRowClass — shared getRowClass priority chain (Monitored >
+ * Holiday > Weekend > Absent > Late > Overtime). Previously duplicated
+ * verbatim across AttendanceDailyPage/AttendanceMonthlyPage/
+ * EmployeeMovementPage; centralized here so the "entire row" absence
+ * highlight (and every other row state) is defined exactly once.
+ *
+ * Pass directly as the `getRowClass` prop on <AgGridReact>.
+ */
+export function attendanceRowClass({ data }) {
+  if (!data) return '';
+  const classes = [];
+  if      (data.isMonitored) classes.push('row-monitored');
+  if      (data.isHoliday)   classes.push('row-holiday');
+  else if (data.isWeekend)   classes.push('row-weekend');
+  else if (isAbsentRow(data)) classes.push('row-absent');
+  else if ((data.effectiveLatePenalty   || 0) > 0) classes.push('row-late');
+  else if ((data.effectiveOvertimeUnits || 0) > 0) classes.push('row-overtime');
+  return classes.join(' ');
+}
+
 export function tabToNextCell(params) {
   const { backwards, previousCellPosition, nextCellPosition, api } = params;
 

@@ -173,7 +173,19 @@ export default function DashboardPage() {
   const PRINT_BTN = { display:'flex', alignItems:'center', gap:5, fontSize:11, fontWeight:700, cursor:'pointer', padding:'5px 10px', borderRadius:7, border:'none' };
 
   return (
-    <div style={{ display:'flex', flexDirection:'column', gap:'var(--gap)', direction:'rtl', flex:1, overflowY:'auto', minHeight:0 }}>
+    <div style={{ position:'relative', display:'flex', flexDirection:'column', flex:1, minHeight:0, overflow:'hidden' }}>
+      {/* Brand watermark — identity without distraction: a single large,
+          near-invisible (3%) mark fixed to a corner, never over interactive
+          content (zIndex below the scrolling content layer, pointer-events
+          off). Text/data readability is untouched. */}
+      {brand.logoUrl && (
+        <img src={brand.logoUrl} alt="" aria-hidden="true" style={{
+          position:'absolute', insetInlineEnd:8, bottom:8, width:260, height:260,
+          objectFit:'contain', opacity:0.035, pointerEvents:'none', zIndex:0,
+          filter: isLight ? 'none' : 'grayscale(1) brightness(3)',
+        }} />
+      )}
+      <div style={{ position:'relative', zIndex:1, display:'flex', flexDirection:'column', gap:'var(--gap)', direction:'rtl', flex:1, overflowY:'auto', minHeight:0 }}>
 
       {/* Header */}
       <div className="page-header" style={{ marginBottom:0 }}>
@@ -282,7 +294,7 @@ export default function DashboardPage() {
                 ) : alerts.map((r, i) => (
                   <tr key={r.id || i} className={r.isAbsent ? 'row-absent' : (r.effectiveLatePenalty||0)>0 ? 'row-late' : 'row-overtime'}>
                     <td className="num" style={{ color:'var(--text-3)' }}>{W(i+1)}</td>
-                    <td style={{ fontWeight:700, color:'var(--c-name)' }}>{r.employeeName}</td>
+                    <td style={{ fontWeight:700, color: r.isAbsent ? 'var(--row-absent-name)' : 'var(--c-name)' }}>{r.employeeName}</td>
                     <td style={{ color:'var(--text-2)' }}>{r.department || '—'}</td>
                     <td className="num" style={{ color:'var(--c-time)' }}>{r.checkIn ? fmtTime(r.checkIn) : '—'}</td>
                     <td className="num" style={{ color:(r.effectiveLatePenalty||0)>0?'var(--c-penalty)':'var(--c-muted)' }}>{fmtPenaltyUnits(r.effectiveLatePenalty)}</td>
@@ -353,6 +365,7 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+      </div>
       </div>
 
       {/* Print Preview Modal */}
