@@ -143,17 +143,35 @@ router.put('/:id', authorize('admin', 'hr'), async (req, res) => {
 
     const before = await prisma.employee.findUnique({ where: { id: parseInt(req.params.id) }, select: { zkUserId: true } });
 
+    // P1 fix: every field below is now guarded the same way status/
+    // isMonitored/monitorColor already were — a field OMITTED from the
+    // request body is left untouched (Prisma treats `undefined` as "don't
+    // update this field"), instead of being unconditionally recomputed from
+    // `undefined` (which previously wrote zkUserId="undefined" the string,
+    // reset salary to 0, and reset departmentId to null on any partial PUT).
+    // This lets a caller send only the field it actually means to change
+    // (e.g. EmployeesPage.jsx's status-toggle button) without risking a
+    // lost-update race against another window's concurrent edit to the
+    // OTHER fields — no existing caller is affected, since every current
+    // caller of this route (EmployeeModal's save()) already sends the full
+    // form object.
     const emp = await prisma.employee.update({
       where: { id: parseInt(req.params.id) },
       data: {
-        name, zkUserId: String(zkUserId), code, phone, email, nationalId, position,
-        hireDate: hireDate ? new Date(hireDate) : null,
-        salary: parseFloat(salary) || 0,
-        departmentId: departmentId ? parseInt(departmentId) : null,
-        branchId: parseInt(branchId),
-        shiftId: shiftId ? parseInt(shiftId) : null,
-        status: status !== undefined ? Boolean(status) : undefined,
-        isMonitored: isMonitored !== undefined ? Boolean(isMonitored) : undefined,
+        name:       name       !== undefined ? name : undefined,
+        zkUserId:   zkUserId   !== undefined ? String(zkUserId) : undefined,
+        code:       code       !== undefined ? code : undefined,
+        phone:      phone      !== undefined ? phone : undefined,
+        email:      email      !== undefined ? email : undefined,
+        nationalId: nationalId !== undefined ? nationalId : undefined,
+        position:   position   !== undefined ? position : undefined,
+        hireDate:   hireDate   !== undefined ? (hireDate ? new Date(hireDate) : null) : undefined,
+        salary:     salary     !== undefined ? (parseFloat(salary) || 0) : undefined,
+        departmentId: departmentId !== undefined ? (departmentId ? parseInt(departmentId) : null) : undefined,
+        branchId:   branchId   !== undefined ? parseInt(branchId) : undefined,
+        shiftId:    shiftId    !== undefined ? (shiftId ? parseInt(shiftId) : null) : undefined,
+        status:       status       !== undefined ? Boolean(status) : undefined,
+        isMonitored:  isMonitored  !== undefined ? Boolean(isMonitored) : undefined,
         monitorColor: monitorColor !== undefined ? (monitorColor || null) : undefined,
       },
       include: inc,

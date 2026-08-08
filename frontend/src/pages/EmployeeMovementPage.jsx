@@ -116,17 +116,18 @@ function normalizeDailyUpdate(updated) {
 
 // Recompute summary totals from the current days array after an inline edit,
 // so KPI cards + pinned totals bar stay live without a full server roundtrip.
-// effectiveDeductAmount (units × hourlyRate, no multiplier) requires
-// hourlyRate, preserved from the last backend response via prevSummary.
-// EF-004.1: otAmount/effectiveNetEffect are NOT recomputed here — the
-// backend applies a per-day overtime multiplier (Friday/holiday/weekend
-// rules) this function has no access to; approximating with a flat
-// multiplier would silently disagree with the real payroll figure. Both are
-// carried forward unchanged from prevSummary (via the spread below) until
-// applyUpdate's background refresh replaces them with the authoritative
-// backend value — briefly stale rather than wrong.
+// Only recomputes UNIT totals (hours/days/minutes) straight from the day
+// rows' own already-canonical fields — never a money amount. otAmount,
+// deductAmount, effectiveDeductAmount, netEffect, effectiveNetEffect, and
+// hourlyRate are Payroll Engine outputs (routes/attendance/movement.js —
+// applies the per-day overtime multiplier, the effective-deduction rate,
+// etc.) with no frontend equivalent; recomputing any of them here would be a
+// second, independent implementation of that math. None of them are
+// rendered by this page today, so they are simply left untouched by this
+// function — the `...prevSummary` spread below carries forward whatever the
+// last real backend response contained (initial load, or applyUpdate's
+// background refresh) rather than approximating a new value.
 function computeSummaryFromDays(days, prevSummary) {
-  const hourlyRate = prevSummary?.hourlyRate || 0;
   const presentDays = days.filter(d =>
     !d.isWeekend && !d.isHoliday && !d.isAbsent
   ).length;
@@ -159,7 +160,6 @@ function computeSummaryFromDays(days, prevSummary) {
   const totalEffectiveDeductionUnits = parseFloat(
     days.reduce((s, d) => s + (d.effectiveTotalDeductions || 0), 0).toFixed(2)
   );
-  const effectiveDeductAmount = Math.round(totalEffectiveDeductionUnits * hourlyRate);
   return {
     ...prevSummary,
     presentDays, absentDays, totalPenaltyDays,
@@ -167,7 +167,6 @@ function computeSummaryFromDays(days, prevSummary) {
     totalOTHours, totalEffectiveOvertimeUnits,
     totalEffectiveLatePenalty, totalEffectiveEarlyPenalty,
     totalEffectiveDeductionUnits,
-    effectiveDeductAmount,
   };
 }
 
@@ -952,7 +951,7 @@ export default function EmployeeMovementPage() {
   // needed to change to reproduce/eliminate the full-grid redraw.
   const getRowStyle = useCallback(({ node, data }) => {
     if (node.rowPinned === 'bottom') return {
-      background:'var(--erp-ag-header-bg-end, #0f1e35)',
+      background:'var(--erp-ag-header-bg-end, #21262D)',
       color:'#93c5fd', fontWeight:'700',
       borderTop:'2px solid var(--erp-ag-header-accent, #2563eb)',
     };

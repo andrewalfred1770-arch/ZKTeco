@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { RefreshCw, AlertTriangle, Wifi, ArrowRight, Printer, Users, UserX, Clock } from 'lucide-react';
+import {
+  RefreshCw, ArrowRight, Printer, UserX, Clock, Fingerprint, Loader2,
+  Percent, Zap, UserCheck, Users, CalendarDays,
+} from 'lucide-react';
 import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { useNavigate } from 'react-router-dom';
 import api, { LONG_OP } from '../lib/api';
@@ -8,18 +11,47 @@ import { westernDigits, fmtTime, fmtPenaltyUnits, fmtOvertimeUnits, STATUS_LABEL
 import { useTheme } from '../contexts/ThemeContext';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
+import { useFingerprintSyncWorkflow } from '../hooks/useFingerprintSyncWorkflow';
 import PrintPreviewModal from '../components/PrintPreviewModal';
+import FingerprintSyncModal from '../components/FingerprintSyncModal';
+import {
+  DeviceStatusCompact, DeviceMonitoringTable, FingerprintStatsGrid, LatestFingerprintsTable,
+} from '../components/DeviceMonitoringPanel';
 import { useCompanyBrand } from '../lib/branding';
+import useAuthStore from '../store/authStore';
+import Button from '../components/ui/Button';
+import Card from '../components/ui/Card';
+import Select from '../components/ui/Select';
+
+const GAP = 16; // spec: 16px grid gap / card padding throughout this page
 
 const W = (v) => westernDigits(String(v ?? 0));
 const DAY_AR = { Mon:'إثنين', Tue:'ثلاثاء', Wed:'أربعاء', Thu:'خميس', Fri:'جمعة', Sat:'سبت', Sun:'أحد' };
 
-function Metric({ label, value, sub, accent, color }) {
+// Six equal KPI cards (Row 1): border-radius 12px, thin border, soft shadow,
+// colored vertical accent, large bold value, small muted description, small
+// icon. Padding/value use clamp() (min, viewport-relative, max) instead of a
+// fixed px so the same card reads correctly from a MacBook Air 13" window up
+// to a 1920px Windows monitor — never a fixed Windows-tuned number.
+function KpiCard({ icon: Icon, label, value, sub, accent, color, isLight }) {
   return (
-    <div className="metric" style={{ '--m-accent': accent, '--m-color': color, flex:1 }}>
-      <span className="metric-label">{label}</span>
-      <span className="metric-value">{W(value)}</span>
-      {sub && <span className="metric-sub">{sub}</span>}
+    <div style={{
+      display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 8, minWidth: 0,
+      padding: 'clamp(16px, 2vh, 24px) clamp(14px, 1.2vw, 18px)', borderRadius: 12,
+      background: 'var(--surface)', border: '1px solid var(--border)',
+      boxShadow: 'var(--shadow-card)', borderInlineStart: `4px solid ${accent}`,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+        <span style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.3, color: 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+        {Icon && <Icon style={{ width: 20, height: 20, color: accent, flexShrink: 0 }} />}
+      </div>
+      <span style={{
+        fontFamily: 'var(--font-num)', fontWeight: 800, fontSize: 'clamp(28px, 2.2vw, 36px)', lineHeight: 1.05,
+        color: isLight ? color : 'var(--text)', fontVariantNumeric: 'tabular-nums lining-nums',
+      }}>
+        {W(value)}
+      </span>
+      {sub && <span style={{ fontSize: 13, lineHeight: 1.3, color: 'var(--text-3)' }}>{sub}</span>}
     </div>
   );
 }
@@ -28,8 +60,7 @@ function StatusPill({ value }) {
   const s = STATUS_LABELS[value];
   if (!s) return <span style={{ color:'var(--c-muted)' }}>—</span>;
   return (
-    <span style={{ display:'inline-flex', padding:'1px 8px', borderRadius:4, fontSize:11, fontWeight:700,
-      color:s.color, background:s.bg, border:`1px solid ${s.color}40` }}>{s.ar}</span>
+    <span className="badge" style={{ color:s.color, background:s.bg, border:`1px solid ${s.color}40` }}>{s.ar}</span>
   );
 }
 
@@ -38,12 +69,31 @@ export default function DashboardPage() {
   const navigate = useNavigate();
   const brand = useCompanyBrand();
 
-  const [data,        setData]        = useState(null);
-  const [devices,     setDevices]     = useState([]);
-  const [roster,      setRoster]      = useState([]);
-  const [departments, setDepartments] = useState([]);
-  const [loading,     setLoading]     = useState(true);
-  const [syncing,     setSyncing]     = useState(false);
+  // Same hook + modal AttendanceDailyPage uses for "سحب البصمات" — no
+  // separate sync implementation for the Dashboard. `run()`'s own
+  // synchronous runningRef guard (see useFingerprintSyncWorkflow.js) is what
+  // actually prevents a duplicate request from this button; the disabled
+  // attribute below is the visible reflection of that same guard, not a
+  // second, independent lock.
+  const fpSync = useFingerprintSyncWorkflow();
+  const fpSyncing = fpSync.state.phase === 'running';
+  // Mirrors the backend's authorize('admin','hr') on POST /devices/sync-all
+  // (zktecoService.js is unauthenticated no-op in Desktop Mode, matching
+  // AUTH_ENABLED=false everywhere else in this app) — this button is the
+  // first place in the frontend that gates on role, so it's spelled out
+  // rather than assumed: when auth is off, everyone already has this access
+  // server-side, so hiding it client-side would just be theater.
+  const { authEnabled, user } = useAuthStore();
+  const canDownloadFingerprints = !authEnabled || ['admin', 'hr'].includes(user?.role);
+
+  const [data,         setData]         = useState(null);
+  const [devices,      setDevices]      = useState([]);
+  const [roster,       setRoster]       = useState([]);
+  const [departments,  setDepartments]  = useState([]);
+  const [loading,      setLoading]      = useState(true);
+  const [syncing,      setSyncing]      = useState(false);
+  const [deviceEvents, setDeviceEvents] = useState([]);
+  const [syncLogs,     setSyncLogs]     = useState([]);
 
   // Department filter
   const [deptFilter, setDeptFilter] = useState('');
@@ -58,16 +108,26 @@ export default function DashboardPage() {
   const load = async () => {
     lastLoadRef.current = Date.now();
     try {
-      const [d, dv, ros, depts] = await Promise.all([
+      const [d, dv, ros, depts, evRes, syncLogsRes] = await Promise.all([
         api.get('/dashboard'),
         api.get('/devices'),
         api.get('/attendance/daily', { params: { date: today } }).catch(() => ({ data: [] })),
         api.get('/departments').catch(() => ({ data: [] })),
+        // Device Monitoring widget data — reuses existing endpoints only
+        // (see DeviceMonitoringPanel doc comment). Gated behind the same
+        // admin/hr role check as the fingerprint-download button since this
+        // endpoint carries the same authorize('admin','hr') on the backend.
+        canDownloadFingerprints
+          ? api.get('/attendance/logs', { params: { limit: 10 } }).catch(() => ({ data: { logs: [] } }))
+          : Promise.resolve({ data: { logs: [] } }),
+        api.get('/devices/sync-logs/recent', { params: { limit: 30 } }).catch(() => ({ data: [] })),
       ]);
       setData(d.data);
       setDevices(dv.data);
       setRoster(ros.data || []);
       setDepartments(depts.data || []);
+      setDeviceEvents(evRes.data?.logs || []);
+      setSyncLogs(syncLogsRes.data || []);
     } catch { toast.error('تعذر تحميل البيانات'); }
     finally { setLoading(false); }
   };
@@ -116,6 +176,27 @@ export default function DashboardPage() {
   // Pass full dept-filtered roster; modal's filteredData handles type-specific sub-filtering.
   const printData = filteredRoster;
 
+  // ── Device Monitoring widget derived data ──────────────────────────────
+  const deviceMonitoringEvents = useMemo(() => deviceEvents.map(log => ({
+    id: log.id,
+    employeeName: log.employee?.name || 'غير مرتبط',
+    timestamp: log.timestamp,
+    isManual: log.source && log.source !== 'device',
+  })), [deviceEvents]);
+  const deviceTotalLogs = useMemo(
+    () => devices.reduce((s, d) => s + (d.rawLogCount ?? d.totalLogsCount ?? 0), 0),
+    [devices]
+  );
+  const startOfToday = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, [today]);
+  const deviceImportedToday = useMemo(() =>
+    syncLogs
+      .filter(l => l.status === 'success' && new Date(l.startedAt) >= startOfToday)
+      .reduce((s, l) => s + (l.newLogs || 0), 0),
+  [syncLogs, startOfToday]);
+  const deviceFailedToday = useMemo(() =>
+    syncLogs.filter(l => l.status === 'failed' && new Date(l.startedAt) >= startOfToday).length,
+  [syncLogs, startOfToday]);
+
   const openPrint = (type) => {
     setPrintType(type);
     setPrintOpen(true);
@@ -141,20 +222,25 @@ export default function DashboardPage() {
     return { deptPresent: present, deptAbsent: absent, deptLate: late, deptOT: ot };
   }, [filteredRoster]);
 
+  // Metric strip accent/value colors — the original PETSHROW Light Theme
+  // used a fixed vivid palette here (independent of the semantic status
+  // tokens used elsewhere), so Light restores those exact literals; Dark
+  // keeps the new token-driven palette introduced by the design system pass.
+  // Order fixed per spec Row 1: Attendance % → Overtime → Late → Absent → Present → Total.
   const metrics = deptFilter ? [
-    { label:'الموظفون',    value:filteredRoster.length,       accent:'#3b82f6', color:'var(--text)' },
-    { label:'حضور اليوم', value:deptPresent,                 accent:'#10b981', color:'#10b981' },
-    { label:'الغياب',      value:deptAbsent,                  accent:'#ef4444', color:'#ef4444' },
-    { label:'المتأخرون',   value:deptLate,                    accent:'#f59e0b', color:'#f59e0b' },
-    { label:'الإضافي',     value:deptOT,                      accent:'#8b5cf6', color:'#8b5cf6' },
-    { label:'نسبة الحضور', value:`${W(filteredRoster.length ? Math.round(deptPresent/filteredRoster.length*100) : 0)}%`, accent:'#0ea5e9', color:'#0ea5e9' },
+    { label:'نسبة الحضور', icon:Percent,    value:`${W(filteredRoster.length ? Math.round(deptPresent/filteredRoster.length*100) : 0)}%`, accent: isLight ? '#0ea5e9' : 'var(--c-net)', color: isLight ? '#0ea5e9' : 'var(--c-net)' },
+    { label:'الإضافي',     icon:Zap,        value:deptOT,                      accent: isLight ? '#8b5cf6' : 'var(--status-overtime)', color: isLight ? '#8b5cf6' : 'var(--status-overtime)' },
+    { label:'المتأخرون',   icon:Clock,      value:deptLate,                    accent: isLight ? '#f59e0b' : 'var(--status-late)',     color: isLight ? '#f59e0b' : 'var(--status-late)' },
+    { label:'الغياب',      icon:UserX,      value:deptAbsent,                  accent: isLight ? '#ef4444' : 'var(--status-absent)',   color: isLight ? '#ef4444' : 'var(--status-absent)' },
+    { label:'حضور اليوم', icon:UserCheck,  value:deptPresent,                 accent: isLight ? '#10b981' : 'var(--status-present)',  color: isLight ? '#10b981' : 'var(--status-present)' },
+    { label:'الموظفون',    icon:Users,      value:filteredRoster.length,       accent: isLight ? '#3b82f6' : 'var(--accent)',          color: isLight ? 'var(--text)' : 'var(--text)' },
   ] : [
-    { label:'إجمالي الموظفين', value:total,          accent:'#3b82f6', color:'var(--text)' },
-    { label:'حضور اليوم',      value:present,         accent:'#10b981', color:'#10b981', sub:`${W(data?.onTime ?? 0)} في الوقت` },
-    { label:'الغياب',          value:data?.absent,    accent:'#ef4444', color:'#ef4444' },
-    { label:'المتأخرون',        value:data?.late,      accent:'#f59e0b', color:'#f59e0b' },
-    { label:'الإضافي',          value:data?.overtime,  accent:'#8b5cf6', color:'#8b5cf6', sub:'موظف' },
-    { label:'نسبة الحضور',      value:`${W(rate)}%`,   accent:'#0ea5e9', color:'#0ea5e9' },
+    { label:'نسبة الحضور',      icon:Percent,   value:`${W(rate)}%`,   accent: isLight ? '#0ea5e9' : 'var(--c-net)',           color: isLight ? '#0ea5e9' : 'var(--c-net)' },
+    { label:'الإضافي',          icon:Zap,       value:data?.overtime,  accent: isLight ? '#8b5cf6' : 'var(--status-overtime)', color: isLight ? '#8b5cf6' : 'var(--status-overtime)', sub:'موظف' },
+    { label:'المتأخرون',        icon:Clock,     value:data?.late,      accent: isLight ? '#f59e0b' : 'var(--status-late)',     color: isLight ? '#f59e0b' : 'var(--status-late)' },
+    { label:'الغياب',          icon:UserX,     value:data?.absent,    accent: isLight ? '#ef4444' : 'var(--status-absent)',   color: isLight ? '#ef4444' : 'var(--status-absent)' },
+    { label:'حضور اليوم',      icon:UserCheck, value:present,         accent: isLight ? '#10b981' : 'var(--status-present)',  color: isLight ? '#10b981' : 'var(--status-present)', sub:`${W(data?.onTime ?? 0)} في الوقت` },
+    { label:'إجمالي الموظفين', icon:Users,     value:total,          accent: isLight ? '#3b82f6' : 'var(--accent)',          color: isLight ? 'var(--text)' : 'var(--text)' },
   ];
 
   const weeklyData = useMemo(
@@ -170,7 +256,11 @@ export default function DashboardPage() {
     brand,
   };
 
-  const PRINT_BTN = { display:'flex', alignItems:'center', gap:5, fontSize:11, fontWeight:700, cursor:'pointer', padding:'5px 10px', borderRadius:7, border:'none' };
+  // Restored to the app's original control scale (~40-44px tall, 14px label)
+  // — the compact pass had shrunk these to var(--text-xs)/4px padding.
+  const PRINT_BTN_SIZE = { fontSize:14, fontWeight:700, padding:'12px 18px', borderRadius:'var(--radius)' };
+
+  const liveSyncing = fpSync.state.phase === 'running';
 
   return (
     <div style={{ position:'relative', display:'flex', flexDirection:'column', flex:1, minHeight:0, overflow:'hidden' }}>
@@ -185,184 +275,239 @@ export default function DashboardPage() {
           filter: isLight ? 'none' : 'grayscale(1) brightness(3)',
         }} />
       )}
-      <div style={{ position:'relative', zIndex:1, display:'flex', flexDirection:'column', gap:'var(--gap)', direction:'rtl', flex:1, overflowY:'auto', minHeight:0 }}>
+      <div style={{ position:'relative', zIndex:1, display:'flex', flexDirection:'column', gap:GAP, direction:'rtl', flex:1, overflowY:'auto', minHeight:0 }}>
 
-      {/* Header */}
+      {/* ── Dashboard title + subtitle (system status / theme / date already
+          live in the shared app header — Layout.jsx) ─────────────────────── */}
       <div className="page-header" style={{ marginBottom:0 }}>
         <div>
-          <h1 className="page-title">لوحة التحكم</h1>
-          <p style={{ fontSize:12, color:'var(--text-3)', marginTop:2 }}>
+          <h1 className="page-title" style={{ fontSize:'clamp(24px, 2.4vw, 34px)' }}>لوحة التحكم</h1>
+          <p style={{ fontSize:13, color:'var(--text-3)', marginTop:4 }}>
             {todayAr} · متابعة فورية
           </p>
         </div>
-        <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
-          {/* Print buttons */}
-          <button onClick={() => openPrint('attendance_dashboard')}
-            style={{ ...PRINT_BTN, background:'rgba(16,185,129,0.12)', color:'#10b981', border:'1px solid rgba(16,185,129,0.3)' }}>
-            <Printer style={{ width:13, height:13 }} /> طباعة الحضور
-          </button>
-          <button onClick={() => openPrint('attendance_daily_absent')}
-            style={{ ...PRINT_BTN, background:'rgba(239,68,68,0.12)', color:'#ef4444', border:'1px solid rgba(239,68,68,0.3)' }}>
-            <UserX style={{ width:13, height:13 }} /> طباعة الغياب
-          </button>
-          <button onClick={() => openPrint('attendance_daily_late')}
-            style={{ ...PRINT_BTN, background:'rgba(245,158,11,0.12)', color:'#f59e0b', border:'1px solid rgba(245,158,11,0.3)' }}>
-            <Clock style={{ width:13, height:13 }} /> طباعة المتأخرين
-          </button>
-          <button onClick={syncAll} disabled={syncing} className="btn-primary text-xs py-1.5 px-3.5">
-            <RefreshCw className="w-3.5 h-3.5" style={{ animation: syncing ? 'spin 1s linear infinite' : 'none' }} />
-            {syncing ? 'جاري المزامنة...' : 'مزامنة الأجهزة'}
-          </button>
-        </div>
       </div>
 
-      {/* Filters bar: date label + dept + branch */}
-      <div className="card p-2.5" style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
-        <span style={{ fontSize:12, fontWeight:600, color:'var(--text-2)', paddingRight:4 }}>
-          {today}
-        </span>
-        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-          <label style={{ fontSize:12, color:'var(--text-3)', whiteSpace:'nowrap' }}>القسم</label>
-          <select
-            className="input text-xs py-1 w-40"
+      <FingerprintSyncModal
+        state={fpSync.state}
+        onClose={fpSync.close}
+        onRetry={fpSync.retry}
+        devices={devices}
+        onViewLogs={() => { fpSync.close(); navigate('/attendance/logs'); }}
+      />
+
+      {/* ── Action bar: Fingerprint Sync, Device Sync, Print ×3, then
+          Department Filter, then Date ─────────────────────────────────────── */}
+      <Card padding="md" style={{ borderRadius:12 }} contentStyle={{ display:'flex', alignItems:'center', gap:'var(--space-2)', flexWrap:'wrap' }}>
+        {canDownloadFingerprints && (
+          <Button
+            variant="primary"
+            size="lg"
+            onClick={() => fpSync.run({ endpoint: '/devices/sync-all', reload: load })}
+            disabled={fpSyncing}
+            icon={fpSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Fingerprint className="w-4 h-4" />}
+          >
+            {fpSyncing ? 'جاري سحب البصمات...' : 'سحب البصمات'}
+          </Button>
+        )}
+        <Button variant="secondary" size="lg" onClick={syncAll} disabled={syncing}
+          icon={<RefreshCw className={syncing ? 'w-4 h-4 animate-spin' : 'w-4 h-4'} />}>
+          {syncing ? 'جاري المزامنة...' : 'مزامنة الأجهزة'}
+        </Button>
+        <Button variant="ghost" onClick={() => openPrint('attendance_dashboard')}
+          icon={<Printer className="w-4 h-4" />}
+          style={{ ...PRINT_BTN_SIZE, background: isLight ? 'rgba(16,185,129,0.12)' : 'var(--status-present-bg)', color: isLight ? '#10b981' : 'var(--status-present)', border: '1px solid ' + (isLight ? 'rgba(16,185,129,0.3)' : 'color-mix(in srgb, var(--status-present) 30%, transparent)') }}>
+          طباعة الحضور
+        </Button>
+        <Button variant="ghost" onClick={() => openPrint('attendance_daily_absent')}
+          icon={<UserX className="w-4 h-4" />}
+          style={{ ...PRINT_BTN_SIZE, background: isLight ? 'rgba(239,68,68,0.12)' : 'var(--status-absent-bg)', color: isLight ? '#ef4444' : 'var(--status-absent)', border: '1px solid ' + (isLight ? 'rgba(239,68,68,0.3)' : 'color-mix(in srgb, var(--status-absent) 30%, transparent)') }}>
+          طباعة الغياب
+        </Button>
+        <Button variant="ghost" onClick={() => openPrint('attendance_daily_late')}
+          icon={<Clock className="w-4 h-4" />}
+          style={{ ...PRINT_BTN_SIZE, background: isLight ? 'rgba(245,158,11,0.12)' : 'var(--status-late-bg)', color: isLight ? '#f59e0b' : 'var(--status-late)', border: '1px solid ' + (isLight ? 'rgba(245,158,11,0.3)' : 'color-mix(in srgb, var(--status-late) 30%, transparent)') }}>
+          طباعة المتأخرين
+        </Button>
+
+        <span style={{ width:1, alignSelf:'stretch', background:'var(--border)', margin:'0 2px' }} />
+
+        <div style={{ display:'flex', alignItems:'center', gap:'var(--space-2)' }}>
+          <label style={{ fontSize:14, color:'var(--text-3)', whiteSpace:'nowrap' }}>القسم</label>
+          <Select
             value={deptFilter}
             onChange={e => setDeptFilter(e.target.value)}
-          >
-            <option value="">كل الأقسام</option>
-            {departments.map(d => (
-              <option key={d.id} value={d.id}>{d.name}</option>
-            ))}
-          </select>
+            placeholder="كل الأقسام"
+            options={departments.map(d => ({ value:d.id, label:d.name }))}
+            style={{ minHeight:40, fontSize:14, minWidth:170 }}
+          />
+          {deptFilter && (
+            <button
+              onClick={() => setDeptFilter('')}
+              style={{ fontSize:13, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', padding:'var(--space-1) var(--space-2)' }}
+            >
+              × مسح الفلتر
+            </button>
+          )}
         </div>
-        {deptFilter && (
-          <button
-            onClick={() => setDeptFilter('')}
-            style={{ fontSize:11, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', padding:'2px 6px' }}
-          >
-            × مسح الفلتر
-          </button>
-        )}
-        <span style={{ fontSize:11, color:'var(--text-3)', marginRight:'auto' }}>
+
+        {/* Date — the dashboard is a real-time "today" view (/api/dashboard
+            has no date parameter), so this reflects that rather than
+            offering a date range the backend can't actually serve. */}
+        <div title="لوحة التحكم تعرض بيانات اليوم الحالي فقط" style={{
+          display:'flex', alignItems:'center', gap:8, marginInlineStart:'auto', minHeight:40,
+          padding:'8px 14px', borderRadius:'var(--radius-sm)', border:'1px solid var(--border)', background:'var(--surface-2)',
+        }}>
+          <CalendarDays style={{ width:16, height:16, color:'var(--text-3)' }} />
+          <span style={{ fontSize:14, fontWeight:600, color:'var(--text-2)', fontVariantNumeric:'tabular-nums' }}>{today}</span>
+        </div>
+
+        <span style={{ fontSize:13, color:'var(--text-3)' }}>
           {filteredRoster.length > 0 && `${W(filteredRoster.length)} موظف`}
         </span>
+      </Card>
+
+      {/* ── Row 1: six equal KPI cards ──────────────────────────────────────── */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(6, minmax(0,1fr))', gap:GAP }}>
+        {metrics.map(m => <KpiCard key={m.label} {...m} isLight={isLight} />)}
       </div>
 
-      {/* Metric strip */}
-      <div className="card" style={{ display:'flex', flexWrap:'wrap', padding:0, overflow:'hidden' }}>
-        {metrics.map((m, i) => (
-          <div key={m.label} style={{ flex:'1 1 150px', borderRight: i ? '1px solid var(--border)' : 'none' }}>
-            <Metric {...m} />
-          </div>
-        ))}
-      </div>
+      {/* ── Main grid: Left (~33%, compact/top-aligned) | Center+Right (stretched
+          to fill the remaining viewport height so the alerts table grows
+          naturally instead of the left column dictating row height) ──────── */}
+      <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,2fr)', gridTemplateRows:'1fr', gap:GAP, flex:1, minHeight:0 }}>
 
-      {/* Body grid */}
-      <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1.6fr) minmax(0,1fr)', gap:'var(--gap)', alignItems:'start' }}>
+        {/* Left column — compact, top-aligned; never taller than the center table */}
+        <div style={{ display:'flex', flexDirection:'column', gap:GAP, alignSelf:'start', minWidth:0 }}>
 
-        {/* Alerts table */}
-        <div className="panel">
-          <div className="panel-head">
-            <span className="panel-title">
-              تنبيهات الموظفين اليوم
-              {deptFilter && <span style={{ fontSize:11, fontWeight:600, color:'var(--accent)', marginRight:6 }}>
-                — {departments.find(d => String(d.id) === deptFilter)?.name}
-              </span>}
-            </span>
-            <button onClick={() => navigate('/attendance/daily')}
-              style={{ display:'flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600, color:'var(--accent)', background:'none', border:'none', cursor:'pointer' }}>
-              عرض الكل <ArrowRight style={{ width:12, height:12 }} />
-            </button>
-          </div>
-          <div style={{ maxHeight:420, overflow:'auto' }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th style={{ width:36 }}>#</th>
-                  <th>الموظف</th>
-                  <th>القسم</th>
-                  <th style={{ width:80 }}>الحضور</th>
-                  <th style={{ width:74 }}>التأخير</th>
-                  <th style={{ width:74 }}>الإضافي</th>
-                  <th style={{ width:78 }}>الحالة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {alerts.length === 0 ? (
-                  <tr><td colSpan={7} style={{ textAlign:'center', padding:'34px 0', color:'var(--text-3)' }}>
-                    لا توجد تنبيهات — جميع الموظفين منتظمون اليوم
-                  </td></tr>
-                ) : alerts.map((r, i) => (
-                  <tr key={r.id || i} className={r.isAbsent ? 'row-absent' : (r.effectiveLatePenalty||0)>0 ? 'row-late' : 'row-overtime'}>
-                    <td className="num" style={{ color:'var(--text-3)' }}>{W(i+1)}</td>
-                    <td style={{ fontWeight:700, color: r.isAbsent ? 'var(--row-absent-name)' : 'var(--c-name)' }}>{r.employeeName}</td>
-                    <td style={{ color:'var(--text-2)' }}>{r.department || '—'}</td>
-                    <td className="num" style={{ color:'var(--c-time)' }}>{r.checkIn ? fmtTime(r.checkIn) : '—'}</td>
-                    <td className="num" style={{ color:(r.effectiveLatePenalty||0)>0?'var(--c-penalty)':'var(--c-muted)' }}>{fmtPenaltyUnits(r.effectiveLatePenalty)}</td>
-                    <td className="num" style={{ color:(r.effectiveOvertimeUnits||0)>0?'var(--c-ot)':'var(--c-muted)' }}>{fmtOvertimeUnits(r.effectiveOvertimeUnits)}</td>
-                    <td><StatusPill value={r.isAbsent ? 'absent' : r.status} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Right column */}
-        <div style={{ display:'flex', flexDirection:'column', gap:'var(--gap)' }}>
-
-          {/* Weekly compact bar */}
-          <div className="panel">
-            <div className="panel-head"><span className="panel-title">الحضور — آخر 7 أيام</span></div>
-            <div style={{ padding:'10px 8px 4px' }}>
-              <ResponsiveContainer width="100%" height={132}>
+          {/* Card 1: Attendance Last 7 Days — compact bar chart. The plot area
+              sizes off clamp()+vh (a floor, a viewport-relative middle, a
+              ceiling) and ResponsiveContainer fills it at 100%, instead of a
+              hardcoded pixel height that would over/under-fill on a MacBook
+              Air 13" vs a 1920px external monitor. */}
+          <Card padding="none" style={{ overflow:'hidden', borderRadius:12 }} header={<span className="panel-title" style={{ fontSize:16 }}>الحضور — آخر 7 أيام</span>}>
+            <div style={{ padding:'14px 14px 8px', minHeight:150, height:'clamp(150px, 20vh, 200px)' }}>
+              <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={weeklyData} barGap={3} barCategoryGap="32%">
-                  <XAxis dataKey="day" tick={{ fontSize:10.5, fill:'var(--text-2)' }} axisLine={false} tickLine={false} />
+                  <XAxis dataKey="day" tick={{ fontSize:12, fill:'var(--text-2)' }} axisLine={false} tickLine={false} />
                   <Tooltip cursor={{ fill:'var(--accent-soft)' }}
-                    contentStyle={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:6, fontSize:11, direction:'rtl' }}
+                    contentStyle={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:'var(--radius-sm)', fontSize:13, direction:'rtl' }}
                     labelStyle={{ color:'var(--text-2)' }}
                     formatter={(v, n) => [W(v), n === 'present' ? 'حاضر' : 'غائب']} />
-                  <Bar dataKey="present" name="present" fill="#3b82f6" radius={[3,3,0,0]} isAnimationActive={false} />
-                  <Bar dataKey="absent"  name="absent"  fill={isLight ? '#e11d48' : '#f43f5e'} radius={[3,3,0,0]} isAnimationActive={false} />
+                  <Bar dataKey="present" name="present" fill={isLight ? '#3b82f6' : 'var(--accent)'} radius={[3,3,0,0]} isAnimationActive={false} />
+                  <Bar dataKey="absent"  name="absent"  fill={isLight ? '#e11d48' : 'var(--status-absent)'} radius={[3,3,0,0]} isAnimationActive={false} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
-          </div>
+          </Card>
 
-          {/* Devices table */}
-          <div className="panel">
-            <div className="panel-head">
-              <span className="panel-title">حالة الأجهزة</span>
-              <span style={{ fontSize:11, fontWeight:700, padding:'1px 8px', borderRadius:99, background:'var(--accent-soft)', color:'var(--accent)' }}>
+          {/* Card 2: Device Status — min-height keeps its designed proportion
+              even with a single device (a maxHeight alone would collapse to
+              fit just the content); the max-height cap is the "only when
+              necessary" case — it exists to stop the card growing unbounded
+              if many devices are ever added, not to force a Windows number. */}
+          <Card padding="md" style={{ overflow:'hidden', borderRadius:12 }} header={
+            <>
+              <span className="panel-title" style={{ fontSize:16 }}>حالة الجهاز</span>
+              <span style={{ fontSize:13, fontWeight:700, padding:'var(--space-1) var(--space-2)', borderRadius:'var(--radius-full)', background:'var(--accent-soft)', color:'var(--accent)' }}>
                 {W(data?.devices?.online ?? 0)} / {W(data?.devices?.total ?? 0)} متصل
               </span>
+            </>
+          }>
+            <div style={{ minHeight:70, maxHeight:160, overflow:'auto' }}>
+              <DeviceStatusCompact devices={devices} liveSyncing={liveSyncing} />
             </div>
-            <div style={{ maxHeight:230, overflow:'auto' }}>
-              {devices.length === 0 ? (
-                <div style={{ textAlign:'center', padding:'26px 0', color:'var(--text-3)' }}>
-                  <Wifi style={{ width:26, height:26, margin:'0 auto 6px', color:'var(--text-3)' }} />
-                  <p style={{ fontSize:12 }}>لا توجد أجهزة مضافة</p>
-                </div>
-              ) : (
-                <table className="data-table">
-                  <thead><tr><th>الجهاز</th><th>IP</th><th style={{ width:70 }}>الحالة</th></tr></thead>
-                  <tbody>
-                    {devices.map(d => {
-                      const online = d.status === 'online';
-                      return (
-                        <tr key={d.id}>
-                          <td style={{ fontWeight:600 }}>
-                            <span style={{ display:'inline-block', width:7, height:7, borderRadius:'50%', marginLeft:6, background: online?'#10b981':'#64748b' }} />
-                            {d.name}
-                          </td>
-                          <td className="num" style={{ color:'var(--text-2)' }}>{d.ipAddress}:{d.port}</td>
-                          <td><span className={online ? 'badge badge-green' : 'badge badge-gray'}>{online ? 'متصل' : 'غير متصل'}</span></td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
+          </Card>
+
+          {/* Card 3: Device Monitoring — same min/max-height rationale as Card 2 */}
+          <Card padding="none" style={{ overflow:'hidden', borderRadius:12 }} header={
+            <>
+              <span className="panel-title" style={{ fontSize:16 }}>مراقبة الأجهزة</span>
+              <button onClick={() => navigate('/devices')}
+                style={{ display:'flex', alignItems:'center', gap:'var(--space-1)', fontSize:13, fontWeight:600, color:'var(--accent)', background:'none', border:'none', cursor:'pointer' }}>
+                عرض الكل <ArrowRight className="w-4 h-4" />
+              </button>
+            </>
+          }>
+            <div style={{ minHeight:132, maxHeight:220, overflow:'auto' }}>
+              <DeviceMonitoringTable devices={devices} />
             </div>
+          </Card>
+        </div>
+
+        {/* Center + right-inside region — stretched to the full row height */}
+        <div style={{ display:'grid', gridTemplateColumns:'minmax(0,2.2fr) minmax(0,1fr)', gridTemplateRows:'1fr', gap:GAP, minHeight:0 }}>
+
+          {/* Center: Today's Employee Alerts — fills the remaining height naturally */}
+          <Card padding="none" style={{ overflow:'hidden', borderRadius:12, display:'flex', flexDirection:'column', minHeight:0 }}
+            contentStyle={{ flex:1, display:'flex', flexDirection:'column', minHeight:0, padding:0 }}
+            header={
+            <>
+              <span className="panel-title" style={{ fontSize:16 }}>
+                تنبيهات الموظفين اليوم
+                {deptFilter && <span style={{ fontSize:13, fontWeight:600, color:'var(--accent)', marginRight:6 }}>
+                  — {departments.find(d => String(d.id) === deptFilter)?.name}
+                </span>}
+              </span>
+              <button onClick={() => navigate('/attendance/daily')}
+                style={{ display:'flex', alignItems:'center', gap:'var(--space-1)', fontSize:13, fontWeight:600, color:'var(--accent)', background:'none', border:'none', cursor:'pointer' }}>
+                عرض الكل <ArrowRight className="w-4 h-4" />
+              </button>
+            </>
+          }>
+            <div style={{ flex:1, overflow:'auto', minHeight:0 }}>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th style={{ width:36 }}>#</th>
+                    <th>الموظف</th>
+                    <th>القسم</th>
+                    <th style={{ width:80 }}>الحضور</th>
+                    <th style={{ width:74 }}>التأخير</th>
+                    <th style={{ width:74 }}>الإضافي</th>
+                    <th style={{ width:78 }}>الحالة</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {alerts.length === 0 ? (
+                    <tr><td colSpan={7} style={{ textAlign:'center', padding:'34px 0', color:'var(--text-3)' }}>
+                      لا توجد تنبيهات — جميع الموظفين منتظمون اليوم
+                    </td></tr>
+                  ) : alerts.map((r, i) => (
+                    <tr key={r.id || i} className={r.isAbsent ? 'row-absent' : (r.effectiveLatePenalty||0)>0 ? 'row-late' : 'row-overtime'}>
+                      <td className="num" style={{ color:'var(--text-3)' }}>{W(i+1)}</td>
+                      <td style={{ fontWeight:700, color: r.isAbsent ? 'var(--row-absent-name)' : 'var(--c-name)' }}>{r.employeeName}</td>
+                      <td style={{ color:'var(--text-2)' }}>{r.department || '—'}</td>
+                      <td className="num" style={{ color:'var(--c-time)' }}>{r.checkIn ? fmtTime(r.checkIn) : '—'}</td>
+                      <td className="num" style={{ color:(r.effectiveLatePenalty||0)>0?'var(--c-penalty)':'var(--c-muted)' }}>{fmtPenaltyUnits(r.effectiveLatePenalty)}</td>
+                      <td className="num" style={{ color:(r.effectiveOvertimeUnits||0)>0?'var(--c-ot)':'var(--c-muted)' }}>{fmtOvertimeUnits(r.effectiveOvertimeUnits)}</td>
+                      <td><StatusPill value={r.isAbsent ? 'absent' : r.status} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          {/* Right-inside column: Fingerprint Statistics (natural, content-sized
+              height via flexShrink:0 — no hardcoded number) + Latest 10
+              Fingerprints (flex:1 fills whatever height remains) */}
+          <div style={{ display:'flex', flexDirection:'column', gap:GAP, minWidth:0, minHeight:0 }}>
+            <Card padding="md" style={{ overflow:'hidden', borderRadius:12, flexShrink:0 }} header={<span className="panel-title" style={{ fontSize:16 }}>إحصائيات البصمات</span>}>
+              <FingerprintStatsGrid
+                totalLogs={deviceTotalLogs}
+                importedToday={deviceImportedToday}
+                failedToday={deviceFailedToday}
+              />
+            </Card>
+
+            <Card padding="none" style={{ overflow:'hidden', borderRadius:12, display:'flex', flexDirection:'column', flex:1, minHeight:0 }}
+              contentStyle={{ flex:1, display:'flex', flexDirection:'column', minHeight:0, padding:0 }}
+              header={<span className="panel-title" style={{ fontSize:16 }}>أحدث 10 بصمات</span>}>
+              <div style={{ flex:1, overflow:'auto', minHeight:0 }}>
+                <LatestFingerprintsTable events={deviceMonitoringEvents} />
+              </div>
+            </Card>
           </div>
         </div>
       </div>

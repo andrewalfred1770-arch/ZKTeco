@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { LogIn, Loader2, XCircle, UserRound, KeyRound } from 'lucide-react';
 import useAuthStore from '../store/authStore';
 import { useCompanyBrand } from '../lib/branding';
+import { useTheme } from '../contexts/ThemeContext';
 
 // ─── Manager Edition — Login gate (EP-011) ────────────────────────────────────
 // Shown when connected to a server that reports authEnabled:true (see
@@ -9,6 +10,7 @@ import { useCompanyBrand } from '../lib/branding';
 // valid session is loaded yet. Manager has no local authentication of its own
 // — this form only ever calls the server's existing POST /api/auth/login.
 export default function LoginScreen() {
+  const { isLight } = useTheme();
   const brand = useCompanyBrand();
   const login = useAuthStore((s) => s.login);
   const [username, setUsername] = useState('');
@@ -63,13 +65,13 @@ export default function LoginScreen() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 20 }}>
           <div style={{
             width: 46, height: 46, borderRadius: 11, flexShrink: 0, overflow: 'hidden',
-            background: brand.logoUrl ? 'var(--surface-2)' : 'rgba(59,130,246,0.12)',
-            border: '1px solid rgba(59,130,246,0.3)',
+            background: brand.logoUrl ? 'var(--surface-2)' : (isLight ? 'rgba(59,130,246,0.12)' : 'rgba(47,129,247,0.12)'),
+            border: '1px solid ' + (isLight ? 'rgba(59,130,246,0.3)' : 'rgba(47,129,247,0.3)'),
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
             {brand.logoUrl
               ? <img src={brand.logoUrl} alt={brand.name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-              : <LogIn style={{ width: 21, height: 21, color: '#60a5fa' }} />}
+              : <LogIn style={{ width: 21, height: 21, color: isLight ? '#60a5fa' : '#79C0FF' }} />}
           </div>
           <div style={{ minWidth: 0 }}>
             <h2 style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{brand.name}</h2>

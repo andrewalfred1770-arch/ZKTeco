@@ -1,4 +1,5 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-quartz.css';
@@ -16,6 +17,18 @@ const NUM = { textAlign: 'right', direction: 'ltr', justifyContent: 'flex-end', 
 function DeleteInfoModal({ open, info, onClose, onConfirm }) {
   const [deleting, setDeleting] = useState(false);
 
+  // Phase 13.9: accessible-dialog semantics (focus trap/restore + Escape) —
+  // hooks must run unconditionally, so these sit above the early return below.
+  const isOpen = open && !!info;
+  const titleId = useId();
+  const containerRef = useFocusTrap(isOpen);
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
+
   if (!open || !info) return null;
   const { employee: emp, payrollCount, attendanceCount, advanceCount,
           canHardDelete, blockReason, devices } = info;
@@ -32,13 +45,21 @@ function DeleteInfoModal({ open, info, onClose, onConfirm }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" dir="rtl">
       <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-gray-900 shadow-2xl border border-red-900/40 w-full max-w-lg rounded-xl overflow-hidden">
+      <div
+        ref={containerRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="relative bg-gray-900 shadow-2xl border border-red-900/40 w-full max-w-lg rounded-xl overflow-hidden"
+        style={{ outline: 'none' }}
+      >
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800 bg-red-950/30">
           <div className="flex items-center gap-2.5">
             <Trash2 className="w-4 h-4 text-red-400" />
-            <h2 className="text-sm font-bold text-white">حذف موظف</h2>
+            <h2 id={titleId} className="text-sm font-bold text-white">حذف موظف</h2>
           </div>
           <button onClick={onClose} className="btn-ghost p-1.5 rounded"><X className="w-4 h-4" /></button>
         </div>
@@ -139,7 +160,7 @@ function DeleteInfoModal({ open, info, onClose, onConfirm }) {
 const MONITOR_COLORS = [
   { value: '#f59e0b', label: 'أصفر'   },
   { value: '#ef4444', label: 'أحمر'   },
-  { value: '#3b82f6', label: 'أزرق'   },
+  { value: '#2F81F7', label: 'أزرق'   },
   { value: '#10b981', label: 'أخضر'   },
   { value: '#a855f7', label: 'بنفسجي' },
   { value: '#f97316', label: 'برتقالي'},
@@ -161,6 +182,16 @@ function EmployeeModal({ open, onClose, onSaved, emp, branches, departments }) {
       : empty);
   }, [emp, open]);
 
+  // Phase 13.9: accessible-dialog semantics (focus trap/restore + Escape).
+  const titleId = useId();
+  const containerRef = useFocusTrap(open);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
   const save = async (e) => {
     e.preventDefault(); setSaving(true);
     try {
@@ -177,10 +208,18 @@ function EmployeeModal({ open, onClose, onSaved, emp, branches, departments }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" dir="rtl">
       <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-gray-900 shadow-2xl border border-gray-800 w-full max-w-2xl max-h-[90vh] overflow-auto rounded-lg">
+      <div
+        ref={containerRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="relative bg-gray-900 shadow-2xl border border-gray-800 w-full max-w-2xl max-h-[90vh] overflow-auto rounded-lg"
+        style={{ outline: 'none' }}
+      >
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 bg-gray-950/50">
           <div>
-            <h2 className="text-base font-bold text-white">
+            <h2 id={titleId} className="text-base font-bold text-white">
               {emp ? 'تعديل بيانات موظف' : 'إضافة موظف جديد'}
             </h2>
             {emp && <p className="text-xs text-gray-500">{emp.code}</p>}
@@ -389,18 +428,12 @@ export default function EmployeesPage() {
       : `هل تريد إيقاف الموظف "${emp.name}"؟\nيمكن إعادة تفعيله لاحقاً.`;
     if (!window.confirm(msg)) return;
     try {
-      await api.put(`/employees/${emp.id}`, {
-        name: emp.name,
-        zkUserId: emp.zkUserId,
-        code: emp.code || '',
-        phone: emp.phone || '',
-        email: emp.email || '',
-        position: emp.position || '',
-        salary: emp.salary || 0,
-        departmentId: emp.departmentId || '',
-        branchId: emp.branchId,
-        status: newStatus,
-      });
+      // P1 fix: send ONLY the field actually being changed. The backend
+      // (routes/employees.js PUT /:id) now leaves every omitted field
+      // untouched, so this can no longer silently overwrite another
+      // window's concurrent edit to this employee's other fields with the
+      // stale copy cached in this page's grid.
+      await api.put(`/employees/${emp.id}`, { status: newStatus });
       toast.success(newStatus ? `تم تفعيل "${emp.name}"` : `تم إيقاف "${emp.name}"`);
       loadAll();
     } catch (err) {

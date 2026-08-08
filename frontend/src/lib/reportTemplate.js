@@ -15,6 +15,10 @@ import { PLEX_FONTS } from './fonts/ibmPlexArabicFontData.js';
 import { BRAND } from './branding.js';
 import { westernDigits, getNestedValue } from './formatters.js';
 import { isAbsentRow } from './gridDefaults.js';
+import {
+  tokensCSS, PAPER_SIZE_KEYWORDS, MARGIN_PRESETS, buildFooterLeft,
+} from './printDesignSystem.js';
+import { computeColumnWidths, selectPrintableColumns } from './columnLayoutEngine.js';
 
 const ARABIC_RANGE =
   'U+0600-06FF,U+0750-077F,U+0870-089F,U+08A0-08FF,U+FB50-FDFF,U+FE70-FEFF,U+0660-0669';
@@ -110,6 +114,34 @@ const ACCENT_CLASS = {
   purple: 'purple', teal: 'teal', cyan: 'teal',
 };
 
+// Status-column totals cell — only ever built for a column literally keyed
+// 'status' that carries no `total` of its own (attendance_daily, movement).
+// The status column is usually one of the narrower columns, so this shows
+// ONLY the absence count — no stacked breakdown, no extra label text — the
+// same single-number, same-class treatment as every other totals cell;
+// the column's own header ("الحالة") already gives it context. `count` is
+// computed once by the caller (rows.filter(isAbsentRow).length) and reused
+// here and in the summary strip below — never recomputed twice.
+function buildStatusTotalsCell(count) {
+  return `<td class="num t-val">${westernDigits(count)}</td>`;
+}
+
+// Totals-row time values — fmtPenaltyUnits() (and any formatter following the
+// same convention) renders a summed time total as "<number> <ساعة|ساعتان|
+// ساعات>", e.g. "35 ساعات". On one line that reads as crowded, especially in
+// portrait — this splits ONLY that literal "<number> <unit-word>" shape into
+// number-over-unit for display; the summed value and its formatter are
+// unchanged, this is purely how the already-computed string is laid out.
+const TIME_TOTAL_RE = /^([\d.,٠-٩٫٬-]+)\s+(ساعة|ساعتان|ساعات)$/;
+function buildTotalValueCell(formatted) {
+  const m = TIME_TOTAL_RE.exec(String(formatted ?? ''));
+  if (!m) return `<td class="num t-val">${esc(formatted)}</td>`;
+  return `<td class="num t-val t-val-time">`
+    + `<span class="t-num">${esc(m[1])}</span>`
+    + `<span class="t-unit">${esc(m[2])}</span>`
+    + `</td>`;
+}
+
 
 /**
  * Build the full A4 report HTML.
@@ -133,23 +165,15 @@ function parseThWidth(thStyle) {
   return m ? parseFloat(m[1]) : 80;
 }
 
-// Named CSS page sizes Chromium understands natively via the `size` property —
-// no manual mm math needed, and each stays exactly the paper's real dimensions.
-const PAPER_SIZE_KEYWORDS = { A4: 'A4', Letter: 'letter', Legal: 'legal' };
-
-// Print-time margin presets (mm) — "normal" is the exact value this template
-// shipped with before print-experience settings existed, so the default
-// output is byte-for-byte unchanged for every existing caller.
-const MARGIN_PRESETS = {
-  normal: { v: 10, h: 8 },
-  narrow: { v: 6,  h: 5 },
-  wide:   { v: 16, h: 14 },
-};
+// Paper-size keywords and margin presets now live in printDesignSystem.js —
+// the same source PrintPreviewModal.jsx reads for its on-screen page-box math,
+// so the two can never drift out of sync the way two hand-copied constant
+// tables could.
 
 export function buildReportHTML(o = {}) {
   const {
     title = 'تقرير',
-    columns = [],
+    columns: allColumns = [],
     rows = [],
     meta = {},
     stats = null,
@@ -173,7 +197,45 @@ export function buildReportHTML(o = {}) {
     printBackground  = true,      // shaded cells/rows print as seen vs. ink-saving outline
     watermarkText    = '',        // '' = no watermark
     showStamp        = false,     // overlay brand.stampUrl in the signature area
+    // Ordered list of items to headline in the Enterprise Summary Strip
+    // (rendered between the table and the signature area). Each entry is
+    // either a column `key` string, or `{ key, label }` to override the
+    // displayed label while still reusing that column's already-computed
+    // total. Two sentinel keys are also accepted: '__absence' (the status
+    // column's already-computed absent-row count) and '__count' (the
+    // already-computed row count shown in the metadata bar). Every value
+    // is read from the SAME computation the totals row below itself uses —
+    // nothing here sums or calculates anything new. null (default) shows
+    // every totaled column, in column order, plus the absence count when a
+    // status column is present — a safe generic fallback for any caller
+    // that hasn't curated a specific set.
+    summaryKeys      = null,
   } = o;
+
+  // ── Print Experience geometry ──────────────────────────────────────────────
+  // Computed before column selection/widths below (rather than in its
+  // original spot further down) because selectPrintableColumns() needs the
+  // real printable page width — paper size × orientation × margins — to
+  // decide which columns even fit before computeColumnWidths() sizes them.
+  const isLand           = orientation === 'landscape';
+  const pageSizeKeyword  = PAPER_SIZE_KEYWORDS[paperSize] || PAPER_SIZE_KEYWORDS.A4;
+  const marginPreset     = MARGIN_PRESETS[margins] || MARGIN_PRESETS.normal;
+  const scale             = Math.max(0.5, Math.min(1.5, (Number(scalePercent) || 100) / 100));
+
+  // ── Column selection — hide, don't silently compress ───────────────────────
+  // A report whose columns' own priority floors (see columnLayoutEngine.js)
+  // don't all fit this page gets low-priority (then medium-priority) columns
+  // dropped from the print entirely — never a column rendered at a
+  // near-zero/0px width. This runs BEFORE colPx/computeColumnWidths below, so
+  // every remaining computation (widths, header cells, body cells, totals,
+  // summary strip, density) only ever sees the columns that actually print.
+  // Column set, order, and every calculation for the columns that DO print
+  // are untouched — this only ever removes a column outright, never resizes
+  // or reorders one.
+  const keepMask = selectPrintableColumns({
+    columns: allColumns, showRowIndex, paperSize, marginPreset, isLandscape: isLand, scale,
+  });
+  const columns = allColumns.filter((_, i) => keepMask[i]);
 
   // ── Column widths ────────────────────────────────────────────────────────
   // Total-bearing columns render an aggregate SUM in the footer row, which is
@@ -182,36 +244,45 @@ export function buildReportHTML(o = {}) {
   // bit so the footer sum has room to fit the width its own header/body
   // cells already share, instead of clipping against a width only ever
   // tuned for per-row content. header/body/totals all read from this same
-  // colPx/pct array, so they stay pixel-identical to each other either way.
-  const idxPx   = showRowIndex ? 60 : 0;
-  const colPx   = columns.map(c => parseThWidth(c.thStyle) + (c.total ? 16 : 0));
-  const totalPx = idxPx + colPx.reduce((a, b) => a + b, 0) || 1;
-  const pct     = px => (px / totalPx * 100).toFixed(2) + '%';
+  // colPx array (fed into computeColumnWidths() below), so they stay
+  // pixel-identical to each other either way.
+  const idxPx = showRowIndex ? 60 : 0;
+  const colPx = columns.map(c => parseThWidth(c.thStyle) + (c.total ? 16 : 0));
 
   // ── Brand / dates ─────────────────────────────────────────────────────────
   // Only the official company logo image — no standalone monogram/"P" mark
   // fallback. When no logo is configured, the tile is simply omitted (see
   // dh-logo rendering below) and the company name/tagline text stands alone.
   const logoHTML = brand.logoUrl
-    ? `<img src="${esc(brand.logoUrl)}" alt="${esc(brand.name)}"
+    ? `<img src="${esc(brand.logoUrl)}" alt="${esc(brand.name)}" width="41" height="41"
          style="width:100%;height:100%;object-fit:contain;" />`
     : '';
 
+  // ── Custom print letterhead banner (بيانات الشركة → إعدادات الطباعة →
+  // رأس صفحة الطباعة / نص رأس الطباعة) — previously collected but never
+  // rendered anywhere. Renders only when the user has actually set one of
+  // the two fields, so a report with neither configured looks byte-identical
+  // to before this existed. Width/height attributes are set from the field's
+  // own documented recommended size (1200×300 in Company Settings) purely as
+  // an intrinsic-size hint so the browser reserves the right box before the
+  // image loads — actual display size is governed by the CSS below.
+  const printHeaderHTML = (brand.printHeaderUrl || brand.printHeaderText)
+    ? `<div class="doc-print-header">
+        ${brand.printHeaderUrl ? `<img src="${esc(brand.printHeaderUrl)}" alt="" width="1200" height="300" />` : ''}
+        ${brand.printHeaderText ? `<div class="dph-text">${esc(brand.printHeaderText)}</div>` : ''}
+      </div>`
+    : '';
+
   const count       = westernDigits(rows.length);
-  const isLand      = orientation === 'landscape';
   const generatedBy = meta.generatedBy || '';
 
   // ── Footer identity — brings the previously-unused company contact/footer
   // settings (بيانات الشركة → إعدادات الطباعة) onto every printed page
   // instead of just the bare brand name. Falls back gracefully when the
-  // user hasn't filled either field in yet.
-  const footerContact = meta.printContactText || brand.printContactText || '';
-  const footerLeft = [brand.name, footerContact].filter(Boolean).join('  ·  ');
-
-  // ── Print Experience geometry ──────────────────────────────────────────────
-  const pageSizeKeyword = PAPER_SIZE_KEYWORDS[paperSize] || PAPER_SIZE_KEYWORDS.A4;
-  const marginPreset     = MARGIN_PRESETS[margins] || MARGIN_PRESETS.normal;
-  const scale            = Math.max(0.5, Math.min(1.5, (Number(scalePercent) || 100) / 100));
+  // user hasn't filled any field in yet. Built by the same shared helper
+  // every print surface (table reports, payslips) now uses, so the footer
+  // reads identically everywhere.
+  const footerLeft = buildFooterLeft(brand, meta);
 
   // Diagonal repeating watermark — a background-image (not a fixed-position
   // element) because only element backgrounds reliably repeat on EVERY
@@ -238,7 +309,7 @@ export function buildReportHTML(o = {}) {
       <div class="sig-block"><div class="sig-line">إعداد</div></div>
       <div class="sig-block"><div class="sig-line">مراجعة</div></div>
       <div class="sig-block">
-        ${showStamp && brand.stampUrl ? `<img class="sig-stamp" src="${esc(brand.stampUrl)}" alt="" />` : ''}
+        ${showStamp && brand.stampUrl ? `<img class="sig-stamp" src="${esc(brand.stampUrl)}" alt="" width="64" height="64" />` : ''}
         <div class="sig-line">اعتماد</div>
       </div>
     </div>` : '';
@@ -286,9 +357,27 @@ export function buildReportHTML(o = {}) {
       }).join('')}</div>`
     : '';
 
+  // ── Column widths — responsive allocation engine ───────────────────────────
+  // `table-layout:fixed` derives every row's column widths from the header
+  // row's own `style="width:…"`, so this is the one place that needs to
+  // reconcile a column's AUTHORED width (a designer's landscape-tuned guess)
+  // against the page it's actually printing on. computeColumnWidths()
+  // (columnLayoutEngine.js) runs the same priority-floor allocation for
+  // BOTH orientations — not just portrait — using the real printable width
+  // for this paperSize/orientation/margins/scale, so:
+  //   - landscape's extra room is still respected (authored proportions win
+  //     whenever nobody's under their floor), and
+  //   - a report with many columns can no longer silently cross a
+  //     legibility floor in landscape either, the way flat pct(px) did.
+  // Column set, order, and every calculation are untouched — this only
+  // changes how wide each already-existing column is drawn.
+  const { idxWidthPct, colWidthPct } = computeColumnWidths({
+    columns, showRowIndex, idxPx, colPx, paperSize, marginPreset, isLandscape: isLand, scale,
+  });
+
   // ── Table header cells ────────────────────────────────────────────────────
-  const ths = (showRowIndex ? `<th class="idx" style="width:${pct(idxPx)}">#</th>` : '')
-    + columns.map((c, i) => `<th style="width:${pct(colPx[i])}">${esc(c.header)}</th>`).join('');
+  const ths = (showRowIndex ? `<th class="idx" style="width:${idxWidthPct}">#</th>` : '')
+    + columns.map((c, i) => `<th style="width:${colWidthPct[i]}">${esc(c.header)}</th>`).join('');
 
   // ── Body rows (data-processing unchanged) ─────────────────────────────────
   // Absence detection reuses the same isAbsentRow() the on-screen grids use
@@ -306,21 +395,109 @@ export function buildReportHTML(o = {}) {
     return `<tr class="${rowCls}">${showRowIndex ? `<td class="idx">${westernDigits(i + 1)}</td>` : ''}${cells}</tr>`;
   }).join('');
 
-  // ── Totals row (computation unchanged) ────────────────────────────────────
-  const hasTotals = columns.some(c => c.total);
+  // ── Shared totals computation — the totals row AND the summary strip below
+  // both read from this ONE pass; nothing is summed or calculated twice, and
+  // nothing here is a new calculation — every value uses the exact same
+  // sumKey()/format() a caller's column definition already specifies. ───────
+  const hasTotals   = columns.some(c => c.total);
+  const hasStatusCol = columns.some(c => c.key === 'status');
+  const absentRowsForStatus = hasStatusCol ? rows.filter(isAbsentRow) : [];
+  const absentCount  = absentRowsForStatus.length;
+  // Absence-type breakdown for the summary strip's grouped absence item —
+  // reuses the exact same `absenceType` field AbsenceTypeModal already
+  // writes and the grid already reads elsewhere; a category is counted only
+  // when rows actually carry it, never invented for a report that doesn't
+  // use it.
+  const absenceWithoutPermission = absentRowsForStatus.filter(r => r.absenceType === 'without_permission').length;
+  const absenceWithPermission    = absentRowsForStatus.filter(r => r.absenceType === 'with_permission').length;
+  const columnTotals = columns.filter(c => c.total).map(c => {
+    let v;
+    if (c.total === 'sum') v = sumKey(rows, c.key);
+    else if (typeof c.total === 'function') v = c.total(rows);
+    else v = c.total;
+    return { column: c, formatted: c.format ? c.format(v, { __total: true }) : v };
+  });
+  const findColumnTotal = key => columnTotals.find(ct => ct.column.key === key);
+
+  // ── Totals row — a plain table footer. The "الإجمالي" label is a single,
+  // fixed cell — never more than the row-index column plus (when it has no
+  // total of its own) the very first data column, merged via colspan purely
+  // so a short label never truncates against a narrow 48–65px code column.
+  // It always sits at the row's leading edge, never reflows into the middle
+  // of the row, and every other column — total or not — keeps its own
+  // individual cell in its own position, exactly like the header/body rows
+  // above it. ─────────────────────────────────────────────────────────────
   let totalsRow = '';
   if (hasTotals && rows.length) {
-    const cells = columns.map((c, i) => {
-      if (i === 0 && !c.total) return `<td class="t-label">الإجمالي</td>`;
-      if (!c.total) return `<td></td>`;
-      let v;
-      if (c.total === 'sum') v = sumKey(rows, c.key);
-      else if (typeof c.total === 'function') v = c.total(rows);
-      else v = c.total;
-      const out = c.format ? c.format(v, { __total: true }) : v;
-      return `<td class="num t-val">${esc(out)}</td>`;
+    const firstColHasTotal = !!(columns[0] && columns[0].total);
+    // Edge case: no row-index column AND the first data column has its own
+    // total means there's normally nowhere left for the label to sit — the
+    // label must still get a cell, so in this one case it claims the first
+    // column instead of that column showing its own total, rather than the
+    // "الإجمالي" label vanishing from the row entirely.
+    const labelNeedsFirstCol = !showRowIndex && firstColHasTotal;
+    const labelUsesFirstCol  = firstColHasTotal && !labelNeedsFirstCol;
+    const labelSpan = (showRowIndex ? 1 : 0) + (labelUsesFirstCol ? 0 : 1);
+    const bodyCols  = labelUsesFirstCol ? columns : columns.slice(1);
+
+    // A column that genuinely has no total (e.g. payroll's hourlyRate, a
+    // rate rather than a summable figure) still gets its own cell — never
+    // merged away, so every numeric total stays under its own column
+    // exactly like the header above it — just rendered as a muted dash
+    // instead of a bare empty cell, so it reads as "not applicable" rather
+    // than as a rendering gap.
+    const valueCells = bodyCols.map(c => {
+      if (c.key === 'status' && !c.total) return buildStatusTotalsCell(absentCount);
+      if (!c.total) return `<td class="t-blank">—</td>`;
+      return buildTotalValueCell(findColumnTotal(c.key).formatted);
     }).join('');
-    totalsRow = `<tr class="totals">${showRowIndex ? '<td class="idx"></td>' : ''}${cells}</tr>`;
+
+    const labelCell = labelSpan > 0
+      ? `<td class="t-label" colspan="${labelSpan}">الإجمالي</td>`
+      : '';
+
+    totalsRow = `<tr class="totals">${labelCell}${valueCells}</tr>`;
+  }
+
+  // ── Enterprise Summary Strip — a single flat, premium band between the
+  // table and the signature area highlighting a handful of the SAME totals
+  // computed above. `summaryKeys` (see param doc) lets a report-type-aware
+  // caller (PrintPreviewModal.jsx) curate which 3–4 totals matter most for
+  // that report; any caller that doesn't pass it gets every totaled column
+  // plus the absence count — never an invented figure, never a duplicate
+  // calculation. Gated identically to the totals row: nothing to summarize
+  // when there's nothing to total. ──────────────────────────────────────
+  let summaryStripHTML = '';
+  if (hasTotals && rows.length) {
+    const ssItem = (label, value, subHTML = '') =>
+      `<div class="ss-item"><span class="ss-label">${esc(label)}</span><span class="ss-value">${esc(value)}</span>${subHTML}</div>`;
+    const keyList = (summaryKeys && summaryKeys.length) ? summaryKeys : [
+      ...(hasStatusCol ? ['__absence'] : []),
+      ...columnTotals.map(ct => ct.column.key),
+    ];
+    const items = keyList.map(entry => {
+      const key = typeof entry === 'string' ? entry : entry.key;
+      const overrideLabel = typeof entry === 'string' ? null : entry.label;
+      if (key === '__absence') {
+        if (!hasStatusCol) return '';
+        // One grouped block — total absence figure as the item's headline
+        // value, the with/without-permission split (only when that category
+        // actually has rows) as small caption lines underneath — never
+        // separate KPI cards, never a category that doesn't exist in the
+        // data.
+        const subLines = [
+          absenceWithoutPermission > 0 ? `<span class="ss-sub-line">بدون إذن: ${westernDigits(absenceWithoutPermission)} يوم</span>` : '',
+          absenceWithPermission > 0    ? `<span class="ss-sub-line">بإذن: ${westernDigits(absenceWithPermission)} يوم</span>`       : '',
+        ].filter(Boolean);
+        const subHTML = subLines.length ? `<div class="ss-sub">${subLines.join('')}</div>` : '';
+        return ssItem(overrideLabel || 'إجمالي الغياب', `${westernDigits(absentCount)} يوم`, subHTML);
+      }
+      if (key === '__count') return ssItem(overrideLabel || 'عدد السجلات', count);
+      const found = findColumnTotal(key);
+      if (!found) return '';
+      return ssItem(overrideLabel || found.column.header, found.formatted);
+    }).filter(Boolean);
+    if (items.length) summaryStripHTML = `<div class="summary-strip">${items.join('')}</div>`;
   }
 
   // ── Screen-only footer (hidden in @media print) ───────────────────────────
@@ -331,7 +508,7 @@ export function buildReportHTML(o = {}) {
   </div>`;
 
   return `<!DOCTYPE html>
-<html lang="ar" dir="rtl" data-cols="${density}">
+<html lang="ar" dir="rtl" data-cols="${density}" data-orientation="${isLand ? 'landscape' : 'portrait'}">
 <head>
 <meta charset="UTF-8">
 <title>${esc(title)} — ${esc(brand.name)}</title>
@@ -345,50 +522,7 @@ ${embedFonts ? FONT_CSS : ''}
    One source of truth. Every visual decision lives here.
    Change a token → the entire report updates automatically.
    ════════════════════════════════════════════════════════════════════════════════ */
-:root{
-  /* ── Palette ─────────────────────────────────────────────────────────────── */
-  --p    : #17325C;   /* primary navy   – headings, borders, totals */
-  --a    : #2563EB;   /* accent blue    – numeric highlights        */
-  --suc  : #16A34A;   /* success        – present, positive         */
-  --wrn  : #F59E0B;   /* warning        – late, attention           */
-  --dng  : #DC2626;   /* danger         – absent, deductions        */
-  --pur  : #7C3AED;   /* purple         – overtime, special         */
-
-  /* ── Surfaces ────────────────────────────────────────────────────────────── */
-  --bg    : #FFFFFF;  /* page / card background                      */
-  --soft  : #EAF2FF;  /* period strip • table header • totals row    */
-  --alt   : #F8FAFC;  /* alternating table row                       */
-  --panel : #F2F7FE;  /* header info panel                           */
-
-  /* ── Ink scale ───────────────────────────────────────────────────────────── */
-  --i1 : #1F2937;   /* primary body text          */
-  --i2 : #374151;   /* secondary text             */
-  --i3 : #6B7280;   /* labels, captions, muted    */
-  --i4 : #9CA3AF;   /* faint – row numbers, icons */
-
-  /* ── Borders ─────────────────────────────────────────────────────────────── */
-  --bd  : #D8E2EE;  /* outer border – same on every block          */
-  --bd2 : #C3D5E8;  /* inner thead cell separator                  */
-
-  /* ── Spacing scale  4 · 8 · 12 · 16 · 20 · 24 · 32 ─────────────────────── */
-  --sp1 : 4px;
-  --sp2 : 8px;
-  --sp3 : 12px;
-  --sp4 : 10px;   /* ← section gap (print-optimized: was 16px)     */
-  --sp5 : 14px;   /* header/info-panel padding (print-optimized: was 20px) */
-  --sp6 : 24px;
-  --sp7 : 32px;
-
-  /* ── Component tokens ────────────────────────────────────────────────────── */
-  --sg  : var(--sp4);  /* section gap – same below every block     */
-  --bw  : 1px;         /* border-width  – same everywhere          */
-
-  /* ── Table rhythm ────────────────────────────────────────────────────────── */
-  --ch  : 10px;   /* cell horizontal padding                       */
-  --cv  : 8px;    /* cell vertical padding                         */
-  --rh  : 38px;   /* body row min-height                           */
-  --thh : 52px;   /* thead row height                              */
-}
+${tokensCSS()}
 
 /* ── Page ─────────────────────────────────────────────────────────────────── */
 @page{
@@ -448,12 +582,13 @@ table{ margin-bottom: 0; }
      ③ Statistics — one KPI card per stat: number + label + color accent
      ④ Divider    — the only rule in the header, then the table
    ════════════════════════════════════════════════════════════════════════════ */
-:root{
-  --hair: #D9E2EC;                          /* header hairline / divider */
-  --card-bd: #E5E7EB;                       /* card border — all header cards */
-  --card-shadow: 0 2px 4px rgba(15,39,75,0.07), 0 1px 2px rgba(15,39,75,0.05);
-  --rhythm: 6px;                            /* gap between the 4 header sections (compressed from the requested 12px — see reportTemplate.js header-block comment) */
-}
+/* Custom print letterhead banner (بيانات الشركة → إعدادات الطباعة) — an
+   optional strip above the masthead, only present when the user has
+   configured one; absent otherwise, so it never affects the default
+   letterhead rhythm below it. */
+.doc-print-header{ margin-bottom: var(--rhythm); page-break-inside: avoid; break-inside: avoid; }
+.doc-print-header img{ display: block; margin: 0 auto 4px; width: 100%; height: auto; max-height: 70px; object-fit: contain; }
+.dph-text{ text-align: center; font-size: 11px; color: var(--i3); font-weight: 600; line-height: 1.3; }
 
 /* ① Masthead — two plain columns, no rule/card of its own. DOM order is
    report-title-block first, company-block second: in this RTL document the
@@ -467,34 +602,48 @@ table{ margin-bottom: 0; }
 }
 .dh-brand{ display: flex; align-items: center; gap: 10px; direction: ltr; flex-shrink: 0; }
 .dh-logo{
-  width: 48px; height: 48px; flex-shrink: 0;
+  width: 41px; height: 41px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
   overflow: hidden; line-height: 1;
 }
-.dh-brand-text{ direction: ltr; text-align: left; line-height: 1.2; }
-.dh-brand-name{ font-size: 18px; font-weight: 700; color: #0F274B; white-space: nowrap; }
-.dh-brand-sub{ font-size: 14px; color: var(--i3); font-weight: 500; margin-top: 1px; white-space: nowrap; }
+.dh-brand-text{ direction: ltr; text-align: left; line-height: 1.15; }
+.dh-brand-name{ font-size: 19px; font-weight: 700; color: #0F274B; white-space: nowrap; }
+.dh-brand-sub{ font-size: 13px; color: var(--i3); font-weight: 500; margin-top: 0; white-space: nowrap; }
 
-.dh-report{ flex: 1; min-width: 0; direction: rtl; text-align: right; }
+/* No min-width:0 here on purpose — that override was what let the flex
+   item shrink below the title's own content width, which is what forced
+   the old ellipsis-truncation below. Dropping it means the title box
+   claims its full natural width (still bounded by the space dh-brand's
+   fixed-size block leaves it, via the header's justify-content:space-between
+   — this doesn't change the header layout, it just stops pre-shrinking the
+   title area smaller than it needs to be). */
+.dh-report{ flex: 1; direction: rtl; text-align: right; }
 .dh-title{
-  font-size: 27px; font-weight: 700; color: #0F274B; line-height: 1;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: 32px; font-weight: 800; color: #0F274B; line-height: 1.25;
+  letter-spacing: normal;
+  /* Single line, but never clipped/truncated — the old overflow:hidden +
+     text-overflow:ellipsis silently cut long titles short; a real
+     enterprise document header shows the full title. line-height:1.25
+     (not 1) is what keeps tall Arabic letterforms/diacritics from being
+     clipped top or bottom. */
+  white-space: nowrap; overflow: visible;
+  margin-bottom: 5px;
 }
-.dh-period{ font-size: 15px; font-weight: 600; color: #0F274B; margin-top: 2px; line-height: 1.1; }
-.dh-subtitle{ font-size: 14px; color: var(--i3); font-weight: 500; margin-top: 1px; }
+.dh-period{ font-size: 18px; font-weight: 600; color: #0F274B; margin-top: 0; line-height: 1.25; }
+.dh-subtitle{ font-size: 13px; color: var(--i3); font-weight: 500; margin-top: 0; line-height: 1.15; }
 
 /* ② Metadata cards — premium info blocks: white body, soft border, 10px
-   radius, very soft shadow, equal height, icon in the accent color, bold
-   value. */
+   radius, very soft shadow, equal (fixed 48px) height, icon in the accent
+   color, bold value. */
 .dh-meta-bar{
   display: flex; direction: rtl; align-items: stretch; gap: 10px;
   margin-bottom: var(--rhythm);
   page-break-inside: avoid; break-inside: avoid;
 }
 .dh-meta-card{
-  flex: 1 1 0; min-width: 0;
+  flex: 1 1 0; min-width: 0; height: 55px;
   display: flex; flex-direction: column; justify-content: center; gap: 3px;
-  padding: 3px 12px;
+  padding: 0 12px;
   background: #fff;
   border: 1px solid var(--card-bd);
   border-radius: 10px;
@@ -503,21 +652,21 @@ table{ margin-bottom: 0; }
 .dh-meta-top{ display: flex; align-items: center; gap: 5px; color: #2563EB; line-height: 1; }
 .dh-meta-icon{ display: flex; flex-shrink: 0; line-height: 1; }
 .dh-meta-icon svg{ display: block; }
-.dh-meta-label{ font-size: 12px; color: var(--i3); font-weight: 600; line-height: 1; }
-.dh-meta-value{ font-size: 15px; color: #0F274B; font-weight: 700; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dh-meta-label{ font-size: 13px; color: var(--i3); font-weight: 600; line-height: 1; }
+.dh-meta-value{ font-size: 17px; color: #0F274B; font-weight: 700; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ③ Statistics row — premium KPI cards: white body, soft border, rounded
    corners, soft shadow, a 4px color accent on the TOP edge only. Equal
-   width, equal height, generous padding — cards breathe, not cramped. */
+   width, equal (fixed 56px) height. */
 .dh-kpis{
   display: flex; direction: rtl; align-items: stretch; gap: 10px;
   margin-bottom: var(--rhythm);
   page-break-inside: avoid; break-inside: avoid;
 }
 .dh-kpi{
-  flex: 1 1 0; min-width: 0;
+  flex: 1 1 0; min-width: 0; height: 64px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-  padding: 4px 8px;
+  padding: 0 8px;
   background: #fff;
   border: 1px solid var(--card-bd);
   border-radius: 8px;
@@ -525,8 +674,8 @@ table{ margin-bottom: 0; }
   box-shadow: var(--card-shadow);
   page-break-inside: avoid;
 }
-.dh-kpi-value{ font-size: 21px; font-weight: 700; color: #0F274B; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -0.2px; }
-.dh-kpi-label{ font-size: 11px; font-weight: 500; color: var(--i3); line-height: 1.2; white-space: nowrap; }
+.dh-kpi-value{ font-size: 24px; font-weight: 700; color: #0F274B; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -0.2px; }
+.dh-kpi-label{ font-size: 13px; font-weight: 500; color: var(--i3); line-height: 1.2; white-space: nowrap; }
 
 .dh-kpi.c-blue  { --kpi-accent: #2563EB; }
 .dh-kpi.c-green { --kpi-accent: #16A34A; }
@@ -536,7 +685,7 @@ table{ margin-bottom: 0; }
 .dh-kpi.c-teal  { --kpi-accent: #0D9488; }
 
 /* ④ The ONLY divider in the header — closes it, then the table begins
-   8–10px later. No double rule, no heavy border. */
+   right after with only a small gap. No double rule, no heavy border. */
 .dh-divider{ height: 1px; background: var(--hair); margin-bottom: 6px; }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -575,9 +724,10 @@ thead th{
   text-align: right;
   border-inline: 0.5px solid var(--hair);
   border-block: 0.5px solid var(--hair);
-  white-space: normal; overflow: visible; text-overflow: clip;
+  white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: break-word;
   line-height: 1.3; vertical-align: middle;
-  height: var(--thh);   /* 52px */
+  min-height: var(--thh);   /* 52px — a floor, not a cap: a header that wraps to a
+                                second line grows the row instead of overlapping it */
 }
 thead th:first-child{ border-top-right-radius: 11px; }
 thead th:last-child{ border-top-left-radius: 11px; }
@@ -639,28 +789,129 @@ tr{ page-break-inside: avoid; break-inside: avoid; }
    guarantee for this specific row, per EF-016.1). */
 tr.totals{ break-inside: avoid; page-break-inside: avoid; }
 
-/* Totals row — visually continuous with the table body */
+/* Totals row — a flat, natural extension of the table body (same family of
+   cell as every row above it, not a separate raised/recessed panel): one
+   crisp navy rule on top is the only thing that marks it as the document's
+   authoritative summary line — no inset shadow, no heavier fill than the
+   table already uses elsewhere, matching how SAP/Dynamics/Oracle Fusion
+   ledger totals rows sit flush with the table instead of floating over it. */
 tr.totals td{
-  background: var(--soft);
-  border-top: 2px solid var(--p); border-bottom: none;
+  background: var(--soft-strong);
+  border-top: 1.5px solid var(--p); border-bottom: none;
   border-inline: 0.5px solid var(--bd2);
-  font-weight: 800; font-size: 10pt; color: var(--p);
-  padding: var(--cv) var(--ch); height: var(--rh); vertical-align: middle;
+  padding: var(--cv) var(--ch); height: 40px; vertical-align: middle;
 }
-tr.totals td.t-label{ text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Typographic hierarchy: the label names the row, the numbers ARE the row —
+   so the label reads clearly but stays visually quieter (smaller, navy but
+   not the heaviest weight in the row) while every real total is the
+   largest/boldest text on the line, the one thing the eye is meant to land
+   on when scanning down a page of these. Colspan-merged (see totalsRow
+   build above) so "الإجمالي" always has room and never truncates. */
+tr.totals td.t-label{
+  text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: 12.5px; font-weight: 700; color: var(--p); letter-spacing: 0.1px;
+}
 /* Aggregate sums run wider than any single row's value (more digits, same
-   unit-word suffix as the per-row formatter) — hold the value at the body's
-   font-size rather than the row's 10pt bump, and tighten tracking slightly,
-   so the wider figure still fits the exact column width shared with the
-   header/body above (see the total-column colPx widening). Bold weight
-   alone still reads as "total" without inflating the size. text-overflow
-   is ellipsis (not the previous clip) purely as a last-resort safety net —
-   the width/font changes are what actually prevent truncation in practice. */
+   unit-word suffix as the per-row formatter) — the wider figure still fits
+   the exact column width shared with the header/body above (see the
+   total-column colPx widening). The largest, boldest text in the row —
+   this is the visual focus the totals row exists for. text-overflow is
+   ellipsis purely as a last-resort safety net — the width/font sizing is
+   what actually prevents truncation in practice. */
 tr.totals td.t-val{
   font-variant-numeric: tabular-nums; direction: ltr; text-align: center;
-  font-size: 9pt; letter-spacing: -0.2px;
+  font-size: 15.5px; font-weight: 800; color: var(--p); letter-spacing: -0.2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* Time totals ("35 ساعات") — number over unit instead of one crowded line.
+   Stacked inside the SAME fixed row height as every other totals cell
+   (tr.totals td height above), centered both ways, no wrap inside the
+   number itself. Presentation-only split of the already-formatted string —
+   see buildTotalValueCell() in reportTemplate.js. */
+tr.totals td.t-val-time{
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 0; line-height: 1.1; white-space: nowrap;
+}
+tr.totals td.t-val-time .t-num{
+  font-variant-numeric: tabular-nums; direction: ltr;
+  font-size: 15.5px; font-weight: 800; color: var(--p); letter-spacing: -0.2px;
+}
+tr.totals td.t-val-time .t-unit{
+  font-size: 10px; font-weight: 700; color: var(--i4); letter-spacing: 0.1px;
+}
+/* A column that genuinely carries no total (e.g. payroll's hourlyRate, a
+   rate rather than a summable figure) still gets its own cell — never
+   merged away, so column alignment with the header above never breaks —
+   just rendered as a small muted dash instead of a bare empty cell, so a
+   run of these reads as "not applicable here" rather than a visual gap. */
+tr.totals td.t-blank{
+  text-align: center; color: var(--i4); font-weight: 400; font-size: 9pt;
+}
+
+/* Totals row — portrait responsiveness. A portrait page has meaningfully
+   less usable width than landscape (the same fixed-pixel column widths
+   above now occupy a narrower printable area), so the exact font-size/
+   padding that fits comfortably in landscape can crowd — and, via the
+   ellipsis safety nets above, visibly clip — totals-row text in portrait.
+   This block touches ONLY tr.totals (not the table header/body, not any
+   other row) and only shrinks typography/padding enough that every total
+   keeps fitting cleanly inside its own column — same columns, same order,
+   same values, same colspan on the label cell, just sized for the page
+   it's actually printing on. */
+[data-orientation="portrait"] tr.totals td{
+  padding: 6px 4px; height: 36px;
+}
+[data-orientation="portrait"] tr.totals td.t-label{
+  font-size: 11px;
+}
+[data-orientation="portrait"] tr.totals td.t-val{
+  font-size: 12px;
+}
+[data-orientation="portrait"] tr.totals td.t-val-time .t-num{
+  font-size: 12px;
+}
+[data-orientation="portrait"] tr.totals td.t-val-time .t-unit{
+  font-size: 11px;
+}
+[data-orientation="portrait"] tr.totals td.t-blank{
+  font-size: 11px;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   ENTERPRISE SUMMARY STRIP — one flat, elegant band between the table and
+   the signature area. No cards, no icons, no color, no gradients: a single
+   white surface with a hairline border and a very soft shadow, holding a
+   handful of label/value pairs separated by light vertical rules — the
+   SAP/Oracle Fusion/Dynamics 365 convention for "the numbers that matter
+   most," not a dashboard. Every value is read straight from the totals
+   already computed above it (see summaryStripHTML build) — nothing here
+   sums or calculates anything.
+   ════════════════════════════════════════════════════════════════════════════ */
+.summary-strip{
+  display: flex; flex-wrap: wrap; align-items: stretch;
+  background: #fff; border: 1px solid #E6ECF5; border-radius: 12px;
+  box-shadow: var(--card-shadow);
+  padding: 16px 24px;
+  margin-top: var(--sg); margin-bottom: 0;
+  page-break-inside: avoid; break-inside: avoid;
+}
+.ss-item{
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; flex: 1 1 0; min-width: 130px; padding: 0 20px;
+  border-inline-start: 1px solid #EEF1F6;
+}
+.ss-item:first-child{ border-inline-start: none; padding-inline-start: 0; }
+.ss-item:last-child{ padding-inline-end: 0; }
+.ss-label{ font-size: 12px; font-weight: 500; color: #6B7280; white-space: nowrap; }
+.ss-value{
+  font-size: 22px; font-weight: 800; color: var(--p);
+  font-variant-numeric: tabular-nums; direction: ltr; unicode-bidi: plaintext;
+  white-space: nowrap; letter-spacing: -0.2px;
+}
+/* Absence breakdown — small caption lines under the headline value, part of
+   the SAME grouped item (see summaryStripHTML build), never separate cards. */
+.ss-sub{ display: flex; flex-direction: column; align-items: center; gap: 1px; margin-top: 1px; }
+.ss-sub-line{ font-size: 10.5px; font-weight: 600; color: #94A3B8; white-space: nowrap; }
 
 /* ════════════════════════════════════════════════════════════════════════════
    ④ SIGNATURE AREA  ─  the sign-off trail a real accounting document ends
@@ -670,7 +921,7 @@ tr.totals td.t-val{
    ════════════════════════════════════════════════════════════════════════════ */
 .signature-area{
   display: flex; justify-content: space-between; gap: var(--sp6);
-  margin-top: var(--sp7); page-break-inside: avoid; break-inside: avoid;
+  margin-top: var(--sp5); page-break-inside: avoid; break-inside: avoid;
 }
 .sig-block{ flex: 1; text-align: center; position: relative; }
 .sig-line{
@@ -720,6 +971,33 @@ tr.totals td.t-val{
 }
 [data-cols="large"] table  { font-size: 8.5pt; }
 [data-cols="large"] thead th{ font-size: 8.5pt; }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   PORTRAIT RESPONSIVENESS — a dedicated, narrower-page pass over table
+   typography/padding. The header/body column WIDTHS are already
+   recalculated for portrait above (see computeColumnWidths() in
+   columnLayoutEngine.js); this is the matching typography half of that
+   same fix — a modest, orientation-only
+   size/padding trim (never a transform/scale()) so the already-protected
+   minimum column widths have text that comfortably fits them. Landscape is
+   untouched: none of these selectors match without data-orientation="portrait".
+   Font floors are hard requirements, not tuning targets: body text can never
+   go below 11px (8.5pt) and header text can never go below 12px (9pt),
+   regardless of column count — so the [data-cols="large"] portrait overrides
+   below hold at the SAME floor rather than shrinking further, unlike the
+   (landscape-only) [data-cols="large"] block above this one. Row height is
+   unaffected here (still --rh from the density block above, 32–44px — well
+   above the 24px floor), so this section only ever touches font-size/padding. */
+[data-orientation="portrait"] table{ font-size: 8.5pt; }
+[data-orientation="portrait"] thead th{ font-size: 9pt; padding-inline: 4px; line-height: 1.25; }
+[data-orientation="portrait"] tbody td{ padding-inline: 4px; }
+[data-orientation="portrait"][data-cols="large"] thead th{ font-size: 9pt; }
+[data-orientation="portrait"][data-cols="large"] table{ font-size: 8.5pt; }
+/* Row-index (#) column reads at a deliberately smaller, muted size in
+   landscape (th.idx/td.idx above) — in portrait that same 7pt (~9.3px) falls
+   under the 11px body-text floor, so it gets its own floor-compliant bump
+   here without touching every other muted/secondary text style. */
+[data-orientation="portrait"] th.idx, [data-orientation="portrait"] td.idx{ font-size: 11px; }
 </style>
 </head>
 <body>
@@ -727,7 +1005,7 @@ tr.totals td.t-val{
   <!-- ── Document header — print-only, not the on-screen branding card.
        Gated by showHeaderFooter (Print Preview → Header/Footer) for
        printing onto pre-printed company letterhead stationery. ── -->
-  ${showHeaderFooter ? `<div class="doc-header">
+  ${showHeaderFooter ? `${printHeaderHTML}<div class="doc-header">
     <div class="dh-report">
       <div class="dh-title">${esc(fullTitle)}</div>
       ${meta.period ? `<div class="dh-period">${esc(meta.period)}</div>` : ''}
@@ -752,6 +1030,8 @@ tr.totals td.t-val{
       <tbody>${trs}${totalsRow}</tbody>
     </table>
   </div>
+
+  ${summaryStripHTML}
 
   ${signatureHTML}
 

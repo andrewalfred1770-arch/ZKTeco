@@ -124,6 +124,7 @@ export async function exportToPDF(data, columns, title, meta = {}, orientation =
     paperSize: meta.paperSize, margins: meta.margins, scalePercent: meta.scalePercent,
     showHeaderFooter: meta.showHeaderFooter, repeatHeader: meta.repeatHeader,
     printBackground: meta.printBackground, watermarkText: meta.watermarkText, showStamp: meta.showStamp,
+    summaryKeys: meta.summaryKeys,
   });
 
   const filename = `${FILE_PREFIX}_${safeName(title)}_${nowFilename()}`;
@@ -141,34 +142,62 @@ export async function exportToPDF(data, columns, title, meta = {}, orientation =
   }
 
   // Fallback (dev/browser): open a print window — Chromium still shapes Arabic.
-  printDocument(html);
+  printDocument(html, undefined, orientation);
   return { ok: true, fallback: true };
 }
 
 // ── Browser print ───────────────────────────────────────────────────────────
 export function printHTML(data, columns, title, meta = {}, showSignatures = true) {
+  const orientation = meta.orientation || 'landscape';
   const html = buildReportHTML({
     title,
     columns,
     rows: data,
     meta,
     stats: meta.stats || null,
-    orientation: meta.orientation || 'landscape',
+    orientation,
     showSignatures,
     brand: meta.brand || BRAND,
     paperSize: meta.paperSize, margins: meta.margins, scalePercent: meta.scalePercent,
     showHeaderFooter: meta.showHeaderFooter, repeatHeader: meta.repeatHeader,
     printBackground: meta.printBackground, watermarkText: meta.watermarkText, showStamp: meta.showStamp,
+    summaryKeys: meta.summaryKeys,
   });
-  printDocument(html, meta.copies);
+  printDocument(html, meta.copies, orientation);
 }
 
-function printDocument(html, copies) {
+/**
+ * Dispatch a self-contained HTML document to print — Electron IPC when
+ * available, browser `window.open` + `window.print()` fallback otherwise.
+ * Exported so every print surface in the app (table reports via printHTML
+ * above, and the payslip documents in FinalSalaryModal.jsx) shares this ONE
+ * implementation instead of re-deriving the same window.open/fonts.ready/
+ * print() sequence — a previous duplicate of this in FinalSalaryModal.jsx
+ * skipped the Electron IPC branch entirely, so its print button silently
+ * failed in the packaged app (window.open() is blocked by Electron's
+ * setWindowOpenHandler). Reusing this function is what makes that
+ * impossible to reintroduce.
+ *
+ * @param {string} html
+ * @param {number} [copies]
+ * @param {'portrait'|'landscape'} [orientation] — MUST match the orientation
+ *   `html`'s own @page CSS was built with (buildReportHTML's column widths
+ *   are computed for one specific page width). electron.webContents.print()
+ *   has no equivalent of printToPDF's `preferCSSPageSize` — it never reads
+ *   @page's orientation on its own, so leaving this unset let the native
+ *   print physically use a DIFFERENT page orientation than the content was
+ *   laid out for, clipping one edge of a page that never actually fit.
+ *   Defaults to 'landscape' only to match every existing caller that
+ *   predates this parameter, not because that's a safe fallback — always
+ *   pass the real orientation from here on.
+ */
+export function printDocument(html, copies, orientation = 'landscape') {
   // In Electron, window.open() is blocked by setWindowOpenHandler — use IPC instead.
   // `copies` is a genuine Electron print() option — the native dialog still
   // opens (silent:false in ipc.js), this only pre-fills its copies field.
   if (window.electron?.printHTML) {
-    window.electron.printHTML({ html, copies }).catch(err => console.error('[Print] IPC failed:', err));
+    window.electron.printHTML({ html, copies, landscape: orientation === 'landscape' })
+      .catch(err => console.error('[Print] IPC failed:', err));
     return;
   }
   const w = window.open('', '_blank', 'width=1000,height=720');

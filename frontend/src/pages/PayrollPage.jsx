@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-quartz.css';
@@ -103,6 +104,18 @@ export default function PayrollPage() {
   const [modal,       setModal]       = useState(null); // { row, bulk }
   const [calcConfirm, setCalcConfirm] = useState(false); // payroll calc confirmation
   const [printOpen,   setPrintOpen]   = useState(false);
+
+  // Phase 13.9: accessible-dialog semantics for the calc-confirm dialog.
+  // Escape only ever mirrors the existing Cancel/X button (dismiss without
+  // running the calculation) — it can never trigger "متابعة الاحتساب".
+  const calcConfirmTitleId = useId();
+  const calcConfirmContainerRef = useFocusTrap(calcConfirm);
+  useEffect(() => {
+    if (!calcConfirm) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setCalcConfirm(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [calcConfirm]);
   const now = new Date();
   const [month,  setMonth]  = useState(now.getMonth() + 1);
   const [year,   setYear]   = useState(now.getFullYear());
@@ -249,7 +262,7 @@ export default function PayrollPage() {
     // ── Action: opens the full salary statement (pinned left) ─────────────────
     {
       field: '_action', headerName: '', width: 64, minWidth: 60, pinned: 'left',
-      sortable: false, filter: false, suppressMenu: true,
+      sortable: false, filter: false, suppressHeaderMenuButton: true,
       headerClass: 'ag-header-center',
       cellRenderer: DetailBtnRenderer,
       cellStyle: { ...CENTER },
@@ -476,7 +489,7 @@ export default function PayrollPage() {
           { label: 'إجمالي ساعات الخصم', value: totals.deductHours, accent: '#ef4444', color: '#ef4444', penaltyHours: true },
           { label: 'إجمالي السلف',       value: totals.advances,    accent: '#f59e0b', color: '#f59e0b' },
           { label: 'إجمالي خصم إداري',   value: totals.adminDeduct, accent: '#ef4444', color: '#ef4444' },
-          { label: 'إجمالي صافي',        value: totals.net,         accent: '#3b82f6', color: '#3b82f6' },
+          { label: 'إجمالي صافي',        value: totals.net,         accent: '#2F81F7', color: '#2F81F7' },
         ].map((m, i) => (
           <div key={m.label} style={{ flex: '1 1 150px', borderRight: i ? '1px solid var(--border)' : 'none' }}>
             <PayrollMetric {...m} />
@@ -573,11 +586,18 @@ export default function PayrollPage() {
       {calcConfirm && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(8,12,22,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }} dir="rtl"
           onClick={e => e.target === e.currentTarget && setCalcConfirm(false)}>
-          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, width: '100%', maxWidth: 420, boxShadow: 'var(--shadow-pop)', overflow: 'hidden' }}>
+          <div
+            ref={calcConfirmContainerRef}
+            tabIndex={-1}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={calcConfirmTitleId}
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, width: '100%', maxWidth: 420, boxShadow: 'var(--shadow-pop)', overflow: 'hidden', outline: 'none' }}
+          >
             {/* Header */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)' }}>
               <AlertTriangle style={{ width: 18, height: 18, color: '#d97706', flexShrink: 0 }} />
-              <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)', flex: 1 }}>تأكيد احتساب المرتبات</span>
+              <span id={calcConfirmTitleId} style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)', flex: 1 }}>تأكيد احتساب المرتبات</span>
               <button onClick={() => setCalcConfirm(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', padding: 4 }}>
                 <X style={{ width: 16, height: 16 }} />
               </button>

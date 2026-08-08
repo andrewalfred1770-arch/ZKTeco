@@ -141,11 +141,36 @@ router.get('/payroll/export', async (req, res) => {
         'Department': p.employee.department?.name || '',
         'Branch': p.employee.branch?.name || '',
         'Basic Salary': Math.round(c.basicSalary || 0),
-        'Hourly Rate': Math.round(c.hourlyRate || 0),
+        // Phase 8.2: Hourly Rate is a RATE, not a money total — the canonical
+        // presentation policy (EF-012.1, applied in PayrollPage's grid and
+        // SalaryCard's fmtRate()) shows it to 2 decimal places, matching
+        // payrollEngine.js's computeRates() exact value, not whole-unit
+        // Math.round like the money columns around it. This export
+        // previously used Math.round() here too, silently disagreeing with
+        // the grid/SalaryCard for the same employee/month. Same
+        // Number(x).toFixed(2) rounding rule as those two, applied to the
+        // same computePayroll() value — no new formatter, no engine change.
+        'Hourly Rate': parseFloat((c.hourlyRate || 0).toFixed(2)),
         'Work Days': c.workDays,
         'Absent Days': c.absentDays,
-        'OT Hours': Math.round(c.overtimeHours || 0),
+        // Phase 8.3 Task 1: OT Hours is a spreadsheet-calculable numeric
+        // column (like its sibling 'Penalty Units' just below, which is also
+        // an unrounded hour-unit figure) — not the grid's HH:mm duration
+        // string, which is a text format Excel can't sum/average. Kept
+        // numeric intentionally; the previous Math.round() here silently
+        // dropped a trailing half-hour (e.g. 7.5 → 8) and disagreed with
+        // 'Penalty Units' own no-rounding convention in this very row —
+        // that rounding is removed so this column carries the same
+        // precision as computePayroll() itself, matching 'Penalty Units'.
+        'OT Hours': c.overtimeHours || 0,
         'OT Amount': Math.round(c.overtimeAmount || 0),
+        // Phase 8.3 Task 2: Bonus already exists on computePayroll()'s
+        // response (c.bonus, HR-entered, preserved across recalcs) and is
+        // already shown on SalaryCard/CompactSalarySheet/FinalSalaryModal —
+        // it was simply never added as a column here. Read directly, no
+        // recalculation; Net Salary below is unchanged (still sourced from
+        // c.netSalary, which already includes bonus).
+        'Bonus': Math.round(c.bonus || 0),
         'Penalty Units': c.penaltyUnits || 0,
         'Deductions': Math.round(c.deductions || 0),
         'Advances': Math.round(c.advances || 0),

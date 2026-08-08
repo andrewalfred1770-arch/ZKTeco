@@ -240,19 +240,23 @@ function AppRoutes() {
         position="top-left"
         toastOptions={{
           duration: 3000,
+          className: "toast-pop",
           style: {
-            background:
-              resolved === "light" ? "#ffffff" : "#1f2937",
-            color:
-              resolved === "light" ? "#0f172a" : "#f3f4f6",
+            // Light branch keeps its exact original literal values
+            // (unchanged theme, per design-system scope). Dark branch now
+            // reads from the shared token system instead of one-off hex.
+            background: resolved === "light" ? "#ffffff" : "var(--surface-3)",
+            color: resolved === "light" ? "#0f172a" : "var(--text)",
             border:
               resolved === "light"
                 ? "1px solid #e2e8f0"
-                : "1px solid #374151",
+                : "1px solid var(--border)",
             fontFamily: "Cairo, sans-serif",
             fontSize: "13px",
             direction: "rtl",
-            boxShadow: "0 4px 12px rgba(0,0,0,.15)",
+            boxShadow:
+              resolved === "light" ? "0 4px 12px rgba(0,0,0,.15)" : "var(--shadow-md)",
+            zIndex: "var(--z-toast)",
           },
         }}
       />

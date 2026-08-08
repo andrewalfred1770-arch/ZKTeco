@@ -2,7 +2,7 @@ const router = require('express').Router();
 const moment = require('moment');
 const { getPrisma } = require('../utils/prisma');
 const { authenticate, authorize } = require('../middleware/auth');
-const { calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, withPayrollKeyLock, calculatePayrollImpl } = require('../engines/payrollEngine');
+const { calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, withPayrollKeyLock, calculatePayrollImpl, filterProtectedPayrollTargets } = require('../engines/payrollEngine');
 const { mergeEffectivePenalty } = require('../engines/attendanceEngine');
 const { getRules } = require('../engines/rulesEngine');
 const { writeAudit } = require('../utils/manualEditAudit');
@@ -118,11 +118,21 @@ router.post('/calculate', async (req, res) => {
     const y = parseInt(year) || new Date().getFullYear();
 
     if (employeeId) {
+      // C1: this button has no confirmation flow — a finalized/paid month
+      // must not be silently recalculated just because someone (re)pressed
+      // "احتساب المرتبات" for that specific employee. Same canonical check
+      // as every other cascade caller (Phase 13.3).
+      const { allowed, protectedTargets } = await filterProtectedPayrollTargets([
+        { employeeId: parseInt(employeeId), month: m, year: y },
+      ]);
+      if (protectedTargets.length) {
+        return res.json({ protected: true, status: protectedTargets[0].status, message: 'مرتب هذا الموظف معتمد/مدفوع بالفعل — لم تتم إعادة الاحتساب' });
+      }
       const result = await calculatePayroll(parseInt(employeeId), m, y);
       res.json(result);
     } else {
-      const results = await calculateMonthlyPayroll(m, y, branchId ? parseInt(branchId) : null);
-      res.json({ count: results.length, results });
+      const { results, protectedTargets } = await calculateMonthlyPayroll(m, y, branchId ? parseInt(branchId) : null);
+      res.json({ count: results.length, results, protectedPayroll: protectedTargets });
     }
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -32,106 +32,206 @@
   --radius:      7px;
   --radius-sm:   5px;
   --radius-lg:   9px;
+  --radius-xl:   18px;   /* dialogs / drawers */
+  --radius-full: 999px;  /* pills / avatars */
   --pad-page:    11px;
   --gap:         10px;
   --gap-sm:      7px;
+
+  /* ── Typography scale ─────────────────────────────────────────────────
+     One numeric ramp everything in the shared component layer draws from
+     (page titles, section titles, metric values, dialog headers) instead
+     of ad-hoc px per component. */
+  --text-2xs:  10px;
+  --text-xs:   11.5px;
+  --text-sm:   12.5px;
+  --text-base: 14px;
+  --text-md:   15px;
+  --text-lg:   16.5px;
+  --text-xl:   19px;
+  --text-2xl:  22px;
+  --text-3xl:  28px;
+  --leading-tight:  1.2;
+  --leading-normal: 1.4;
+  --leading-relaxed: 1.65;
+
+  /* ── Spacing scale ───────────────────────────────────────────────────── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+
+  /* ── Iconography scale ───────────────────────────────────────────────── */
+  --icon-xs: 14px;
+  --icon-sm: 16px;
+  --icon-md: 18px;
+  --icon-lg: 20px;
+  --icon-xl: 24px;
+
+  /* ── Elevation / z-index scale — one authority for stacking order.
+     Values are deliberately high (5000+): the app's 12 not-yet-migrated
+     dialogs/banners use hardcoded z-index literals up to 99999 (system
+     banners like NetworkBanner/UpdateNotifications must stay above
+     everything, by original design) and up to 10001 (the old
+     FingerprintSyncModal). These tokens sit above every *modal-class*
+     legacy value so the token-driven Dialog/Drawer never silently render
+     underneath an unmigrated dialog, while staying below the persistent
+     system banners — preserving the exact stacking order that already
+     existed before this pass. */
+  --z-dropdown:       5000;
+  --z-sticky:         5100;
+  --z-drawer:         8000;
+  --z-modal-backdrop: 10100;
+  --z-modal:          10110;
+  --z-toast:          10200;
+  --z-tooltip:        10300;
+
+  /* ── Motion — Apple/Linear-style: brief, no overshoot, opacity+transform
+     only. Durations top out at 250ms per the "subtle, never flashy" rule. */
+  --motion-fast:   120ms;
+  --motion-normal: 180ms;
+  --motion-slow:   240ms;
+  --ease-standard:    cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-decelerate:  cubic-bezier(0, 0, 0.2, 1);
+  --ease-accelerate:  cubic-bezier(0.4, 0, 1, 1);
+  --scale-in:   0.98;
+  --opacity-in: 0;
+
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
    THEME TOKENS
 ═══════════════════════════════════════════════════════════════════════════ */
 html.dark, html:not(.light) {
-  /* Midnight slate enterprise — calm, low-glow */
-  --bg:           #0a0f1a;
-  --surface:      #111927;
-  --surface-2:    #151e2e;
-  --surface-3:    #1b2536;
-  --sidebar:      #0b1220;
-  --border:       #233047;
-  --border-2:     rgba(255,255,255,0.05);
-  --text:         #e9eef7;
-  --text-2:       #94a3b8;
-  --text-3:       #5a6b85;
-  --accent:       #3b82f6;
-  --accent-2:     #1d4ed8;
-  --accent-soft:  rgba(59,130,246,0.12);
-  --input-bg:     #0e1726;
-  --input-b:      #2a3a55;
-  --shadow-card:  0 1px 3px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.02);
-  --shadow-pop:   0 8px 28px rgba(0,0,0,0.5);
+  /* ═══ Dedicated Dark Design System — NOT an inverted light theme ═══
+     Five-level elevation ladder, each with its own hex stop (never pure
+     black, never a flat gray-on-gray wash). Everything below is derived
+     from these five stops + the accent hue, so the whole app shares one
+     coherent depth model: App bg → Sidebar → Page → Cards → Tables →
+     Inputs → Dialogs → Hover → Selected. */
+  --bg:           #0D1117;  /* L0 — page canvas */
+  --surface:      #161B22;  /* L1 — cards */
+  --surface-2:    #21262D;  /* L2 — card header strips, zebra alt rows, table headers */
+  --surface-3:    #30363D;  /* L3 — dropdown/menu panels, elevated dialog surface */
+  --surface-4:    #3D444D;  /* L4 — hover fills, dividers-on-elevated */
+  --border:       #30363D;
+  --border-2:     rgba(240,246,252,0.06);
+  --text:         #F0F6FC;  /* bright, near-white primary — always this, never dimmed */
+  --text-2:       #C9D1D9;  /* secondary */
+  --text-3:       #8B949E;  /* muted */
+  --accent:       #2F81F7;  /* accent — nav/focus/buttons/links/selection ONLY, never a surface fill */
+  --accent-2:     #2F81F7;
+  --accent-soft:  rgba(31,111,235,0.13);
+  --input-bg:     #010409;  /* recessed one step below page canvas — distinct "sunken field" */
+  --input-b:      #30363D;
+  --shadow-card:  0 1px 2px rgba(0,0,0,0.35), 0 6px 18px -8px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.02);
+  --shadow-pop:   0 20px 48px -12px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.05);
   --shadow-glow:  none;
 
-  /* Status semantic colors — dark theme */
-  --status-present:        #22c55e;
-  --status-present-bg:     rgba(34,197,94,0.12);
-  --status-late:           #f59e0b;
-  --status-late-bg:        rgba(245,158,11,0.12);
-  --status-absent:         #f87171;
-  --status-absent-bg:      rgba(239,68,68,0.12);
-  --row-absent-name:       #e2b8b8;   /* employee name in an absent row — dimmer/warmer than --c-name, reads as "darker" on a dark bg */
-  --status-early-leave:    #fb923c;
-  --status-early-leave-bg: rgba(249,115,22,0.12);
-  /* --status-half-day removed 2026-06-22 */
-  --status-weekend:        #94a3b8;
-  --status-weekend-bg:     rgba(107,114,128,0.08);
-  --status-holiday:        #60a5fa;
-  --status-holiday-bg:     rgba(59,130,246,0.12);
+  /* ── Sidebar chrome — dark theme only, switches independently from light.
+     GitHub Dark + Linear + VS Code identity: neutral graphite, no navy tint.
+     Semantic Sidebar Design Tokens — dark theme values only, never used
+     inside :root so light/dark stay fully independent palettes. */
+  --sidebar-background:      #0D1117;
+  --sidebar-surface-hover:   #21262D;
+  --sidebar-surface-active:  rgba(31,111,235,.14);
+  --sidebar-border:          #30363D;
+  --sidebar-accent:          #2F81F7;
+  --sidebar-text-primary:    #F0F6FC;
+  --sidebar-text-secondary:  #C9D1D9;
+  --sidebar-text-muted:      #8B949E;
+  --sidebar-icon:            #C9D1D9;
+  --sidebar-icon-active:     #FFFFFF;
 
-  /* AG Grid — dark */
-  --ag-background-color:              #0f1827;
-  --ag-header-background-color:       #141d2d;
-  --ag-foreground-color:              #dbe4f3;
-  --ag-header-foreground-color:       #aebdd6;
-  --ag-odd-row-background-color:      #0f1827;
-  --ag-even-row-background-color:     #0c1420;
-  --ag-border-color:                  #233047;
-  --ag-row-border-color:              #1a2435;
-  --ag-row-hover-color:               rgba(59,130,246,0.09);
-  --ag-selected-row-background-color: rgba(59,130,246,0.16);
+  /* Shadow scale — real elevation, each stop deeper than the last */
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.28);
+  --shadow-sm: 0 2px 6px -2px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.03);
+  --shadow-md: 0 8px 24px -6px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04);
+  --shadow-lg: 0 24px 56px -14px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.05);
+  --shadow-inner: inset 0 1px 3px rgba(0,0,0,0.35);
+  --focus-ring: 0 0 0 3px var(--accent-soft), 0 0 0 1px var(--accent);
+
+  /* Status semantic colors — GitHub Primer palette, desaturated (never neon) */
+  --status-present:        #3FB950;
+  --status-present-bg:     rgba(35,134,54,0.15);
+  --status-late:           #D29922;
+  --status-late-bg:        rgba(210,153,34,0.15);
+  --status-absent:         #F85149;
+  --status-absent-bg:      rgba(218,54,51,0.15);
+  --row-absent-name:       #E3A7A4;   /* employee name in an absent row — dimmer/warmer than --c-name, reads as "darker" on a dark bg */
+  --status-early-leave:    #DB6D28;
+  --status-early-leave-bg: rgba(219,109,40,0.15);
+  /* --status-half-day removed 2026-06-22 */
+  --status-weekend:        #8B949E;
+  --status-weekend-bg:     rgba(139,148,158,0.12);
+  --status-holiday:        #3FB9B0;
+  --status-holiday-bg:     rgba(63,185,176,0.14);
+  --status-overtime:       #A371F7;
+  --status-overtime-bg:    rgba(137,87,229,0.14);
+
+  /* AG Grid — dark, one notch recessed from Cards so Tables read as their own
+     elevation step (per the Background→Sidebar→Page→Cards→Tables→Inputs→
+     Dialogs ladder), not just "a card with rows in it". */
+  --ag-background-color:              #12161C;
+  --ag-header-background-color:       #21262D;
+  --ag-foreground-color:              #C9D1D9;
+  --ag-header-foreground-color:       #F0F6FC;
+  --ag-odd-row-background-color:      #12161C;
+  --ag-even-row-background-color:     #171B21;
+  --ag-border-color:                  #30363D;
+  --ag-row-border-color:              #21262D;
+  --ag-row-hover-color:               #21262D;
+  --ag-selected-row-background-color: rgba(31,111,235,0.13);
   --ag-row-border-style:              solid;
   --ag-row-border-width:              1px;
-  --ag-header-column-separator-color: #2a3a55;
+  --ag-header-column-separator-color: #30363D;
 
-  --h-grad:   #141d2d;
-  --h-accent: #2b3a55;
-  --h-text:   #aebdd6;
-  --cell-b:   rgba(255,255,255,0.04);
-  --pin-b:    #233047;
-  --total-bg: #16233a;
+  --h-grad:   #21262D;
+  --h-accent: #30363D;
+  --h-text:   #F0F6FC;
+  --cell-b:   rgba(240,246,252,0.045);
+  --pin-b:    #30363D;
+  --total-bg: #21262D;
 
   /* Muted text alias */
-  --text-muted:    #5a6b85;
+  --text-muted:    #8B949E;
 
   /* Semantic cell colors */
-  --c-name:    #e9eef7;
-  --c-code:    #6b82a8;
-  --c-dept:    #8497b5;
-  --c-val:     #dbe4f3;
-  --c-muted:   #4a5a76;
-  --c-time:    #60a5fa;
-  --c-money:   #e2e8f0;
-  --c-ot:      #a78bfa;
-  --c-penalty: #fb923c;
-  --c-net:     #38bdf8;
-  --c-green:   #34d399;
-  --c-red:     #f87171;
+  --c-name:    #F0F6FC;
+  --c-code:    #8B949E;
+  --c-dept:    #C9D1D9;
+  --c-val:     #C9D1D9;
+  --c-muted:   #6E7681;
+  --c-time:    #F0F6FC;  /* bright, bold weight (set in cellStyles.js) carries emphasis — blue is reserved for interactive elements, not data */
+  --c-money:   #F0F6FC;
+  --c-ot:      #A371F7;
+  --c-penalty: #DB6D28;
+  --c-net:     #F0F6FC;
+  --c-green:   #3FB950;
+  --c-red:     #F85149;
+  --c-net-border: rgba(240,246,252,0.16);
 
   /* Legacy ERP aliases — used by EmployeeMovementPage */
-  --erp-text:              #e9eef7;
-  --erp-text-muted:        #94a3b8;
-  --erp-text-faint:        #5a6b85;
-  --erp-border:            #233047;
-  --erp-ag-header-bg-end:  #0f1e35;
-  --erp-ag-header-accent:  #2563eb;
+  --erp-text:              #F0F6FC;
+  --erp-text-muted:        #C9D1D9;
+  --erp-text-faint:        #8B949E;
+  --erp-border:            #30363D;
+  --erp-ag-header-bg-end:  #21262D;
+  --erp-ag-header-accent:  #3D444D;
 }
 
 html.light {
-  /* Crystal enterprise — SAP Fiori shell */
+  /* Crystal enterprise — SAP Fiori shell (values below are UNCHANGED from
+     before this design-system pass — only new tokens are appended). */
   --bg:           #edf1f8;
   --surface:      #ffffff;
   --surface-2:    #f4f7fc;
   --surface-3:    #edf1f8;
-  --sidebar:      #0b1220;
+  --surface-4:    #e3e9f4;
   --border:       #cdd6e6;
   --border-2:     rgba(15,23,42,0.09);
   --text:         #0f1c2e;
@@ -145,6 +245,28 @@ html.light {
   --shadow-card:  0 1px 4px rgba(15,23,42,0.10), 0 0 0 1px rgba(15,23,42,0.04);
   --shadow-pop:   0 10px 34px rgba(15,23,42,0.18);
   --shadow-glow:  none;
+
+  /* ── Sidebar chrome — light theme, Crystal/Fiori identity. Independent
+     from the dark sidebar tokens above; switches with the app theme. ──── */
+  --sidebar-background:      #F8FAFD;
+  --sidebar-surface-hover:   #EEF4FF;
+  --sidebar-surface-active:  #DCEBFF;
+  --sidebar-border:          #D7E0EC;
+  --sidebar-accent:          #1D4ED8;
+  --sidebar-text-primary:    #0F172A;
+  --sidebar-text-secondary:  #334155;
+  --sidebar-text-muted:      #5B6778;
+  --sidebar-icon:            #334155;
+  --sidebar-icon-active:     #1D4ED8;
+
+  /* Shadow scale + focus ring — new tokens, not previously used anywhere,
+     so adding them cannot change any existing light-mode rendering. */
+  --shadow-xs: 0 1px 2px rgba(15,23,42,0.06);
+  --shadow-sm: 0 2px 6px -2px rgba(15,23,42,0.10), 0 0 0 1px rgba(15,23,42,0.04);
+  --shadow-md: 0 8px 24px -6px rgba(15,23,42,0.14), 0 0 0 1px rgba(15,23,42,0.05);
+  --shadow-lg: 0 24px 56px -14px rgba(15,23,42,0.22), 0 0 0 1px rgba(15,23,42,0.06);
+  --shadow-inner: inset 0 1px 3px rgba(15,23,42,0.08);
+  --focus-ring: 0 0 0 3px var(--accent-soft), 0 0 0 1px var(--accent);
 
   /* AG Grid — light (stronger row contrast) */
   --ag-background-color:              #ffffff;
@@ -181,6 +303,7 @@ html.light {
   --c-net:     #075985;
   --c-green:   #145e3b;
   --c-red:     #991515;
+  --c-net-border: rgba(37,99,235,0.25);
 
   /* Muted text alias used by AbsenceTypeModal and other components */
   --text-muted:            #6b7f98;
@@ -329,14 +452,6 @@ html.light .metric {
   box-shadow: 0 1px 3px rgba(15,23,42,0.07);
 }
 
-/* ── Sidebar hover — nav links have no hover in inline style, add via CSS ─── */
-aside nav a:not([aria-current="page"]):hover {
-  background: rgba(255,255,255,0.07) !important;
-}
-aside nav a[aria-current="page"] {
-  background: rgba(59,130,246,0.28) !important;
-}
-
 /* ── Holiday card month header in light mode ─────────────────────────────── */
 html.light .card .font-bold.text-gray-200 { color: var(--text) !important; }
 html.light .card .text-gray-200           { color: var(--text) !important; }
@@ -481,12 +596,12 @@ html.light .text-emerald-400 { color: var(--c-green) !important; }
   html.light .badge-gray   { background:#eef2f8; color:#51637f; border:1px solid #dbe2ee; }
   html.light .badge-purple { background:#f3e8ff; color:#6d28d9; border:1px solid #ddd6fe; }
 
-  html.dark .badge-green  { background:rgba(34,197,94,0.12);  color:#4ade80; border:1px solid rgba(34,197,94,0.22); }
-  html.dark .badge-red    { background:rgba(239,68,68,0.12);  color:#f87171; border:1px solid rgba(239,68,68,0.22); }
-  html.dark .badge-yellow { background:rgba(245,158,11,0.12); color:#fbbf24; border:1px solid rgba(245,158,11,0.22); }
-  html.dark .badge-blue   { background:rgba(59,130,246,0.12); color:#93c5fd; border:1px solid rgba(59,130,246,0.22); }
-  html.dark .badge-gray   { background:rgba(100,116,139,0.15);color:#94a3b8; border:1px solid rgba(100,116,139,0.22); }
-  html.dark .badge-purple { background:rgba(139,92,246,0.12); color:#c4b5fd; border:1px solid rgba(139,92,246,0.22); }
+  html.dark .badge-green  { background:rgba(35,134,54,0.15);  color:#3FB950; border:1px solid rgba(63,185,80,0.28); }
+  html.dark .badge-red    { background:rgba(218,54,51,0.15);  color:#F85149; border:1px solid rgba(248,81,73,0.28); }
+  html.dark .badge-yellow { background:rgba(210,153,34,0.16); color:#E3B341; border:1px solid rgba(210,153,34,0.30); }
+  html.dark .badge-blue   { background:rgba(47,129,247,0.15); color:#79C0FF; border:1px solid rgba(47,129,247,0.28); }
+  html.dark .badge-gray   { background:rgba(139,148,158,0.16);color:#C9D1D9; border:1px solid rgba(139,148,158,0.26); }
+  html.dark .badge-purple { background:rgba(137,87,229,0.15); color:#D2A8FF; border:1px solid rgba(137,87,229,0.28); }
 
   /* ── Typography ──────────────────────────────────────────────────────── */
   .page-header   { @apply flex items-center justify-between; margin-bottom: 12px; }
@@ -504,22 +619,27 @@ html.light .text-emerald-400 { color: var(--c-green) !important; }
   .metric-label { font-size: 13px; font-weight: 700; color: var(--text-2); white-space: nowrap; letter-spacing: 0.01em; }
   .metric-value {
     font-family: var(--font-num); font-weight: 800; font-size: 30px; line-height: 1.05;
-    color: var(--m-color, var(--text));
+    /* Dark theme (approved, current): KPI numbers stay crisp primary white —
+       category color lives only in the 4px --m-accent stripe. Light theme
+       (restored): the original PETSHROW behavior where each value number is
+       itself colored per its category (via --m-color, set inline per Metric). */
+    color: var(--text);
     font-variant-numeric: tabular-nums lining-nums; unicode-bidi: plaintext;
   }
+  html.light .metric-value { color: var(--m-color, var(--text)); }
   .metric-sub { font-size: 12px; color: var(--text-3); }
 
   /* ── Plain accounting table (non-AG-Grid lists) ──────────────────────── */
-  .data-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  .data-table { width: 100%; border-collapse: collapse; font-size: 14px; }
   .data-table thead th {
     background: var(--surface-2); color: var(--text-2);
-    font-weight: 700; font-size: 12.5px; text-transform: none;
-    text-align: right; padding: 8px 11px;
+    font-weight: 700; font-size: 14px; text-transform: none;
+    text-align: right; padding: 11px 13px;
     border-bottom: 1px solid var(--border); white-space: nowrap;
     position: sticky; top: 0; z-index: 1;
   }
   .data-table tbody td {
-    padding: 7px 11px; border-bottom: 1px solid var(--border-2);
+    padding: 10px 13px; border-bottom: 1px solid var(--border-2);
     color: var(--text); text-align: right;
   }
   .data-table tbody tr:hover td { background: var(--accent-soft); }
@@ -561,16 +681,16 @@ html.light .ag-theme-quartz {
 }
 
 html .ag-theme-quartz-dark {
-  --ag-background-color:              #0f1827;
-  --ag-foreground-color:              #dbe4f3;
-  --ag-header-background-color:       #141d2d;
-  --ag-header-foreground-color:       #aebdd6;
-  --ag-odd-row-background-color:      #0f1827;
-  --ag-even-row-background-color:     #0c1420;
-  --ag-border-color:                  #233047;
-  --ag-row-border-color:              #1a2435;
-  --ag-row-hover-color:               rgba(59,130,246,0.09);
-  --ag-selected-row-background-color: rgba(59,130,246,0.16);
+  --ag-background-color:              #12161C;
+  --ag-foreground-color:              #C9D1D9;
+  --ag-header-background-color:       #21262D;
+  --ag-header-foreground-color:       #F0F6FC;
+  --ag-odd-row-background-color:      #12161C;
+  --ag-even-row-background-color:     #171B21;
+  --ag-border-color:                  #30363D;
+  --ag-row-border-color:              #21262D;
+  --ag-row-hover-color:               #21262D;
+  --ag-selected-row-background-color: rgba(31,111,235,0.13);
 }
 
 .ag-root-wrapper {
@@ -579,6 +699,24 @@ html .ag-theme-quartz-dark {
   overflow:hidden;
   box-shadow:var(--shadow-card);
 }
+/* Dark-only elevation upgrade — the "custom-built, not stock Quartz" read.
+   Scoped to html.dark so the light theme's grid chrome stays byte-identical
+   to before this pass. */
+html.dark .ag-root-wrapper {
+  border-radius:var(--radius-lg) !important;
+  box-shadow:var(--shadow-md);
+}
+
+/* Grid's own scrollbars, dark-only refinement (light already renders via
+   the global ::-webkit-scrollbar rule below and stays untouched). */
+html.dark .ag-body-horizontal-scroll-viewport::-webkit-scrollbar,
+html.dark .ag-body-vertical-scroll-viewport::-webkit-scrollbar { width:8px; height:8px; }
+html.dark .ag-body-horizontal-scroll-viewport::-webkit-scrollbar-thumb,
+html.dark .ag-body-vertical-scroll-viewport::-webkit-scrollbar-thumb {
+  background:var(--surface-4); border-radius:var(--radius-full); border:2px solid transparent; background-clip:padding-box;
+}
+html.dark .ag-body-horizontal-scroll-viewport::-webkit-scrollbar-thumb:hover,
+html.dark .ag-body-vertical-scroll-viewport::-webkit-scrollbar-thumb:hover { background:var(--text-3); background-clip:padding-box; }
 
 /* Flat enterprise header (no heavy gradient/glow) */
 .ag-header {
@@ -692,11 +830,11 @@ html .ag-theme-quartz-dark {
 .ag-cell-inline-editing input[type="number"] { text-align: center !important; }
 
 /* Post-save flash — green highlight that fades after ~1.2 s */
-.cell-saved { background: rgba(34,197,94,0.20) !important; transition: background 0.3s ease; }
+.cell-saved { background: rgba(63,185,80,0.22) !important; transition: background 0.3s ease; }
 html.light .cell-saved { background: rgba(5,150,105,0.12) !important; }
 
 /* Error flash — red highlight that fades after ~2 s */
-.cell-error { background: rgba(239,68,68,0.18) !important; transition: background 0.3s ease; }
+.cell-error { background: rgba(248,81,73,0.20) !important; transition: background 0.3s ease; }
 html.light .cell-error { background: rgba(185,28,28,0.10) !important; }
 
 /* Manual-override indicator — EF-018: no badge/dot/pill/background, only the
@@ -760,12 +898,12 @@ html.light .data-table tbody tr:hover td { background: rgba(29,78,216,0.06) !imp
    absent row landing on an even/odd index would render with the plain
    zebra background instead of the absence tint. */
 html.dark  .ag-row.row-absent   { background:var(--status-absent-bg) !important; box-shadow: inset 4px 0 0 var(--status-absent); }
-html.dark  .row-late     { background:rgba(245,158,11,0.09) !important;  box-shadow: inset 4px 0 0 #f59e0b; }
-html.dark  .row-overtime { background:rgba(139,92,246,0.08) !important;  box-shadow: inset 4px 0 0 #8b5cf6; }
+html.dark  .row-late     { background:var(--status-late-bg) !important;     box-shadow: inset 4px 0 0 var(--status-late); }
+html.dark  .row-overtime { background:var(--status-overtime-bg) !important; box-shadow: inset 4px 0 0 var(--status-overtime); }
 /* row-half-day removed 2026-06-22 */
 html.dark  .row-weekend  { opacity:0.44 !important; }
-html.dark  .row-holiday  { background:rgba(59,130,246,0.09) !important;  box-shadow: inset 4px 0 0 #3b82f6; }
-html.dark  .row-monitored { background:rgba(245,158,11,0.10) !important; }
+html.dark  .row-holiday  { background:var(--status-holiday-bg) !important;  box-shadow: inset 4px 0 0 var(--status-holiday); }
+html.dark  .row-monitored { background:var(--status-late-bg) !important; }
 
 /* Light mode */
 html.light .ag-row.row-absent   { background:var(--status-absent-bg) !important; box-shadow: inset 4px 0 0 var(--status-absent); }
@@ -779,7 +917,7 @@ html.light .row-monitored { background:rgba(245,158,11,0.18) !important; }
 
 /* ── Absence — hover: keep the red identity, only increase intensity ──────── */
 html.dark  .ag-row.row-absent:hover,
-html.dark  .ag-row.row-absent:hover:not(.ag-row-selected) { background:rgba(239,68,68,0.18) !important; }
+html.dark  .ag-row.row-absent:hover:not(.ag-row-selected) { background:rgba(248,81,73,0.20) !important; }
 html.light .ag-row.row-absent:hover,
 html.light .ag-row.row-absent:hover:not(.ag-row-selected) { background:rgba(220,38,38,0.18) !important; }
 
@@ -789,7 +927,7 @@ html.light .ag-row.row-absent:hover:not(.ag-row-selected) { background:rgba(220,
    absent row is selected — these two-class selectors outrank it. ──────── */
 html.dark  .ag-row.row-absent.ag-row-selected,
 html.dark  .ag-row.row-absent.ag-row-selected:hover {
-  background: rgba(239,68,68,0.24) !important;
+  background: rgba(248,81,73,0.26) !important;
   box-shadow: inset 4px 0 0 var(--status-absent), inset 0 0 0 1.5px var(--accent);
 }
 html.light .ag-row.row-absent.ag-row-selected,
@@ -814,14 +952,33 @@ html.dark  .ag-cell.cell-name-absent {
   font-weight: 700 !important;
 }
 
-/* ── Absence on plain <table class="data-table"> rows (e.g. Dashboard) ────
-   A zebra/hover rule painting a background on the <td> itself would sit on
-   top of and hide the <tr>'s own .row-absent background — make those cells
-   transparent so the row-level red shows through, then re-apply a slightly
-   stronger red specifically on hover so the identity never disappears. ── */
-.data-table tbody tr.row-absent td { background: transparent !important; }
-html.dark  .data-table tbody tr.row-absent:hover td { background: rgba(239,68,68,0.16) !important; }
-html.light .data-table tbody tr.row-absent:hover td { background: rgba(220,38,38,0.16) !important; }
+/* ── Status tints on plain <table class="data-table"> rows (e.g. Dashboard
+   Employee Alerts) — scoped to .data-table so the shared AG-Grid row-state
+   tokens above (tuned per grid) are left untouched. A zebra/hover rule
+   painting a background on the <td> itself would sit on top of and hide the
+   <tr>'s own tint, so every <td> in a tinted row is forced transparent and
+   the tint is re-applied at the <tr> level (base + hover), full row, every
+   cell including the status badge cell. ─────────────────────────────────── */
+.data-table tbody tr.row-absent td,
+.data-table tbody tr.row-late td,
+.data-table tbody tr.row-leave td { background: transparent !important; }
+
+html.dark  .data-table tbody tr.row-absent { background: rgba(248,81,73,0.11) !important; }
+html.light .data-table tbody tr.row-absent { background: #FEF2F2 !important; }
+html.dark  .data-table tbody tr.row-absent:hover td { background: rgba(248,81,73,0.19) !important; }
+html.light .data-table tbody tr.row-absent:hover td { background: rgba(220,38,38,0.14) !important; }
+
+html.dark  .data-table tbody tr.row-late { background: rgba(210,153,34,0.11) !important; }
+html.light .data-table tbody tr.row-late { background: #FFF7ED !important; }
+html.dark  .data-table tbody tr.row-late:hover td { background: rgba(210,153,34,0.19) !important; }
+html.light .data-table tbody tr.row-late:hover td { background: rgba(180,83,9,0.14) !important; }
+
+/* إجازة — very light blue/gray, reusing the --status-weekend tint already
+   defined per theme. No page wires this class in yet; it's a ready hook. */
+html.dark  .data-table tbody tr.row-leave { background: rgba(148,163,184,0.10) !important; }
+html.light .data-table tbody tr.row-leave { background: #F1F5F9 !important; }
+html.dark  .data-table tbody tr.row-leave:hover td { background: rgba(148,163,184,0.18) !important; }
+html.light .data-table tbody tr.row-leave:hover td { background: rgba(71,85,105,0.14) !important; }
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SCROLLBAR
@@ -832,6 +989,47 @@ html.light .data-table tbody tr.row-absent:hover td { background: rgba(220,38,38
 ::-webkit-scrollbar-thumb:hover { background:var(--text-3); background-clip:padding-box; }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   FORM CONTROLS — dark-aware native checkbox / radio / date picker
+═══════════════════════════════════════════════════════════════════════════ */
+html.dark input[type="checkbox"],
+html.dark input[type="radio"] {
+  accent-color: var(--accent);
+  background: var(--input-bg);
+}
+html.dark input[type="date"]::-webkit-calendar-picker-indicator,
+html.dark input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(1) brightness(1.6);
+  opacity: 0.75;
+  cursor: pointer;
+}
+html.dark input[type="date"]::-webkit-calendar-picker-indicator:hover,
+html.dark input[type="time"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
+html.dark select.input option { background: var(--surface-3); color: var(--text); }
+
+/* Custom select caret — dark-only cosmetic upgrade (light keeps the native
+   browser arrow it already had, unchanged). The chevron color is baked
+   into the SVG data-URI as a literal because CSS custom properties cannot
+   be referenced inside a background-image asset; the value used
+   (#9BAAC4) is exactly --text-2 in the dark theme, kept in lockstep. */
+html.dark select.input {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23C9D1D9' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  padding-inline-end: 30px;
+}
+
+/* ── Global focus system — token-driven, keyboard-only (mouse clicks never
+   trigger :focus-visible). Scoped to html.dark only: the light theme had
+   no equivalent focus treatment before this pass and must not gain new
+   unscoped behavior, per the Light Theme Regression Audit. ── */
+html.dark :is(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    THEME TRANSITIONS (exclude grids)
 ═══════════════════════════════════════════════════════════════════════════ */
 *, *::before, *::after {
@@ -840,6 +1038,64 @@ html.light .data-table tbody tr.row-absent:hover td { background: rgba(220,38,38
   transition-timing-function: ease;
 }
 .ag-root-wrapper, .ag-root-wrapper * { transition:none !important; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MOTION SYSTEM — token-driven, opt-in utility classes
+   Apple/Linear register: brief (<=250ms), no overshoot/bounce, only
+   opacity + transform (never layout-triggering properties). Every duration
+   and curve below reads from the motion/ease tokens in :root, so retiming
+   the whole app is a one-line token edit, never a keyframe hunt.
+═══════════════════════════════════════════════════════════════════════════ */
+@keyframes dialog-pop {
+  from { opacity: var(--opacity-in); transform: translateY(6px) scale(var(--scale-in)); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes overlay-fade { from { opacity: var(--opacity-in); } to { opacity: 1; } }
+@keyframes drawer-slide-in {
+  from { opacity: var(--opacity-in); transform: translateX(var(--drawer-offset, 16px)); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes tooltip-pop {
+  from { opacity: var(--opacity-in); transform: translateY(3px) scale(var(--scale-in)); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes toast-pop {
+  from { opacity: var(--opacity-in); transform: translateY(-6px) scale(var(--scale-in)); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes dropdown-pop {
+  from { opacity: var(--opacity-in); transform: translateY(-4px) scale(var(--scale-in)); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.dialog-pop      { animation: dialog-pop var(--motion-normal) var(--ease-decelerate) both; }
+.overlay-fade    { animation: overlay-fade var(--motion-fast) var(--ease-standard) both; }
+.drawer-slide-in { animation: drawer-slide-in var(--motion-normal) var(--ease-decelerate) both; }
+.tooltip-pop     { animation: tooltip-pop var(--motion-fast) var(--ease-decelerate) both; }
+.toast-pop       { animation: toast-pop var(--motion-fast) var(--ease-decelerate) both; }
+.dropdown-pop    { animation: dropdown-pop var(--motion-fast) var(--ease-decelerate) both; }
+
+/* Button/interactive press feedback — a single frame of scale, never a
+   layout shift. Add class="press" to any clickable element. */
+.press { transition: transform var(--motion-fast) var(--ease-standard); }
+.press:active { transform: scale(0.97); }
+
+/* Sidebar active-item + nav highlight transition, shared token instead of
+   the per-file inline transition string. */
+.nav-highlight {
+  transition: background var(--motion-fast) var(--ease-standard),
+              color var(--motion-fast) var(--ease-standard),
+              border-color var(--motion-fast) var(--ease-standard);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dialog-pop, .overlay-fade, .drawer-slide-in, .tooltip-pop,
+  .toast-pop, .dropdown-pop, .press, .nav-highlight,
+  aside nav a {
+    animation: none !important;
+    transition: none !important;
+  }
+}
 
 /* Utility: animation used by spinners */
 @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }

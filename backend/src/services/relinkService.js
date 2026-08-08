@@ -177,8 +177,22 @@ async function recalcDateRangeForEmployee(employeeId, from, to) {
     months.add(`${m.year()}-${m.month() + 1}`);
     m.add(1, 'month');
   }
-  for (const key of months) {
+
+  // C1: relinking is an automatic side-effect (newly-matched attendance logs
+  // for this employee), not a direct edit of any Payroll row — a finalized/
+  // paid month caught in this range must be protected, not silently
+  // overwritten. Same canonical, batched check Phase 13.3 wired into
+  // recalcEngine.recalcScope() and adjustments.js.
+  const targets = [...months].map((key) => {
     const [year, month] = key.split('-').map(Number);
+    return { employeeId, month, year };
+  });
+  const { allowed, protectedTargets } = await payrollEngine.filterProtectedPayrollTargets(targets);
+  if (protectedTargets.length) {
+    logger.warn(`[Relink] payroll SKIPPED (finalized/paid) emp ${employeeId}: ` +
+      protectedTargets.map(t => `${t.month}/${t.year} (${t.status})`).join(', '));
+  }
+  for (const { month, year } of allowed) {
     try {
       await payrollEngine.calculatePayroll(employeeId, month, year);
     } catch (err) {

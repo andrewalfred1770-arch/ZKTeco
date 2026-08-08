@@ -67,7 +67,7 @@ function ImageUploader({ field, settingKey, label, hint, value, box, recommended
     <div className="card p-4" style={{ display:'flex', gap:14, alignItems:'center' }}>
       <div style={{
         width:box.w, height:box.h, borderRadius:10, flexShrink:0, overflow:'hidden',
-        background: url ? '#0f172a' : 'rgba(148,163,184,0.12)',
+        background: url ? 'var(--bg)' : 'rgba(148,163,184,0.12)',
         border:'1px solid var(--border)',
         display:'flex', alignItems:'center', justifyContent:'center',
       }}>

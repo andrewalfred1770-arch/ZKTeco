@@ -120,7 +120,7 @@ export default function ConnectionSettingsPage() {
         {/* ── Mode + URL ────────────────────────────────────────────────── */}
         <div className="card p-5 flex flex-col gap-4">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>
-            <PlugZap style={{ width: 16, height: 16, color: '#60a5fa' }} />
+            <PlugZap style={{ width: 16, height: 16, color: '#79C0FF' }} />
             وضع التشغيل
           </h3>
 
@@ -130,11 +130,11 @@ export default function ConnectionSettingsPage() {
               style={{
                 flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
                 padding: '14px 10px', borderRadius: 10, cursor: 'pointer',
-                background: mode === 'local' ? 'rgba(59,130,246,0.12)' : 'var(--surface-2)',
-                border: mode === 'local' ? '1.5px solid #3b82f6' : '1px solid var(--border)',
+                background: mode === 'local' ? 'rgba(47,129,247,0.12)' : 'var(--surface-2)',
+                border: mode === 'local' ? '1.5px solid #2F81F7' : '1px solid var(--border)',
               }}
             >
-              <HardDrive style={{ width: 20, height: 20, color: mode === 'local' ? '#60a5fa' : 'var(--text-3)' }} />
+              <HardDrive style={{ width: 20, height: 20, color: mode === 'local' ? '#79C0FF' : 'var(--text-3)' }} />
               <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>محلي</span>
               <span style={{ fontSize: 10.5, color: 'var(--text-3)', textAlign: 'center' }}>يشغّل التطبيق الخادم تلقائياً</span>
             </button>
@@ -143,11 +143,11 @@ export default function ConnectionSettingsPage() {
               style={{
                 flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
                 padding: '14px 10px', borderRadius: 10, cursor: 'pointer',
-                background: mode === 'server' ? 'rgba(59,130,246,0.12)' : 'var(--surface-2)',
-                border: mode === 'server' ? '1.5px solid #3b82f6' : '1px solid var(--border)',
+                background: mode === 'server' ? 'rgba(47,129,247,0.12)' : 'var(--surface-2)',
+                border: mode === 'server' ? '1.5px solid #2F81F7' : '1px solid var(--border)',
               }}
             >
-              <Server style={{ width: 20, height: 20, color: mode === 'server' ? '#60a5fa' : 'var(--text-3)' }} />
+              <Server style={{ width: 20, height: 20, color: mode === 'server' ? '#79C0FF' : 'var(--text-3)' }} />
               <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>خادم</span>
               <span style={{ fontSize: 10.5, color: 'var(--text-3)', textAlign: 'center' }}>اتصال بخادم موجود على الشبكة</span>
             </button>
@@ -205,7 +205,7 @@ export default function ConnectionSettingsPage() {
 
           {testing && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0' }}>
-              <Loader2 style={{ width: 14, height: 14, color: '#60a5fa', animation: 'spin 1s linear infinite' }} />
+              <Loader2 style={{ width: 14, height: 14, color: '#79C0FF', animation: 'spin 1s linear infinite' }} />
               <span style={{ fontSize: 12, color: 'var(--text-3)' }}>جاري الفحص...</span>
             </div>
           )}

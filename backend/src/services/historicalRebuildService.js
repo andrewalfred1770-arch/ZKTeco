@@ -254,7 +254,18 @@ async function runRebuild(jobId, io) {
         d.add(1, 'day');
       }
 
-      for (const { month, year } of months) {
+      // C1: a historical rebuild is a background side-effect of newly-imported
+      // AttendanceLog rows, not a direct edit of any Payroll row — protect
+      // finalized/paid months the same way every other cascade caller does
+      // (Phase 13.3's canonical, batched check), instead of silently
+      // overwriting them just because they fall inside the rebuilt range.
+      const monthTargets = months.map(({ month, year }) => ({ employeeId: emp.id, month, year }));
+      const { allowed: allowedMonths, protectedTargets } = await payrollEngine.filterProtectedPayrollTargets(monthTargets);
+      if (protectedTargets.length) {
+        logger.warn(`[REBUILD] jobId=${jobId} employee=${emp.id}: SKIPPED finalized/paid ` +
+          protectedTargets.map(t => `${t.month}/${t.year} (${t.status})`).join(', '));
+      }
+      for (const { month, year } of allowedMonths) {
         try {
           await payrollEngine.calculatePayroll(emp.id, month, year);
           logger.info(`[PAYROLL-RECALC] jobId=${jobId} employee=${emp.id} month=${month}/${year}`);

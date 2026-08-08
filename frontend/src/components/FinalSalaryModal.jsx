@@ -2,7 +2,8 @@
  * FinalSalaryModal — Preview, Print, PDF, Excel export for salary sheets
  * Supports single employee or bulk all-employees view.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import {
   X, Printer, FileText, FileSpreadsheet,
   Loader2, ZoomIn, ZoomOut, AlertCircle,
@@ -14,18 +15,27 @@ import CompactSalarySheet, { PER_PAGE } from './CompactSalarySheet';
 import { useTheme } from '../contexts/ThemeContext';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { EMBEDDED_FONT_CSS_ALL } from '../lib/reportTemplate';
-import { exportToExcel } from '../lib/printUtils';
+import { exportToExcel, printDocument } from '../lib/printUtils';
 import { FILE_PREFIX, useCompanyBrand } from '../lib/branding';
 import { fmtMoney, fmtIntZero, displayNetSalary } from '../lib/formatters';
 import { MONTHS_AR } from '../lib/constants';
+import { COLORS } from '../lib/printDesignSystem';
 
-// Wrap salary-card HTML in a self-contained A4 document (embedded Arabic fonts)
+// Wrap salary-card HTML in a self-contained A4 document (embedded Arabic
+// fonts). Cairo-first (matching every other printed document's typography —
+// IBM Plex Sans Arabic stays available for CompactSalarySheet's own scoped
+// styles, which set it explicitly where needed) and the shared ink token
+// instead of a bare #000. Page-level footer content (company identity ·
+// page number) is rendered directly inside SalaryCard/CompactSalarySheet
+// themselves — visible in both the on-screen preview and the printed
+// output — rather than an @page margin box, since this document's pages are
+// fixed-size divs, not @page-driven like reportTemplate.js's table reports.
 function buildSalaryDoc(innerHTML, title, landscape = false) {
   return `<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="UTF-8"><title>${title}</title>
 <style>
 ${EMBEDDED_FONT_CSS_ALL}
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:'IBM Plex Sans Arabic','Cairo',Tahoma,Arial,sans-serif;background:#fff;color:#000;direction:rtl;}
+body{font-family:'Cairo','IBM Plex Sans Arabic',Tahoma,Arial,sans-serif;background:#fff;color:${COLORS.i1};direction:rtl;}
 @page{size:A4${landscape ? ' landscape' : ''};margin:0;}
 .salary-card{page-break-after:always;}
 .salary-card:last-child{page-break-after:auto;}
@@ -59,6 +69,17 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
     return () => window.removeEventListener('resize', onResize);
   }, [PAGE_W_MM]);
 
+  // Phase 13.9: accessible-dialog semantics — full-screen workspace variant
+  // (like PrintPreviewModal), so only the focus-trap/restore/Escape engine
+  // is applied here, no visual chrome change.
+  const titleId = useId();
+  const containerRef = useFocusTrap(true);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   // ── Load single salary sheet ──────────────────────────────────────────────
   const loadSingle = useCallback(async (empId) => {
     setLoading(true);
@@ -73,19 +94,41 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
   }, [month, year]);
 
   // ── Load bulk ─────────────────────────────────────────────────────────────
+  // Bounded-concurrency fetch (Phase 6.1): previously one sequential
+  // `await` per employee — O(N) network round-trips end-to-end. Requests are
+  // now fired in fixed-size batches (BULK_FETCH_CONCURRENCY in flight at
+  // once) instead of unbounded Promise.all, so a 1000-employee company can't
+  // open 1000 simultaneous connections. Each employee's own GET /payroll/
+  // final-sheet call, and everything it returns, is unchanged — this only
+  // changes how many of those identical requests are in flight at once.
+  // Results are written into a pre-sized array by original index (not
+  // completion order), so the final list is byte-identical in ordering and
+  // content to the old sequential version regardless of which request
+  // finishes first; a failed/missing-empId row is left as `undefined` and
+  // filtered out at the end, matching the old loop's `continue`/`catch {}`
+  // skip behavior exactly.
+  const BULK_FETCH_CONCURRENCY = 12;
   const loadBulk = useCallback(async () => {
     setLoading(true);
-    const results = [];
-    for (const row of allRows) {
+    const slots = new Array(allRows.length);
+
+    const fetchOne = async (row, idx) => {
       const empId = row['employee.id'] || row.employeeId || row.employee?.id;
-      if (!empId) continue;
+      if (!empId) return;
       try {
         const { data: d } = await api.get('/payroll/final-sheet', {
           params: { employeeId: empId, month, year },
         });
-        results.push(d);
+        slots[idx] = d;
       } catch {}
+    };
+
+    for (let start = 0; start < allRows.length; start += BULK_FETCH_CONCURRENCY) {
+      const batch = allRows.slice(start, start + BULK_FETCH_CONCURRENCY);
+      await Promise.all(batch.map((row, i) => fetchOne(row, start + i)));
     }
+
+    const results = slots.filter(Boolean);
     setBulkData(results);
     if (results.length === 0) toast.error('لا توجد بيانات رواتب محسوبة');
     setLoading(false);
@@ -108,17 +151,19 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
   useRulesLiveSync(reloadSheet, { silent: true });
 
   // ── Print (real Chromium HTML — embedded Arabic fonts) ──────────────────────
+  // Routed through printUtils.js's shared printDocument() — the same
+  // dispatcher every table report's print button uses — instead of a second,
+  // independently hand-rolled window.open()/fonts.ready/print() sequence.
+  // That duplicate never checked window.electron?.printHTML, so in the
+  // packaged Electron app window.open() (blocked by setWindowOpenHandler)
+  // silently failed and this print button did nothing; printDocument()
+  // already handles the Electron IPC path correctly, with this exact
+  // window.open fallback preserved for the browser/dev case.
   const handlePrint = () => {
     const printContent = printRef.current?.innerHTML;
     if (!printContent) { toast.error('لا توجد بيانات للطباعة'); return; }
-    const w = window.open('', '_blank', 'width=900,height=1000');
-    if (!w) { toast.error('فضلاً اسمح بالنوافذ المنبثقة'); return; }
-    const html = buildSalaryDoc(printContent, `كشف رواتب ${monthLabel} ${year}`, true).replace(
-      '</body>',
-      `<script>function go(){setTimeout(function(){try{window.focus();window.print();}catch(e){}},180);}`
-      + `if(document.fonts&&document.fonts.ready){document.fonts.ready.then(go);}else{go();}<\/script></body>`
-    );
-    w.document.open(); w.document.write(html); w.document.close();
+    const html = buildSalaryDoc(printContent, `كشف رواتب ${monthLabel} ${year}`, true);
+    printDocument(html, undefined, 'landscape');
   };
 
   // ── Export PDF (Chromium print engine + browser fallback) ───────────────────
@@ -145,10 +190,12 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
   // other displayed (already-rounded) deduction columns — not the backend's
   // separately-rounded `deductions.total` field — so the sheet is calculator-
   // verifiable from the numbers printed in it. Unchanged by EF-019.1.
-  const r0 = (n) => Math.round(Number(n) || 0);
+  // Phase 8.1: r0() was a byte-for-byte duplicate of formatters.js's
+  // displayNetSalary() (same Math.round(Number(n)||0)) — removed in favor of
+  // the shared function; the row-sum policy itself (EF-011, above) is unchanged.
   const rowDedTotal = (row) => (
-    r0(row?.deductions?.absentAmount) + r0(row?.deductions?.lateAmount) + r0(row?.deductions?.earlyAmount)
-    + r0(row?.deductions?.manualDeductionAdjustment)
+    displayNetSalary(row?.deductions?.absentAmount) + displayNetSalary(row?.deductions?.lateAmount) + displayNetSalary(row?.deductions?.earlyAmount)
+    + displayNetSalary(row?.deductions?.manualDeductionAdjustment)
   );
   // EF-019.1: "صافي الراتب" is the ONE shared displayNetSalary() helper
   // applied to this row's own canonical `netSalary` field — not re-derived
@@ -168,6 +215,12 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
       { header:'إضافي صباحي',    key:'earnings.morningOT.amount', format:v=>fmtMoney(v), total:'sum' },
       { header:'إضافي مسائي',    key:'earnings.eveningOT.amount', format:v=>fmtMoney(v), total:'sum' },
       { header:'إجمالي الإضافي', key:'earnings.overtimeAmount', format:v=>fmtMoney(v), total:'sum' },
+      // Phase 9 Part 1: earnings.bonus already exists on this exact
+      // /final-sheet response (shown on SalaryCard/CompactSalarySheet) — it
+      // was simply never added as a column here, the same gap Phase 8.3
+      // fixed in reports.js's /reports/payroll/export. Read directly, no
+      // recalculation; netSalary below already included it.
+      { header:'مكافأة / بدل',   key:'earnings.bonus',           format:v=>fmtMoney(v), total:'sum' },
       { header:'خصم الغياب',     key:'deductions.absentAmount', format:v=>fmtMoney(v), total:'sum' },
       { header:'خصم التأخير',    key:'deductions.lateAmount',  format:v=>fmtMoney(v), total:'sum' },
       { header:'خصم الانصراف المبكر', key:'deductions.earlyAmount', format:v=>fmtMoney(v), total:'sum' },
@@ -196,14 +249,20 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
       }} />
 
       {/* Modal */}
-      <div style={{
+      <div
+        ref={containerRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        style={{
         position:'fixed', inset:'20px', zIndex:70,
         background:'var(--surface-2)',
         border:'1.5px solid var(--border)',
         borderRadius:16,
         boxShadow:'0 24px 80px rgba(0,0,0,0.28)',
         display:'flex', flexDirection:'column',
-        overflow:'hidden',
+        overflow:'hidden', outline:'none',
       }} dir="rtl">
 
         {/* ── Header ───────────────────────────────────────────────────────── */}
@@ -212,7 +271,7 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
           padding:'14px 20px', borderBottom:'1px solid var(--border)',
           background: isLight
             ? 'linear-gradient(135deg,#1d4ed8,#1e40af)'
-            : 'linear-gradient(135deg,#0f2040,#0d1a36)',
+            : 'linear-gradient(135deg,var(--surface-3),var(--surface-2))',
           flexShrink:0,
         }}>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
@@ -224,7 +283,7 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
               <FileSpreadsheet style={{ width:18, height:18, color:'#fff' }} />
             </div>
             <div>
-              <h2 style={{ color:'#fff', fontSize:15, fontWeight:800, margin:0 }}>
+              <h2 id={titleId} style={{ color:'#fff', fontSize:15, fontWeight:800, margin:0 }}>
                 {bulk ? 'كشف رواتب جميع الموظفين' : 'كشف راتب - النهائي'}
               </h2>
               <p style={{ color:'rgba(255,255,255,0.65)', fontSize:12, margin:'2px 0 0' }}>

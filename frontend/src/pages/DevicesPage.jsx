@@ -12,7 +12,7 @@
  */
 
 import React, {
-  useCallback, useEffect, useMemo, useRef, useState,
+  useCallback, useEffect, useId, useMemo, useRef, useState,
 } from 'react';
 import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';
@@ -31,6 +31,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import { westernDigits, fmtDateTime } from '../lib/formatters';
 import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS } from '../lib/gridDefaults';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 const W = v => westernDigits(String(v ?? 0));
@@ -155,7 +156,7 @@ function KpiCard({ label, value, sub, icon: Icon, color, loading }) {
       display: 'flex', alignItems: 'center', gap: 14,
       padding: '14px 18px', borderRadius: 12,
       background: 'var(--surface)',
-      border: `1.5px solid ${isLight ? '#e2e8f0' : '#1a3454'}`,
+      border: `1.5px solid ${isLight ? '#e2e8f0' : 'var(--border)'}`,
       boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
     }}>
       <div style={{
@@ -244,13 +245,24 @@ function DeviceDrawer({ open, onClose, onSaved, device, branches }) {
     } finally { setSaving(false); }
   };
 
+  // Phase 13.9: accessible-dialog semantics — hooks run unconditionally,
+  // above the early return below.
+  const titleId = useId();
+  const containerRef = useFocusTrap(open);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
   if (!open) return null;
 
-  const surface  = isLight ? '#fff'    : '#0b1628';
-  const surface2 = isLight ? '#f8fafc' : '#0f1e35';
-  const border   = isLight ? '#e2e8f0' : '#1a3454';
-  const textMain = isLight ? '#0f172a' : '#eef2ff';
-  const textSub  = isLight ? '#64748b' : '#64748b';
+  const surface  = 'var(--surface-2)';
+  const surface2 = 'var(--surface-3)';
+  const border   = 'var(--border)';
+  const textMain = 'var(--text)';
+  const textSub  = 'var(--text-3)';
 
   return (
     <>
@@ -264,6 +276,11 @@ function DeviceDrawer({ open, onClose, onSaved, device, branches }) {
       />
       {/* Drawer */}
       <div
+        ref={containerRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         dir="rtl"
         style={{
           position: 'fixed', top: 0, right: 0, bottom: 0,
@@ -273,24 +290,26 @@ function DeviceDrawer({ open, onClose, onSaved, device, branches }) {
           display: 'flex', flexDirection: 'column',
           boxShadow: '-8px 0 40px rgba(0,0,0,0.35)',
           overflow: 'hidden',
+          outline: 'none',
         }}
       >
         {/* Header */}
         <div style={{
           padding: '14px 20px',
-          background: isLight ? '#0f2040' : '#070f1d',
+          background: 'var(--surface-3)',
+          borderBottom: '1px solid var(--border)',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           flexShrink: 0,
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <Server style={{ color: '#bfdbfe', width: 18, height: 18 }} />
-            <span style={{ color: '#fff', fontWeight: 700, fontSize: 14, fontFamily: 'Cairo, sans-serif' }}>
+            <Server style={{ color: 'var(--accent)', width: 18, height: 18 }} />
+            <span id={titleId} style={{ color: 'var(--text)', fontWeight: 700, fontSize: 14, fontFamily: 'Cairo, sans-serif' }}>
               {device ? 'تعديل الجهاز' : 'إضافة جهاز بصمة'}
             </span>
           </div>
           <button
             onClick={onClose}
-            style={{ background: 'rgba(255,255,255,0.08)', border: 'none', borderRadius: 6, color: '#94a3b8', cursor: 'pointer', padding: '5px 8px' }}
+            style={{ background: 'var(--surface-4)', border: 'none', borderRadius: 6, color: 'var(--text-3)', cursor: 'pointer', padding: '5px 8px' }}
           >
             <X style={{ width: 16, height: 16 }} />
           </button>
@@ -349,9 +368,9 @@ function DeviceDrawer({ open, onClose, onSaved, device, branches }) {
                 display: 'flex', alignItems: 'center', gap: 8,
                 padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600,
                 fontFamily: 'Cairo, sans-serif', cursor: 'pointer',
-                background: 'rgba(59,130,246,0.1)',
-                border: '1px solid rgba(59,130,246,0.3)',
-                color: '#60a5fa', width: '100%', justifyContent: 'center',
+                background: isLight ? 'rgba(59,130,246,0.1)' : 'rgba(47,129,247,0.1)',
+                border: '1px solid ' + (isLight ? 'rgba(59,130,246,0.3)' : 'rgba(47,129,247,0.3)'),
+                color: isLight ? '#60a5fa' : '#79C0FF', width: '100%', justifyContent: 'center',
               }}
             >
               {testing
@@ -441,7 +460,7 @@ function DeviceDrawer({ open, onClose, onSaved, device, branches }) {
                   onClick={() => set(key, !form[key])}
                   style={{
                     width: 44, height: 24, borderRadius: 99, border: 'none', cursor: 'pointer',
-                    background: form[key] ? '#2563eb' : (isLight ? '#cbd5e1' : '#1a3454'),
+                    background: form[key] ? '#2563eb' : (isLight ? '#cbd5e1' : 'var(--surface-4)'),
                     position: 'relative', transition: 'background 0.2s', flexShrink: 0,
                   }}
                 >
@@ -522,8 +541,8 @@ function SyncLogsPanel({ deviceId, deviceName, isLight }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const border  = isLight ? '#e2e8f0' : '#1a3454';
-  const surface = isLight ? '#f8fafc' : '#0b1628';
+  const border  = 'var(--border)';
+  const surface = 'var(--surface-2)';
 
   return (
     <div style={{ border: `1px solid ${border}`, borderRadius: 10, overflow: 'hidden' }}>
@@ -536,11 +555,11 @@ function SyncLogsPanel({ deviceId, deviceName, isLight }) {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <History style={{ width: 15, height: 15, color: '#60a5fa' }} />
+          <History style={{ width: 15, height: 15, color: isLight ? '#60a5fa' : '#79C0FF' }} />
           {deviceName ? `سجل مزامنة: ${deviceName}` : 'سجل المزامنة الأخير (جميع الأجهزة)'}
           {logs.length > 0 && open && (
             <span style={{
-              background: 'rgba(59,130,246,0.15)', color: '#60a5fa',
+              background: isLight ? 'rgba(59,130,246,0.15)' : 'rgba(47,129,247,0.15)', color: isLight ? '#60a5fa' : '#79C0FF',
               padding: '1px 7px', borderRadius: 99, fontSize: 10,
             }}>{logs.length}</span>
           )}
@@ -563,7 +582,7 @@ function SyncLogsPanel({ deviceId, deviceName, isLight }) {
             <div style={{ maxHeight: 260, overflowY: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, fontFamily: 'Cairo, sans-serif' }}>
                 <thead>
-                  <tr style={{ background: isLight ? '#f1f5f9' : '#0d1e38' }}>
+                  <tr style={{ background: isLight ? '#f1f5f9' : 'var(--surface-3)' }}>
                     {['وقت البدء', 'الجهاز', 'الحالة', 'جديد', 'إجمالي', 'المدة', 'النوع'].map(h => (
                       <th key={h} style={{
                         padding: '6px 10px', textAlign: 'right', fontWeight: 700,
@@ -577,10 +596,10 @@ function SyncLogsPanel({ deviceId, deviceName, isLight }) {
                 <tbody>
                   {logs.map(log => (
                     <tr key={log.id} style={{ borderBottom: `1px solid ${border}` }}>
-                      <td style={{ padding: '5px 10px', color: isLight ? '#334155' : '#8ba3c7', whiteSpace: 'nowrap', fontFamily: 'Consolas, monospace', fontSize: 11 }}>
+                      <td style={{ padding: '5px 10px', color: isLight ? '#334155' : 'var(--text-3)', whiteSpace: 'nowrap', fontFamily: 'Consolas, monospace', fontSize: 11 }}>
                         {fmtDatetime(log.startedAt)}
                       </td>
-                      <td style={{ padding: '5px 10px', color: isLight ? '#0f172a' : '#dde6f8', fontWeight: 600, maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <td style={{ padding: '5px 10px', color: isLight ? '#0f172a' : 'var(--text)', fontWeight: 600, maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {log.device?.name || `#${log.deviceId}`}
                       </td>
                       <td style={{ padding: '5px 10px' }}>
@@ -592,14 +611,14 @@ function SyncLogsPanel({ deviceId, deviceName, isLight }) {
                       <td style={{ padding: '5px 10px', color: isLight ? '#64748b' : '#475569', fontFamily: 'Consolas, monospace' }}>
                         {W(log.totalLogs)}
                       </td>
-                      <td style={{ padding: '5px 10px', color: '#60a5fa', fontFamily: 'Consolas, monospace', whiteSpace: 'nowrap' }}>
+                      <td style={{ padding: '5px 10px', color: isLight ? '#60a5fa' : '#79C0FF', fontFamily: 'Consolas, monospace', whiteSpace: 'nowrap' }}>
                         {fmtDuration(log.duration)}
                       </td>
                       <td style={{ padding: '5px 10px' }}>
                         <span style={{
                           fontSize: 10, padding: '1px 7px', borderRadius: 99,
-                          background: log.triggeredBy === 'manual' ? 'rgba(168,85,247,0.1)' : 'rgba(59,130,246,0.1)',
-                          color:      log.triggeredBy === 'manual' ? '#a855f7'               : '#60a5fa',
+                          background: log.triggeredBy === 'manual' ? 'rgba(168,85,247,0.1)' : (isLight ? 'rgba(59,130,246,0.1)' : 'rgba(47,129,247,0.1)'),
+                          color:      log.triggeredBy === 'manual' ? '#a855f7'               : (isLight ? '#60a5fa' : '#79C0FF'),
                         }}>
                           {log.triggeredBy === 'manual' ? 'يدوي' : 'تلقائي'}
                         </span>
@@ -634,8 +653,8 @@ function RelinkDiagnosticsPanel({ isLight, refreshKey }) {
 
   useEffect(() => { load(); }, [load, refreshKey]);
 
-  const border  = isLight ? '#e2e8f0' : '#1a3454';
-  const surface = isLight ? '#f8fafc' : '#0b1628';
+  const border  = 'var(--border)';
+  const surface = 'var(--surface-2)';
 
   return (
     <div style={{ border: `1px solid ${border}`, borderRadius: 10, overflow: 'hidden' }}>
@@ -681,7 +700,7 @@ function RelinkDiagnosticsPanel({ isLight, refreshKey }) {
             <div style={{ maxHeight: 320, overflowY: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, fontFamily: 'Cairo, sans-serif' }}>
                 <thead>
-                  <tr style={{ background: isLight ? '#f1f5f9' : '#0d1e38' }}>
+                  <tr style={{ background: isLight ? '#f1f5f9' : 'var(--surface-3)' }}>
                     {['zkUserId', 'الموظف المرتبط', 'الحالة', 'سجلات مرتبطة', 'سجلات غير مرتبطة', 'الإجمالي'].map(h => (
                       <th key={h} style={{
                         padding: '6px 10px', textAlign: 'right', fontWeight: 700,
@@ -695,10 +714,10 @@ function RelinkDiagnosticsPanel({ isLight, refreshKey }) {
                 <tbody>
                   {data.rows.map(row => (
                     <tr key={row.zkUserId} style={{ borderBottom: `1px solid ${border}` }}>
-                      <td style={{ padding: '5px 10px', color: isLight ? '#0f172a' : '#dde6f8', fontWeight: 700, fontFamily: 'Consolas, monospace', direction: 'ltr', textAlign: 'right' }}>
+                      <td style={{ padding: '5px 10px', color: isLight ? '#0f172a' : 'var(--text)', fontWeight: 700, fontFamily: 'Consolas, monospace', direction: 'ltr', textAlign: 'right' }}>
                         {row.zkUserId}
                       </td>
-                      <td style={{ padding: '5px 10px', color: isLight ? '#334155' : '#8ba3c7', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <td style={{ padding: '5px 10px', color: isLight ? '#334155' : 'var(--text-3)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {row.employee ? `${row.employee.name}${row.employee.code ? ` (${row.employee.code})` : ''}` : '—'}
                       </td>
                       <td style={{ padding: '5px 10px' }}>
@@ -755,8 +774,8 @@ function RecoveryDiagnosticsPanel({ deviceId, deviceName, isLight }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const border  = isLight ? '#e2e8f0' : '#1a3454';
-  const surface = isLight ? '#f8fafc' : '#0b1628';
+  const border  = 'var(--border)';
+  const surface = 'var(--surface-2)';
 
   return (
     <div style={{ border: `1px solid ${border}`, borderRadius: 10, overflow: 'hidden' }}>
@@ -797,19 +816,19 @@ function RecoveryDiagnosticsPanel({ deviceId, deviceName, isLight }) {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 12 }}>
                 <div>
                   <div style={{ color: '#64748b', fontSize: 10.5, marginBottom: 2 }}>إجمالي السجلات</div>
-                  <div style={{ color: isLight ? '#0f172a' : '#dde6f8', fontWeight: 700, fontFamily: 'Consolas, monospace' }}>{W(data.totalLogs)}</div>
+                  <div style={{ color: isLight ? '#0f172a' : 'var(--text)', fontWeight: 700, fontFamily: 'Consolas, monospace' }}>{W(data.totalLogs)}</div>
                 </div>
                 <div>
                   <div style={{ color: '#64748b', fontSize: 10.5, marginBottom: 2 }}>أقدم سجل</div>
-                  <div style={{ color: isLight ? '#334155' : '#8ba3c7', fontFamily: 'Consolas, monospace', fontSize: 11 }}>{fmtDatetime(data.oldestTimestamp)}</div>
+                  <div style={{ color: isLight ? '#334155' : 'var(--text-3)', fontFamily: 'Consolas, monospace', fontSize: 11 }}>{fmtDatetime(data.oldestTimestamp)}</div>
                 </div>
                 <div>
                   <div style={{ color: '#64748b', fontSize: 10.5, marginBottom: 2 }}>أحدث سجل</div>
-                  <div style={{ color: isLight ? '#334155' : '#8ba3c7', fontFamily: 'Consolas, monospace', fontSize: 11 }}>{fmtDatetime(data.newestTimestamp)}</div>
+                  <div style={{ color: isLight ? '#334155' : 'var(--text-3)', fontFamily: 'Consolas, monospace', fontSize: 11 }}>{fmtDatetime(data.newestTimestamp)}</div>
                 </div>
                 <div>
                   <div style={{ color: '#64748b', fontSize: 10.5, marginBottom: 2 }}>آخر مزامنة ناجحة</div>
-                  <div style={{ color: isLight ? '#334155' : '#8ba3c7', fontFamily: 'Consolas, monospace', fontSize: 11 }}>{fmtDatetime(data.lastSuccessfulTimestamp)}</div>
+                  <div style={{ color: isLight ? '#334155' : 'var(--text-3)', fontFamily: 'Consolas, monospace', fontSize: 11 }}>{fmtDatetime(data.lastSuccessfulTimestamp)}</div>
                 </div>
               </div>
 
@@ -819,10 +838,10 @@ function RecoveryDiagnosticsPanel({ deviceId, deviceName, isLight }) {
                 {data.lastConvergence ? (
                   <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                     <SyncStatusBadge status={data.lastConvergence.status} />
-                    <span style={{ color: isLight ? '#334155' : '#8ba3c7', fontFamily: 'Consolas, monospace', fontSize: 11 }}>
+                    <span style={{ color: isLight ? '#334155' : 'var(--text-3)', fontFamily: 'Consolas, monospace', fontSize: 11 }}>
                       {fmtDatetime(data.lastConvergence.completedAt || data.lastConvergence.startedAt)}
                     </span>
-                    <span style={{ color: '#60a5fa', fontFamily: 'Consolas, monospace', fontSize: 11 }}>
+                    <span style={{ color: isLight ? '#60a5fa' : '#79C0FF', fontFamily: 'Consolas, monospace', fontSize: 11 }}>
                       {W(data.lastConvergence.convergencePasses ?? 0)} تمريرات
                     </span>
                     <span style={{ color: '#22c55e', fontFamily: 'Consolas, monospace', fontSize: 11 }}>
@@ -884,6 +903,16 @@ export default function DevicesPage() {
   const [deleteId,  setDeleteId]  = useState(null);
   const [relinking, setRelinking] = useState(false);
   const [relinkRefresh, setRelinkRefresh] = useState(0);
+
+  // Phase 13.9: accessible-dialog semantics for the inline delete-confirm modal.
+  const deleteTitleId = useId();
+  const deleteContainerRef = useFocusTrap(!!deleteId);
+  useEffect(() => {
+    if (!deleteId) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setDeleteId(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [deleteId]);
   const [liveStatus, setLiveStatus] = useState({}); // deviceId → status from socket
   const [realtimeStatus, setRealtimeStatus] = useState({}); // deviceId → realtime listener status
   const [realtimeDetail, setRealtimeDetail] = useState({}); // deviceId → full realtime telemetry
@@ -1306,9 +1335,9 @@ export default function DevicesPage() {
     return '';
   }, [liveStatus]);
 
-  const surface = isLight ? '#fff' : '#0b1628';
-  const border  = isLight ? '#e2e8f0' : '#1a3454';
-  const textSub = isLight ? '#64748b' : '#64748b';
+  const surface = 'var(--surface-2)';
+  const border  = 'var(--border)';
+  const textSub = 'var(--text-3)';
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -1370,7 +1399,7 @@ export default function DevicesPage() {
 
       {/* ── KPI Cards ────────────────────────────────────────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
-        <KpiCard label="إجمالي الأجهزة"  value={stats?.total}      icon={Server}   color="#3b82f6"  loading={statsLoad} />
+        <KpiCard label="إجمالي الأجهزة"  value={stats?.total}      icon={Server}   color={isLight ? '#3b82f6' : '#2F81F7'}  loading={statsLoad} />
         <KpiCard label="متصل"             value={stats?.online}     icon={Wifi}     color="#22c55e"  loading={statsLoad} sub="في الوقت الحالي" />
         <KpiCard label="غير متصل"         value={stats?.offline}    icon={WifiOff}  color="#ef4444"  loading={statsLoad} />
         <KpiCard
@@ -1408,10 +1437,19 @@ export default function DevicesPage() {
                   display: 'flex', alignItems: 'center', gap: 8,
                   padding: '6px 12px', borderRadius: 8,
                   background: cfg.bg, border: `1px solid ${cfg.color}30`,
-                  cursor: 'pointer', whiteSpace: 'nowrap',
+                  // R1: same in-flight guard the grid's own Ping button already
+                  // has (disabled={context.pinging[data.id]}) — this status-strip
+                  // chip is a second, independent trigger for the exact same
+                  // handlePing(id), and previously had no guard at all, letting
+                  // a rapid double-click (or click-while-grid-ping-pending) fire
+                  // a second concurrent /devices/:id/ping request for the same
+                  // device. Reuses the existing `pinging` state — no new lock.
+                  cursor: pinging[d.id] ? 'default' : 'pointer',
+                  opacity: pinging[d.id] ? 0.6 : 1,
+                  whiteSpace: 'nowrap',
                 }}
-                onClick={() => handlePing(d.id)}
-                title={`${d.ipAddress}:${d.port} — نقر للاختبار`}
+                onClick={() => { if (!pinging[d.id]) handlePing(d.id); }}
+                title={pinging[d.id] ? 'جاري الفحص...' : `${d.ipAddress}:${d.port} — نقر للاختبار`}
               >
                 <span style={{
                   width: 8, height: 8, borderRadius: '50%', background: cfg.dot, flexShrink: 0,
@@ -1425,7 +1463,7 @@ export default function DevicesPage() {
                   {d.ipAddress}
                 </span>
                 {d.lastSync && (
-                  <span style={{ fontSize: 10, color: isLight ? '#94a3b8' : '#3d5478' }}>
+                  <span style={{ fontSize: 10, color: isLight ? '#94a3b8' : 'var(--text-3)' }}>
                     {fmtAgo(d.lastSync)}
                   </span>
                 )}
@@ -1491,11 +1529,17 @@ export default function DevicesPage() {
           onClick={() => setDeleteId(null)}
         >
           <div
+            ref={deleteContainerRef}
+            tabIndex={-1}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={deleteTitleId}
             dir="rtl"
             style={{
               background: surface, border: `1.5px solid ${border}`,
               borderRadius: 14, padding: '24px 28px', width: 360,
               boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+              outline: 'none',
             }}
             onClick={e => e.stopPropagation()}
           >
@@ -1504,7 +1548,7 @@ export default function DevicesPage() {
                 <AlertTriangle style={{ width: 22, height: 22, color: '#ef4444' }} />
               </div>
               <div>
-                <p style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', fontFamily: 'Cairo, sans-serif' }}>حذف الجهاز</p>
+                <p id={deleteTitleId} style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', fontFamily: 'Cairo, sans-serif' }}>حذف الجهاز</p>
                 <p style={{ fontSize: 12, color: textSub, marginTop: 2 }}>لا يمكن التراجع عن هذا الإجراء</p>
               </div>
             </div>

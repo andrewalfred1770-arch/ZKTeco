@@ -65,7 +65,11 @@ export function getSocket() {
     console.log("[SOCKET] backendBase =", backendBase);
 
     socket = socketIO(backendBase, {
-      auth: () => (authToken ? { token: authToken } : {}),
+      // socket.io-client (v4) calls a function-valued `auth` option AS
+      // `auth(callback)` and only sends the CONNECT packet from inside that
+      // callback (see socket.io-client/build/esm/socket.js#onopen) — it never
+      // reads a return value. Must call `cb(...)`, not `return ...`.
+      auth: (cb) => cb(authToken ? { token: authToken } : {}),
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,

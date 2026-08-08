@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Server, CheckCircle2, XCircle, Loader2, PlugZap, ArrowRight } from 'lucide-react';
+import { useTheme } from '../contexts/ThemeContext';
 
 // ─── Manager Edition — First-Run Connection Wizard (EP-011) ──────────────────
 // Mandatory gate shown when a Manager build has no saved server address yet.
@@ -27,6 +28,7 @@ function ResultRow({ label, state }) {
 }
 
 export default function ConnectionWizard() {
+  const { isLight } = useTheme();
   const [serverUrl, setServerUrl] = useState('');
   const [testing, setTesting]     = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -84,10 +86,11 @@ export default function ConnectionWizard() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
           <div style={{
             width: 40, height: 40, borderRadius: 10, flexShrink: 0,
-            background: 'rgba(59,130,246,0.12)', border: '1px solid rgba(59,130,246,0.3)',
+            background: isLight ? 'rgba(59,130,246,0.12)' : 'rgba(47,129,247,0.12)',
+            border: '1px solid ' + (isLight ? 'rgba(59,130,246,0.3)' : 'rgba(47,129,247,0.3)'),
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
-            <Server style={{ width: 20, height: 20, color: '#60a5fa' }} />
+            <Server style={{ width: 20, height: 20, color: isLight ? '#60a5fa' : '#79C0FF' }} />
           </div>
           <div>
             <h2 style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-1)' }}>الاتصال بخادم PETSHROW ERP</h2>

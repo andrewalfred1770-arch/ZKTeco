@@ -86,11 +86,11 @@ export default function UpdateNotifications() {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#e5e7eb', fontSize: 12, fontWeight: 600 }}>
-        <DownloadCloud style={{ width: 14, height: 14, color: '#60a5fa', flexShrink: 0 }} />
+        <DownloadCloud style={{ width: 14, height: 14, color: '#79C0FF', flexShrink: 0 }} />
         جاري تنزيل التحديث... {pct}%
       </div>
-      <div style={{ height: 6, borderRadius: 3, background: '#111827', overflow: 'hidden' }}>
-        <div style={{ height: '100%', width: `${pct}%`, background: '#2563eb', transition: 'width 0.2s' }} />
+      <div style={{ height: 6, borderRadius: 3, background: '#21262D', overflow: 'hidden' }}>
+        <div style={{ height: '100%', width: `${pct}%`, background: '#2F81F7', transition: 'width 0.2s' }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#9ca3af' }}>
         <span>{formatBytes(progress?.transferred)} / {formatBytes(progress?.total)}</span>

@@ -3,10 +3,11 @@ const { getPrisma } = require('../../utils/prisma');
 const moment = require('moment');
 const { authorize } = require('../../middleware/auth');
 const { processDate, computeDerivedFields, mergeEffectivePenalty, parseTimeRules } = require('../../engines/attendanceEngine');
-const { calculatePayroll, computePayroll, applyApprovedAdjustment } = require('../../engines/payrollEngine');
+const { calculatePayroll, computePayroll, applyApprovedAdjustment, filterProtectedPayrollTargets } = require('../../engines/payrollEngine');
 const { getRules, isWeekend, isHoliday } = require('../../engines/rulesEngine');
 const { calcLatePenalty, calcEarlyCheckout, timeToMinutes } = require('../../engines/policyEngine');
-const { writeAudit, resolveVerifiedManualEditIds, hasVerifiedManualEdit } = require('../../utils/manualEditAudit');
+const { writeAudit, resolveVerifiedManualEditIds } = require('../../utils/manualEditAudit');
+const { buildAttendanceRow } = require('../../utils/attendanceRow');
 const logger = require('../../utils/logger');
 
 const prisma = getPrisma();
@@ -23,8 +24,35 @@ function fmtAuditVal(v) {
   return v;
 }
 
-// Builds a normalized attendance row in the exact same shape as GET /daily.
-// Both PUT endpoints go through this so the frontend sees one consistent shape.
+// C1: a manual attendance edit is a direct, targeted action on ONE employee's
+// ONE day — but the payroll recalc it triggers is still an automatic SIDE
+// EFFECT of that edit, not the user directly opening/editing the Payroll row
+// itself (that's payroll.js's PUT /:id, which stays unconditional on
+// purpose). Same shape as adjustments.js's recalcForAdjustment() — no
+// confirmation flow exists here, so a month that's already finalized/paid
+// must be protected (skipped, reported), not silently overwritten by an
+// attendance correction the HR user may not realize touches a closed period.
+// Reuses the exact Phase 13.3 canonical check — no new policy invented.
+async function recalcPayrollProtected(employeeId, month, year, source) {
+  const { allowed, protectedTargets } = await filterProtectedPayrollTargets([{ employeeId, month, year }]);
+  if (protectedTargets.length) {
+    logger.warn(`[PAYROLL-PROTECTED] employee=${employeeId} ${month}/${year} source=${source} — payroll is ${protectedTargets[0].status}, recalculation skipped`);
+    return { payroll: null, payrollError: null, payrollProtected: protectedTargets[0].status };
+  }
+  try {
+    const payroll = await calculatePayroll(employeeId, month, year);
+    return { payroll, payrollError: null, payrollProtected: null };
+  } catch (payrollErr) {
+    logger.error(`[PAYROLL-RECALC-FAILED] employee=${employeeId} month=${month} year=${year} source=${source} error=${payrollErr.message}`);
+    return { payroll: null, payrollError: payrollErr.message, payrollProtected: null };
+  }
+}
+
+// Builds a normalized attendance row in the exact same shape as GET /daily
+// and GET /monthly-detail. All three now share ONE row builder —
+// buildAttendanceRow() in utils/attendanceRow.js (Phase 12.1) — so the
+// frontend can never again see a different field set from one endpoint vs
+// another for the same conceptual row.
 async function buildDailyResponseRow(rec) {
   const emp = await prisma.employee.findUnique({
     where: { id: rec.employeeId },
@@ -36,53 +64,7 @@ async function buildDailyResponseRow(rec) {
   const merged = mergeEffectivePenalty(applyApprovedAdjustment(rec, adj));
   // EF-014: resolve manualEdit against real evidence — see resolveVerifiedManualEditIds.
   const verifiedManualIds = merged.manualEdit ? await resolveVerifiedManualEditIds([merged.id]) : new Set();
-  return {
-    id: merged.id || null,
-    employeeId: emp.id,
-    employeeName: emp.name,
-    employeeCode: emp.code,
-    department: emp.department?.name || '',
-    branch: emp.branch?.name || '',
-    shift: emp.shift?.name || '',
-    date: moment(rec.date).format('YYYY-MM-DD'),
-    checkIn: merged.checkIn ? moment(merged.checkIn).format('HH:mm') : null,
-    checkOut: merged.checkOut ? moment(merged.checkOut).format('HH:mm') : null,
-    workedHours: ((merged.workedMinutes || 0) / 60).toFixed(2),
-    workedMinutes: merged.workedMinutes || 0,
-    lateMinutes: merged.lateMinutes || 0,
-    overtimeHours: merged.overtimeHours || 0,
-    overtimeMinutes: merged.overtimeMinutes || 0,
-    morningOvertimeHours: merged.morningOvertimeHours || 0,
-    eveningOvertimeHours: merged.eveningOvertimeHours || 0,
-    earlyLeaveMinutes: merged.earlyLeaveMinutes || 0,
-    latePenaltyUnits: merged.latePenaltyUnits || 0,
-    earlyCheckoutUnits: merged.earlyCheckoutUnits || 0,
-    totalDeductionUnits: merged.totalDeductionUnits || 0,
-    effectiveLatePenalty: merged.effectiveLatePenalty || 0,
-    effectiveEarlyPenalty: merged.effectiveEarlyPenalty || 0,
-    effectiveTotalDeductionUnits: merged.effectiveTotalDeductionUnits || 0,
-    effectiveOvertimeUnits: merged.effectiveOvertimeUnits || 0,
-    hasManualPenalty: merged.hasManualPenalty || false,
-    hasManualOvertime: merged.hasManualOvertime || false,
-    manualLatePenaltyUnits: merged.manualLatePenaltyUnits ?? null,
-    manualEarlyPenaltyUnits: merged.manualEarlyPenaltyUnits ?? null,
-    manualOvertimeUnits: merged.manualOvertimeUnits ?? null,
-    manualPenaltyReason: merged.manualPenaltyReason ?? null,
-    manualPenaltyByName: merged.manualPenaltyByName ?? null,
-    manualPenaltyAt: merged.manualPenaltyAt ?? null,
-    status: merged.status || 'absent',
-    isAbsent: (merged.isWeekend || merged.isHoliday) ? false : (merged.isAbsent ?? (merged.status === 'absent')),
-    isWeekend: merged.isWeekend ?? false,
-    isHoliday: merged.isHoliday ?? false,
-    manualEdit: hasVerifiedManualEdit(merged, verifiedManualIds, !!adj),
-    absenceType: (merged.isWeekend || merged.isHoliday) ? null : (merged.absenceType || null),
-    penaltyDays: (merged.isWeekend || merged.isHoliday) ? null : (merged.penaltyDays ?? null),
-    absenceReason: (merged.isWeekend || merged.isHoliday) ? null : (merged.absenceReason || null),
-    absenceSetBy: merged.absenceSetBy || null,
-    absenceSetAt: merged.absenceSetAt ?? null,
-    isMonitored: emp.isMonitored || false,
-    monitorColor: emp.monitorColor || null,
-  };
+  return buildAttendanceRow({ employee: emp, merged, verifiedManualIds, adj });
 }
 
 // Manual edit — runs the SAME policy math as automatic processing, but with
@@ -258,22 +240,15 @@ router.put('/daily/:id', authorize('admin', 'hr'), async (req, res) => {
     }
 
     // Manual attendance changes must reach payroll deterministically.
+    // EF-022.1: the attendance edit itself already committed — do not fail
+    // the request on a recalc failure. C1: protected/skipped separately from
+    // a genuine failure — see recalcPayrollProtected().
     const m = moment(rec.date);
-    let payroll = null;
-    let payrollError = null;
-    try { payroll = await calculatePayroll(rec.employeeId, m.month() + 1, m.year()); }
-    catch (payrollErr) {
-      // EF-022.1: the attendance edit itself already committed — do not fail
-      // the request — but a swallowed recalculation failure previously left
-      // payroll silently stale with no trace anywhere. Log it and surface it
-      // to the caller (additive field, existing consumers unaffected).
-      payrollError = payrollErr.message;
-      logger.error(`[PAYROLL-RECALC-FAILED] employee=${rec.employeeId} month=${m.month() + 1} year=${m.year()} source=manual-edit error=${payrollErr.message}`);
-    }
+    const { payroll, payrollError, payrollProtected } = await recalcPayrollProtected(rec.employeeId, m.month() + 1, m.year(), 'manual-edit');
 
     if (req.io) req.io.emit('attendance:processed', { employeeId: rec.employeeId, source: 'manual-edit' });
 
-    res.json({ ...await buildDailyResponseRow(updated), payroll, payrollError });
+    res.json({ ...await buildDailyResponseRow(updated), payroll, payrollError, payrollProtected });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -404,19 +379,13 @@ router.put('/:id/manual-penalty', authorize('admin', 'hr'), async (req, res) => 
       });
     }
 
+    // EF-022.1 / C1: see manual-edit handler above for rationale.
     const m = moment(rec.date);
-    let payroll = null;
-    let payrollError = null;
-    try { payroll = await calculatePayroll(rec.employeeId, m.month() + 1, m.year()); }
-    catch (payrollErr) {
-      // EF-022.1: see manual-edit handler above for rationale.
-      payrollError = payrollErr.message;
-      logger.error(`[PAYROLL-RECALC-FAILED] employee=${rec.employeeId} month=${m.month() + 1} year=${m.year()} source=manual-penalty error=${payrollErr.message}`);
-    }
+    const { payroll, payrollError, payrollProtected } = await recalcPayrollProtected(rec.employeeId, m.month() + 1, m.year(), 'manual-penalty');
 
     if (req.io) req.io.emit('attendance:processed', { employeeId: rec.employeeId, source: 'manual-penalty' });
 
-    res.json({ ...await buildDailyResponseRow(updated), payroll, payrollError });
+    res.json({ ...await buildDailyResponseRow(updated), payroll, payrollError, payrollProtected });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -489,20 +458,14 @@ router.put('/:id/absence-type', authorize('admin', 'hr'), async (req, res) => {
       }
     }
 
-    // Recalculate payroll — penalty days change affects the deduction amount
+    // Recalculate payroll — penalty days change affects the deduction amount.
+    // EF-022.1 / C1: see manual-edit handler above for rationale.
     const m = moment(rec.date);
-    let payroll = null;
-    let payrollError = null;
-    try { payroll = await calculatePayroll(rec.employeeId, m.month() + 1, m.year()); }
-    catch (payrollErr) {
-      // EF-022.1: see manual-edit handler above for rationale.
-      payrollError = payrollErr.message;
-      logger.error(`[PAYROLL-RECALC-FAILED] employee=${rec.employeeId} month=${m.month() + 1} year=${m.year()} source=absence-type error=${payrollErr.message}`);
-    }
+    const { payroll, payrollError, payrollProtected } = await recalcPayrollProtected(rec.employeeId, m.month() + 1, m.year(), 'absence-type');
 
     if (req.io) req.io.emit('attendance:processed', { employeeId: rec.employeeId, source: 'absence-type' });
 
-    res.json({ ...await buildDailyResponseRow(updated), payroll, payrollError });
+    res.json({ ...await buildDailyResponseRow(updated), payroll, payrollError, payrollProtected });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -664,19 +627,13 @@ router.post('/daily/:id/restore-auto', authorize('admin', 'hr'), async (req, res
 
     logger.info(`[RESTORE-AUTO] employee=${rec.employeeId} attendanceDailyId=${rec.id} date=${dateStr} — manualEdit cleared, engine recomputed`);
 
+    // EF-022.1 / C1: see manual-edit handler above for rationale.
     const m = moment(rec.date);
-    let payroll = null;
-    let payrollError = null;
-    try { payroll = await calculatePayroll(rec.employeeId, m.month() + 1, m.year()); }
-    catch (payrollErr) {
-      // EF-022.1: see manual-edit handler above for rationale.
-      payrollError = payrollErr.message;
-      logger.error(`[PAYROLL-RECALC-FAILED] employee=${rec.employeeId} month=${m.month() + 1} year=${m.year()} source=restore-auto error=${payrollErr.message}`);
-    }
+    const { payroll, payrollError, payrollProtected } = await recalcPayrollProtected(rec.employeeId, m.month() + 1, m.year(), 'restore-auto');
 
     if (req.io) req.io.emit('attendance:processed', { employeeId: rec.employeeId, source: 'restore-auto' });
 
-    res.json({ ...updated, payroll, payrollError });
+    res.json({ ...updated, payroll, payrollError, payrollProtected });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

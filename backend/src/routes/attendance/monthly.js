@@ -4,7 +4,8 @@ const moment = require('moment');
 const { mergeEffectivePenalty } = require('../../engines/attendanceEngine');
 const { applyApprovedAdjustment } = require('../../engines/payrollEngine');
 const { monthRange } = require('../../utils/monthRange');
-const { resolveVerifiedManualEditIds, hasVerifiedManualEdit } = require('../../utils/manualEditAudit');
+const { resolveVerifiedManualEditIds } = require('../../utils/manualEditAudit');
+const { buildAttendanceRow } = require('../../utils/attendanceRow');
 
 const prisma = getPrisma();
 
@@ -118,7 +119,7 @@ router.get('/monthly-detail', async (req, res) => {
 
     const employees = await prisma.employee.findMany({
       where:   empWhere,
-      include: { department: true },
+      include: { department: true, branch: true, shift: true },
       orderBy: { name: 'asc' },
     });
 
@@ -140,44 +141,14 @@ router.get('/monthly-detail', async (req, res) => {
     const verifiedManualIds = await resolveVerifiedManualEditIds(records.filter(r => r.manualEdit).map(r => r.id));
 
     const result = records.map(r => {
-      const eff = mergeEffectivePenalty(applyApprovedAdjustment(r, adjByDailyId.get(r.id)));
-      const emp = empMap.get(r.employeeId);
-      return {
-        id:             r.id,
-        employeeId:     r.employeeId,
-        employeeCode:   emp?.code   || '',
-        employeeName:   emp?.name   || '',
-        department:     emp?.department?.name || '',
-        branch:         '',
-        date:           moment(r.date).format('YYYY-MM-DD'),
-        checkIn:        r.checkIn  ? moment(r.checkIn).format('HH:mm')  : null,
-        checkOut:       r.checkOut ? moment(r.checkOut).format('HH:mm') : null,
-        workedMinutes:  r.workedMinutes    || 0,
-        lateMinutes:    r.lateMinutes      || 0,
-        overtimeHours:  r.overtimeHours    || 0,
-        earlyLeaveMinutes: r.earlyLeaveMinutes || 0,
-        effectiveLatePenalty:        eff.effectiveLatePenalty        || 0,
-        effectiveEarlyPenalty:       eff.effectiveEarlyPenalty       || 0,
-        effectiveOvertimeUnits:      eff.effectiveOvertimeUnits      || 0,
-        effectiveTotalDeductionUnits:eff.effectiveTotalDeductionUnits || 0,
-        hasManualPenalty:   eff.hasManualPenalty   || false,
-        hasManualOvertime:  eff.hasManualOvertime  || false,
-        manualLatePenaltyUnits:  r.manualLatePenaltyUnits  ?? null,
-        manualEarlyPenaltyUnits: r.manualEarlyPenaltyUnits ?? null,
-        manualOvertimeUnits:     r.manualOvertimeUnits     ?? null,
-        status:    r.status    || 'absent',
-        isAbsent:  (r.isWeekend || r.isHoliday) ? false : (r.isAbsent ?? (r.status === 'absent')),
-        isWeekend: r.isWeekend ?? false,
-        isHoliday: r.isHoliday ?? false,
-        manualEdit: hasVerifiedManualEdit(r, verifiedManualIds, !!adjByDailyId.get(r.id)),
-        absenceType:   (r.isWeekend || r.isHoliday) ? null : (r.absenceType   || null),
-        penaltyDays:   (r.isWeekend || r.isHoliday) ? null : (r.penaltyDays   ?? null),
-        absenceReason: (r.isWeekend || r.isHoliday) ? null : (r.absenceReason || null),
-        absenceSetBy:  r.absenceSetBy  || null,
-        absenceSetAt:  r.absenceSetAt  ?? null,
-        isMonitored: emp?.isMonitored || false,
-        monitorColor: emp?.monitorColor || null,
-      };
+      const adj = adjByDailyId.get(r.id);
+      const merged = mergeEffectivePenalty(applyApprovedAdjustment(r, adj));
+      // Defensive: preserves the pre-existing `emp?.` fallback behavior this
+      // route already had — an orphaned record whose employee vanished
+      // mid-request still yields a row with blank identity fields instead
+      // of throwing.
+      const emp = empMap.get(r.employeeId) || { id: r.employeeId, name: '', code: '' };
+      return buildAttendanceRow({ employee: emp, merged, verifiedManualIds, adj });
     });
 
     res.json(result);

@@ -34,7 +34,7 @@ function emit(io, event, payload) {
  * Re-run attendance + payroll calculation for every active employee matching
  * the given scope, across every day in [from, to].
  */
-async function recalcScope({ from, to, branchId, departmentId, employeeId, employeeIds, io, reason } = {}) {
+async function recalcScope({ from, to, branchId, departmentId, employeeId, employeeIds, io, reason, allowFinalizedPayroll = false } = {}) {
   const start = moment(from).startOf('day');
   const end = moment(to).endOf('day');
 
@@ -76,17 +76,50 @@ async function recalcScope({ from, to, branchId, departmentId, employeeId, emplo
     m.add(1, 'month');
   }
 
+  // C1 canonical safety boundary: this cascade (rule change, holiday change,
+  // or a manual "recalculate-full") is a side-effect of something unrelated
+  // to any one Payroll row, so it must never silently overwrite a
+  // finalized/paid row — see payrollEngine.filterProtectedPayrollTargets()
+  // for the full rationale. One batched query for the whole employee×month
+  // scope, evaluated fresh right before the write loop below (not from any
+  // earlier/stale data), then every protected target is skipped while every
+  // other target still recalculates normally — a finalized payroll for one
+  // employee never blocks or contaminates the recalc of the rest of scope.
+  //
+  // `allowFinalizedPayroll` is an explicit opt-out for the ONE caller that
+  // already has its own equivalent, stronger gate: cleanup.js's /execute
+  // re-validates finalized/paid exposure itself and returns HTTP 409 unless
+  // the admin explicitly sent confirmFinalizedPayroll:true — by the time
+  // THAT caller reaches this function, the confirm-then-allow decision has
+  // already been made, so skipping here would silently contradict an
+  // explicit confirmation the admin already gave. Every other caller
+  // (rules.js, holidays.js) has no such confirmation step, so they get the
+  // protective default.
+  const targets = [];
   for (const emp of employees) {
     for (const key of months) {
       const [year, month] = key.split('-').map(Number);
-      try { await payrollEngine.calculatePayroll(emp.id, month, year); }
-      catch (err) { logger.error(`recalc payroll emp ${emp.id} ${month}/${year}: ${err.message}`); }
+      targets.push({ employeeId: emp.id, month, year });
     }
+  }
+  const { allowed, protectedTargets } = allowFinalizedPayroll
+    ? { allowed: targets, protectedTargets: [] }
+    : await payrollEngine.filterProtectedPayrollTargets(targets);
+  if (protectedTargets.length) {
+    logger.warn(`recalc SKIPPED ${protectedTargets.length} finalized/paid payroll target(s): ` +
+      protectedTargets.map(t => `emp=${t.employeeId} ${t.month}/${t.year} (${t.status})`).join(', '));
+  }
+
+  for (const { employeeId, month, year } of allowed) {
+    try { await payrollEngine.calculatePayroll(employeeId, month, year); }
+    catch (err) { logger.error(`recalc payroll emp ${employeeId} ${month}/${year}: ${err.message}`); }
   }
 
   const result = {
     employeeCount: employees.length, dayCount, reason: reason || null,
     from: start.format('YYYY-MM-DD'), to: end.format('YYYY-MM-DD'),
+    // C1: finalized/paid targets this run protected instead of overwriting.
+    protectedPayroll: protectedTargets,
   };
   emit(io, 'recalc:done', result);
   return result;

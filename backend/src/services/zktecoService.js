@@ -24,6 +24,27 @@ const prisma = getPrisma();
 // In-memory connection store:  deviceId → { zk, device, connectedAt }
 const activeConnections = new Map();
 
+// Per-device connection-acquisition queue:  deviceId → Promise (tail of the
+// FIFO chain of pending connectDevice() attempts for that device).
+//
+// F1 FIX: connectDevice()'s own body checks `activeConnections` and only
+// registers the new connection AFTER an `await zk.createSocket()` — a real
+// gap in which two concurrent callers (e.g. getDeviceUsers() and
+// deleteDeviceUser() racing each other, or either racing pullLogs() before
+// its syncLocks claim lands) could both read "no existing connection" and
+// both open a physical TCP session to the same device. syncLocks only
+// protects pullLogs() against itself; it was never a lock on connectDevice()
+// itself, so every OTHER caller was still exposed.
+//
+// Fix is at the root: connectDevice() attempts for the same deviceId are
+// now strictly serialized (FIFO) via this per-device promise chain — the
+// entire check → connect → register sequence for one attempt always
+// finishes (success or failure) before the next attempt for that same
+// device begins, so the two can never straddle the race window. Different
+// devices use different map keys and their chains never touch each other,
+// so unrelated devices stay fully concurrent — this is not a global lock.
+const connectQueues = new Map();
+
 // In-memory per-device sync lock:  deviceId → { owner, startedAt, triggeredBy }
 // Prevents overlapping pullLogs() calls (manual + auto) for the same device,
 // which previously caused connectDevice() to yank an in-flight socket and
@@ -144,7 +165,39 @@ function safeDisconnect(zk) {
 }
 
 // ─── Connect ──────────────────────────────────────────────────────────────────
-async function connectDevice(device) {
+// Public entry point — every caller (pullLogs, getDeviceUsers,
+// deleteDeviceUser, and any future one) goes through this. It only ever
+// serializes attempts for the SAME device (see connectQueues above); it does
+// not change what connectDeviceInner does, how activeConnections/status/
+// timeout/retry/cleanup behave, or the API this function exposes (still an
+// async function returning `zk` or throwing).
+function connectDevice(device) {
+  const key = String(device.id);
+  const prevTail = connectQueues.get(key) || Promise.resolve();
+
+  // Run this attempt only after the previous one for this device has fully
+  // settled (success OR failure) — `.then(fn, fn)` so a prior attempt's
+  // rejection can never jam the queue for everyone behind it.
+  const attempt = prevTail.then(() => connectDeviceInner(device), () => connectDeviceInner(device));
+
+  // Advance the queue with a tail that always resolves, regardless of this
+  // attempt's own outcome — the next queued attempt must run whether this
+  // one succeeded or threw. Errors from `attempt` itself are still delivered
+  // to whoever called connectDevice() (see the `return attempt` below); this
+  // `.catch` only protects the internal queue bookkeeping from throwing an
+  // unhandled rejection.
+  const tail = attempt.then(() => {}, () => {});
+  connectQueues.set(key, tail);
+
+  // Once this attempt's slot in the queue is no longer needed by anyone
+  // (i.e. nothing queued after it), drop the map entry instead of leaking
+  // one Promise per device forever.
+  tail.then(() => { if (connectQueues.get(key) === tail) connectQueues.delete(key); });
+
+  return attempt;
+}
+
+async function connectDeviceInner(device) {
   const key = String(device.id);
 
   // If a connection is already active for this device, do NOT yank it out
@@ -275,6 +328,14 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
   await sleep(500);
 
   try {
+    // ── Live workflow steps ──────────────────────────────────────────────────
+    // Additive, observation-only events layered on top of the existing sync
+    // flow above — every emission below fires at a checkpoint the code was
+    // already reaching (connect, each real convergence pass, each real batch
+    // insert, each real attendance recompute); nothing here changes what
+    // pullLogs() does or how it decides success/failure, only what it reports
+    // about work it was already doing.
+    emit(io, 'device:sync-step', { deviceId, name: device.name, step: 'connecting' });
     try {
       zk = await connectDevice(device);
     } catch (err) {
@@ -292,6 +353,7 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
       emit(io, 'device:offline', { deviceId, name: device.name, error: msg });
       return { count: 0, error: msg, deviceId };
     }
+    emit(io, 'device:sync-step', { deviceId, name: device.name, step: 'connected' });
 
     // ── Device integrity pre-check (Step 4) ─────────────────────────────────
     // Cheap CMD_GET_FREE_SIZES call: gives the device's own buffer count
@@ -351,6 +413,10 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
 
     for (let pass = 1; pass <= MAX_CONVERGENCE_PASSES; pass++) {
       passesRun = pass;
+      emit(io, 'device:sync-step', {
+        deviceId, name: device.name, step: 'reading',
+        pass, maxPasses: MAX_CONVERGENCE_PASSES, recordsSoFar: merged.size,
+      });
       const attendance = useChunkedReader
         ? await getAttendancesPaced(zk, { syncAttemptId: syncLog.id, deviceId, deviceName: device.name }, logger)
         : await zk.getAttendances();
@@ -377,6 +443,10 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
       }
 
       logger.info(`[SYNC] convergence device=${deviceId} pass=${pass}/${MAX_CONVERGENCE_PASSES} returned=${data.length} merged=${merged.size} err=${zkErr ? `"${zkErr.message || zkErr}"` : 'none'}`);
+      emit(io, 'device:sync-step', {
+        deviceId, name: device.name, step: 'reading',
+        pass, maxPasses: MAX_CONVERGENCE_PASSES, recordsSoFar: merged.size,
+      });
 
       if (!zkErr && prevClean && data.length === prevReturned) {
         converged = true;
@@ -432,6 +502,12 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
     // (no matching employee yet) are handled separately by relinkAttendanceLogs.
     const matchedDayPairs = new Map(); // `${employeeId}|${dateStr}` -> {employeeId, dateStr}
 
+    if (toProcess.length > 0) {
+      emit(io, 'device:sync-step', {
+        deviceId, name: device.name, step: 'saving', processed: 0, total: toProcess.length,
+      });
+    }
+
     for (let i = 0; i < toProcess.length; i += batchSize) {
       const batch = toProcess.slice(i, i + batchSize);
 
@@ -467,6 +543,10 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
       } catch (e) {
         logger.warn(`[ZK] Batch insert error (${rows.length} rows): ${e.message}`);
       }
+      emit(io, 'device:sync-step', {
+        deviceId, name: device.name, step: 'saving',
+        processed: Math.min(i + batchSize, toProcess.length), total: toProcess.length,
+      });
     }
 
     // ── Immediate processing for matched logs ───────────────────────────────
@@ -478,11 +558,25 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
     // safe even when most of those punches were already duplicates.
     if (matchedDayPairs.size > 0) {
       logger.info(`[SYNC] processing ${matchedDayPairs.size} employee/date pair(s) into AttendanceDaily immediately (device=${deviceId})`);
+      emit(io, 'device:sync-step', {
+        deviceId, name: device.name, step: 'updating-attendance', processed: 0, total: matchedDayPairs.size,
+      });
+      let updated = 0;
+      // Throttled to every 10 pairs (plus always the final one) — a real,
+      // monotonically-advancing count of a real loop, just not re-broadcast on
+      // every single iteration for the common case of thousands of pairs in a
+      // historical backfill.
       for (const { employeeId, dateStr } of matchedDayPairs.values()) {
         try {
           await attendanceEngine.processDate(new Date(`${dateStr}T12:00:00`), employeeId);
         } catch (err) {
           logger.error(`[SYNC] processDate failed employee=${employeeId} date=${dateStr}: ${err.message}`);
+        }
+        updated++;
+        if (updated % 10 === 0 || updated === matchedDayPairs.size) {
+          emit(io, 'device:sync-step', {
+            deviceId, name: device.name, step: 'updating-attendance', processed: updated, total: matchedDayPairs.size,
+          });
         }
       }
     }
@@ -599,7 +693,7 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
 
       emit(io, 'device:synced', {
         deviceId, name: device.name, newLogs: newCount, totalLogs: logs.length,
-        duration, success: false, partial: true, reason,
+        duplicates: dupCount, duration, success: false, partial: true, reason,
       });
 
       // ── Gap detection still runs on partial pulls — newest visible
@@ -616,7 +710,7 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
         logger.error(`[Relink] post-sync relink failed for "${device.name}": ${err.message}`);
       }
 
-      return { count: newCount, total: logs.length, duration, deviceId, success: false, partial: true, reason };
+      return { count: newCount, total: logs.length, duplicates: dupCount, invalid: invalidCount, duration, deviceId, success: false, partial: true, reason };
     }
 
     // ── Converged success: advance checkpoint ───────────────────────────────
@@ -657,9 +751,10 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
 
     emit(io, 'device:synced', {
       deviceId,
-      name:      device.name,
-      newLogs:   newCount,
-      totalLogs: logs.length,
+      name:       device.name,
+      newLogs:    newCount,
+      totalLogs:  logs.length,
+      duplicates: dupCount,
       duration,
       success:   true,
       converged: true,
@@ -682,7 +777,7 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
       logger.error(`[Relink] post-sync relink failed for "${device.name}": ${err.message}`);
     }
 
-    return { count: newCount, total: logs.length, duration, deviceId, success: true, converged: true, passes: passesRun };
+    return { count: newCount, total: logs.length, duplicates: dupCount, invalid: invalidCount, duration, deviceId, success: true, converged: true, passes: passesRun };
 
     } catch (err) {
       const msg = watchdogFired

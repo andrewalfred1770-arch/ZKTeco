@@ -104,22 +104,38 @@ async function analyzeImpact({ f, t, types }) {
     daysAffected = dateSet.size;
   }
 
+  const monthsOr = months.map(({ month, year }) => ({ month, year }));
+
   if (types.payroll) {
-    const or = months.map(({ month, year }) => ({ month, year }));
-    counts.payroll = or.length ? await prisma.payroll.count({ where: { OR: or } }) : 0;
-    if (or.length) {
-      (await prisma.payroll.findMany({ where: { OR: or }, distinct: ['employeeId'], select: { employeeId: true } }))
+    counts.payroll = monthsOr.length ? await prisma.payroll.count({ where: { OR: monthsOr } }) : 0;
+    if (monthsOr.length) {
+      (await prisma.payroll.findMany({ where: { OR: monthsOr }, distinct: ['employeeId'], select: { employeeId: true } }))
         .forEach(r => employeeIds.add(r.employeeId));
-      finalizedPayroll = await prisma.payroll.findMany({
-        where: { OR: or, status: { in: ['finalized', 'paid'] } },
-        select: {
-          employeeId: true, month: true, year: true, status: true,
-          employee: { select: { name: true, code: true } },
-        },
-      });
-      if (finalizedPayroll.length) {
-        warnings.push(`⚠️ توجد ${finalizedPayroll.length} سجلات مرتبات معتمدة/مدفوعة ضمن هذه الفترة — حذفها يتطلب تأكيدًا إضافيًا.`);
-      }
+    }
+  }
+
+  // C1 FIX: finalized/paid Payroll rows for the months this range spans are
+  // at risk from TWO paths, not just an explicit Payroll-type deletion —
+  // the recalculation cascade below (types.rawLogs || types.daily) also
+  // reaches them via recalcEngine.recalcScope() -> payrollEngine.
+  // calculatePayroll(), which unconditionally upserts over the existing row
+  // regardless of its status. This check previously ran only inside the
+  // `if (types.payroll)` block above, so a Daily/Raw-Logs-only cleanup could
+  // trigger that cascade against a finalized/paid month with no warning and
+  // no confirmation gate. Computing it here — independent of which types
+  // were selected — means the SAME confirmFinalizedPayroll gate at /execute
+  // (which reads impact.finalizedPayroll) now protects both paths from one
+  // canonical check, instead of duplicating a second check per caller.
+  if (monthsOr.length) {
+    finalizedPayroll = await prisma.payroll.findMany({
+      where: { OR: monthsOr, status: { in: ['finalized', 'paid'] } },
+      select: {
+        employeeId: true, month: true, year: true, status: true,
+        employee: { select: { name: true, code: true } },
+      },
+    });
+    if (finalizedPayroll.length) {
+      warnings.push(`⚠️ توجد ${finalizedPayroll.length} سجلات مرتبات معتمدة/مدفوعة ضمن هذه الفترة — قد تتأثر بإعادة الاحتساب أو الحذف، وتتطلب تأكيدًا إضافيًا.`);
     }
   }
 
@@ -351,6 +367,12 @@ router.post('/execute', authorize('admin'), async (req, res) => {
         from: f.toDate(), to: t.toDate(), io: req.io,
         employeeIds: impact.employeeIds,
         reason: `تنظيف الحركات: إعادة احتساب بعد الحذف (${impact.from} → ${impact.to})`,
+        // This route already re-validated finalized/paid exposure above
+        // (impact.finalizedPayroll) and returned HTTP 409 unless the admin
+        // explicitly confirmed via confirmFinalizedPayroll — recalcScope's
+        // own protective default would otherwise silently skip those same
+        // rows even after that explicit confirmation, contradicting it.
+        allowFinalizedPayroll: true,
       });
       recalcTriggered = true;
     }

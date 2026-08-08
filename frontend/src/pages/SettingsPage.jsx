@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import {
   Save, Plus, Trash2, Pencil, X, Loader2,
   Building2, GitBranch, Users, Archive,
@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../lib/api';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 // ─── Dependency badge ─────────────────────────────────────────────────────────
 function DepBadge({ count, label, warn = false }) {
@@ -27,6 +28,18 @@ function DepBadge({ count, label, warn = false }) {
 
 // ─── Delete / Archive confirmation modal ──────────────────────────────────────
 function ArchiveModal({ modal, onConfirm, onCancel }) {
+  // Phase 13.9: accessible-dialog semantics — hooks run unconditionally,
+  // above the early return below.
+  const isOpen = !!modal;
+  const titleId = useId();
+  const containerRef = useFocusTrap(isOpen);
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onCancel?.(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onCancel]);
+
   if (!modal) return null;
   const { type, item, deps, depsLoading, confirming } = modal;
 
@@ -46,10 +59,16 @@ function ArchiveModal({ modal, onConfirm, onCancel }) {
       dir="rtl"
       onClick={e => { if (e.target === e.currentTarget) onCancel(); }}
     >
-      <div style={{
+      <div
+        ref={containerRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        style={{
         background: 'var(--surface)', border: '1px solid var(--border)',
         borderRadius: 14, padding: '24px', width: '100%', maxWidth: 440,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.5)', outline: 'none',
       }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 16 }}>
@@ -61,10 +80,10 @@ function ArchiveModal({ modal, onConfirm, onCancel }) {
             <Archive style={{ width: 18, height: 18, color: '#f59e0b' }} />
           </div>
           <div>
-            <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-1)', marginBottom: 3 }}>
+            <h3 id={titleId} style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-1)', marginBottom: 3 }}>
               أرشفة {typeLabels[type]}
             </h3>
-            <p style={{ fontSize: 13, color: '#60a5fa', fontWeight: 600 }}>{item.name}</p>
+            <p style={{ fontSize: 13, color: '#79C0FF', fontWeight: 600 }}>{item.name}</p>
           </div>
           <button
             onClick={onCancel}
@@ -85,7 +104,7 @@ function ArchiveModal({ modal, onConfirm, onCancel }) {
 
           {depsLoading ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
-              <Loader2 style={{ width: 14, height: 14, color: '#60a5fa', animation: 'spin 1s linear infinite' }} />
+              <Loader2 style={{ width: 14, height: 14, color: '#79C0FF', animation: 'spin 1s linear infinite' }} />
               <span style={{ fontSize: 12, color: 'var(--text-3)' }}>جاري الفحص...</span>
             </div>
           ) : deps ? (
@@ -170,7 +189,7 @@ function EditForm({ fields, onSave, onCancel, saving }) {
   return (
     <form onSubmit={onSave} style={{
       padding: '10px 12px', borderRadius: 10,
-      background: 'var(--surface-2)', border: '1px solid #3b82f6',
+      background: 'var(--surface-2)', border: '1px solid #2F81F7',
       display: 'flex', flexDirection: 'column', gap: 6,
     }}>
       {fields}
@@ -203,7 +222,7 @@ function ItemCard({ name, sub, onEdit, onDelete }) {
         <button
           onClick={onEdit}
           title="تعديل"
-          style={{ padding: 5, background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: 6, color: '#60a5fa' }}
+          style={{ padding: 5, background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: 6, color: '#79C0FF' }}
         >
           <Pencil style={{ width: 14, height: 14 }} />
         </button>
@@ -382,7 +401,7 @@ export default function SettingsPage() {
         {/* ── Companies ─────────────────────────────────────────────────────── */}
         <div className="card p-5 flex flex-col gap-4">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>
-            <Building2 style={{ width: 16, height: 16, color: '#60a5fa' }} />
+            <Building2 style={{ width: 16, height: 16, color: '#79C0FF' }} />
             الشركات
             <span style={{ marginRight: 'auto', fontSize: 11, color: 'var(--text-3)', fontWeight: 400 }}>
               {activeCompanies.length} نشطة

@@ -10,11 +10,11 @@
  * and is written to the same audit trail as ManualEditDrawer.
  */
 import React, { useEffect, useState } from 'react';
-import { X, Save, Loader2, History, ShieldOff, RotateCcw } from 'lucide-react';
+import { Save, Loader2, History, ShieldOff, RotateCcw } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../lib/api';
-import { useTheme } from '../contexts/ThemeContext';
 import { fmtPenaltyUnits, fmtOvertimeUnits, STATUS_LABELS } from '../lib/formatters';
+import Drawer from './ui/Drawer';
 
 const ACTOR = 'مدير النظام';
 
@@ -47,8 +47,6 @@ function Card({ title, icon:Icon, children, accent='var(--accent)' }) {
 const inputStyle = { fontFamily:'Consolas,monospace', textAlign:'center', direction:'ltr' };
 
 export default function ManualPenaltyModal({ record, onClose, onSaved }) {
-  const { isLight } = useTheme();
-
   const originalLate     = record.manualLatePenaltyUnits  ?? null;
   const originalEarly    = record.manualEarlyPenaltyUnits ?? null;
   const originalOvertime = record.manualOvertimeUnits     ?? null;
@@ -124,39 +122,44 @@ export default function ManualPenaltyModal({ record, onClose, onSaved }) {
   const originalOvertimeBase = record.originalOvertimeUnits ?? record.overtimeRulesUnits ?? record.overtimeHours ?? 0;
 
   return (
-    <>
-      <div onClick={onClose} style={{ position:'fixed', inset:0, zIndex:60,
-        background: isLight ? 'rgba(37,99,235,0.10)' : 'rgba(0,0,0,0.55)', backdropFilter:'blur(3px)' }} />
-
-      <div dir="rtl" style={{
-        position:'fixed', top:0, bottom:0, left:0, zIndex:70, width:'min(480px,100vw)',
-        background:'var(--bg)', borderRight:'1px solid var(--border)',
-        boxShadow:'-8px 0 48px rgba(0,0,0,.4)', display:'flex', flexDirection:'column',
-        animation:'slideIn .22s ease' }}>
-        <style>{`@keyframes slideIn{from{transform:translateX(-20px);opacity:.6}to{transform:translateX(0);opacity:1}}@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
-
-        {/* Header */}
-        <div style={{ padding:'14px 18px', borderBottom:'1px solid var(--border)',
-          background:'linear-gradient(135deg,var(--accent-soft),transparent)',
-          borderTop:'3px solid #f59e0b', flexShrink:0 }}>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-            <div>
-              <h2 style={{ margin:0, fontSize:15, fontWeight:800, color:'var(--text)' }}>
-                تعديل يدوي — {record.employeeName}
-              </h2>
-              <p style={{ margin:'2px 0 0', fontSize:11.5, color:'var(--text-3)' }}>
-                {record.employeeCode} · {record.date}
-              </p>
-            </div>
-            <button onClick={onClose} style={{ border:'none', background:'var(--surface)', borderRadius:8,
-              padding:8, color:'var(--text-3)', cursor:'pointer' }}>
-              <X style={{ width:16, height:16 }} />
-            </button>
+    <Drawer
+      open
+      onClose={onClose}
+      width={480}
+      panelStyle={{
+        background: 'var(--bg)',
+        borderTop: '3px solid #f59e0b',
+      }}
+      title={
+        <>
+          تعديل يدوي — {record.employeeName}
+          <div style={{ fontSize: 11.5, color: 'var(--text-3)', fontWeight: 400, marginTop: 2 }}>
+            {record.employeeCode} · {record.date}
           </div>
-        </div>
+        </>
+      }
+      footer={
+        <>
+          <button onClick={handleSave} disabled={saving || !needsReason}
+            style={{ display:'flex', alignItems:'center', gap:7, padding:'10px 22px', borderRadius:9,
+              background:'var(--accent)', color:'#fff', border:'none', fontWeight:700, fontSize:13.5,
+              cursor: (saving || !needsReason) ? 'not-allowed' : 'pointer', opacity: (saving || !needsReason) ? .6 : 1 }}>
+            {saving ? <Loader2 style={{ width:15, height:15, animation:'spin 1s linear infinite' }} />
+                    : <Save style={{ width:15, height:15 }} />}
+            حفظ التعديل
+          </button>
+          <button onClick={onClose}
+            style={{ padding:'10px 18px', borderRadius:9, border:'1px solid var(--border)',
+              background:'transparent', color:'var(--text-2)', fontWeight:600, fontSize:13.5, cursor:'pointer' }}>
+            إلغاء
+          </button>
+        </>
+      }
+    >
+      <style>{`@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
 
         {/* Body */}
-        <div style={{ flex:1, overflowY:'auto', padding:'16px', display:'flex', flexDirection:'column', gap:14 }}>
+        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
 
           {/* القيمة المحسوبة */}
           <Card title="القيمة المحسوبة (Policy Engine)">
@@ -273,25 +276,6 @@ export default function ManualPenaltyModal({ record, onClose, onSaved }) {
             )}
           </Card>
         </div>
-
-        {/* Footer */}
-        <div style={{ padding:'12px 16px', borderTop:'1px solid var(--border)', flexShrink:0,
-          display:'flex', gap:10, alignItems:'center', background:'var(--surface)' }}>
-          <button onClick={handleSave} disabled={saving || !needsReason}
-            style={{ display:'flex', alignItems:'center', gap:7, padding:'10px 22px', borderRadius:9,
-              background:'var(--accent)', color:'#fff', border:'none', fontWeight:700, fontSize:13.5,
-              cursor: (saving || !needsReason) ? 'not-allowed' : 'pointer', opacity: (saving || !needsReason) ? .6 : 1 }}>
-            {saving ? <Loader2 style={{ width:15, height:15, animation:'spin 1s linear infinite' }} />
-                    : <Save style={{ width:15, height:15 }} />}
-            حفظ التعديل
-          </button>
-          <button onClick={onClose}
-            style={{ padding:'10px 18px', borderRadius:9, border:'1px solid var(--border)',
-              background:'transparent', color:'var(--text-2)', fontWeight:600, fontSize:13.5, cursor:'pointer' }}>
-            إلغاء
-          </button>
-        </div>
-      </div>
-    </>
+    </Drawer>
   );
 }

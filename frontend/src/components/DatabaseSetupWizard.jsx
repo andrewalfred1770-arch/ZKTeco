@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Database, CheckCircle2, XCircle, Loader2, Save, RotateCcw, PlugZap } from 'lucide-react';
 import api from '../lib/api';
+import { useTheme } from '../contexts/ThemeContext';
 
 // ─── Database Configuration Wizard (EP-010.1) ────────────────────────────────
 // Lets a non-technical user fix a bad DATABASE_URL from the UI instead of
@@ -45,6 +46,7 @@ function ResultBanner({ result }) {
 }
 
 export default function DatabaseSetupWizard() {
+  const { isLight } = useTheme();
   const [visible, setVisible] = useState(false);
   const [fields, setFields] = useState({ host: '', port: '3306', database: '', username: '', password: '' });
   const [prefilled, setPrefilled] = useState(false);
@@ -164,10 +166,11 @@ export default function DatabaseSetupWizard() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
           <div style={{
             width: 36, height: 36, borderRadius: 9, flexShrink: 0,
-            background: 'rgba(59,130,246,0.12)', border: '1px solid rgba(59,130,246,0.3)',
+            background: isLight ? 'rgba(59,130,246,0.12)' : 'rgba(47,129,247,0.12)',
+            border: '1px solid ' + (isLight ? 'rgba(59,130,246,0.3)' : 'rgba(47,129,247,0.3)'),
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
-            <Database style={{ width: 18, height: 18, color: '#60a5fa' }} />
+            <Database style={{ width: 18, height: 18, color: isLight ? '#60a5fa' : '#79C0FF' }} />
           </div>
           <div>
             <h3 style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-1)' }}>إعداد قاعدة البيانات</h3>
@@ -181,7 +184,7 @@ export default function DatabaseSetupWizard() {
 
         {restarting ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '24px 0' }}>
-            <Loader2 style={{ width: 28, height: 28, color: '#60a5fa', animation: 'spin 1s linear infinite' }} />
+            <Loader2 style={{ width: 28, height: 28, color: isLight ? '#60a5fa' : '#79C0FF', animation: 'spin 1s linear infinite' }} />
             <span style={{ fontSize: 13, color: 'var(--text-2)', fontWeight: 600 }}>
               جارٍ إعادة تشغيل الخادم...
             </span>

@@ -18,7 +18,7 @@ export const ENTERPRISE_DEFAULT_COL_DEF = {
   suppressMovable: true,
   lockPosition: true,
   lockPinned: true,
-  suppressMenu: false,
+  suppressHeaderMenuButton: false,
   suppressSizeToFit: false,
 };
 

@@ -7,6 +7,7 @@ import {
   CheckCircle, XCircle, Clock, TrendingUp, Loader2, Play, Printer,
   Fingerprint, Pencil, Lock } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useNavigate } from 'react-router-dom';
 import api, { LONG_OP } from '../lib/api';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import { fmtTime, fmtOTHours, fmtWorkedHours, fmtPenaltyUnits, fmtOvertimeUnits, fmtEditableZero, timeToMinutes, STATUS_LABELS, manualOverrideTooltip } from '../lib/formatters';
@@ -16,9 +17,11 @@ import {
   otCell, penaltyCell, timeCell, rowNumCell, mutedCell } from '../lib/cellStyles';
 import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_MEDIUM, COL_LARGE, tabToNextCell, safeRefreshCells, isAbsentRow, attendanceRowClass } from '../lib/gridDefaults';
 import PrintPreviewModal from '../components/PrintPreviewModal';
+import FingerprintSyncModal from '../components/FingerprintSyncModal';
 import TimeCellEditor from '../components/grid/TimeCellEditor';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
+import { useFingerprintSyncWorkflow } from '../hooks/useFingerprintSyncWorkflow';
 import { useKeyboardShortcut } from '../hooks/useKeyboardShortcut';
 import AbsenceTypeModal, { ABSENCE_TYPE_LABELS } from '../components/AbsenceTypeModal';
 import AttendanceFilterBar from '../components/AttendanceFilterBar';
@@ -34,13 +37,15 @@ function loadDailyFilters() {
 
 export default function AttendanceDailyPage() {
   const { agGridTheme } = useTheme();
+  const navigate = useNavigate();
   const _saved = loadDailyFilters();
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(false);
   const [processing, setProc] = useState(false);
   const [date, setDate]       = useState(_saved.date || new Date().toISOString().split('T')[0]);
   const [printOpen, setPrintOpen] = useState(false);
-  const [syncing, setSyncing]     = useState(false);
+  const fpSync = useFingerprintSyncWorkflow();
+  const syncing = fpSync.state.phase === 'running';
   const [editMode, setEditMode]   = useState(true); // default ON — no mode switch needed
   const [departments, setDepts]   = useState([]);
   const [absenceModal, setAbsenceModal] = useState(null);
@@ -441,17 +446,12 @@ export default function AttendanceDailyPage() {
     finally { setProc(false); }
   };
 
-  const syncDevices = async () => {
-    setSyncing(true);
-    try {
-      const { data } = await api.post('/devices/sync-all', null, LONG_OP);
-      toast.success(`تم سحب البصمات (${data?.synced ?? data?.count ?? '—'} جهاز)`);
-    } catch (err) {
-      toast.error(err?.response?.data?.error || 'فشل سحب البصمات');
-    } finally {
-      setSyncing(false);
-    }
-  };
+  // Real end-to-end workflow (connect → read → save → recompute attendance →
+  // refresh this page's own grid) — see useFingerprintSyncWorkflow.js. The
+  // modal only ever shows "success" after `load(true)` below has itself
+  // resolved, so the grid is never still stale when the success dialog
+  // appears.
+  const syncDevices = () => fpSync.run({ endpoint: '/devices/sync-all', reload: () => load(true) });
 
   const exportCSV = () => gridRef.current?.api?.exportDataAsCsv({ fileName:`حضور_${date}.csv` });
   const getVisibleRows = () => {
@@ -492,7 +492,7 @@ export default function AttendanceDailyPage() {
           </button>
           <button onClick={syncDevices} className="btn-secondary text-xs py-1.5 px-3" disabled={syncing}>
             {syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Fingerprint className="w-3.5 h-3.5" />}
-            {syncing ? 'جاري...' : 'سحب البصمات'}
+            {syncing ? 'جاري سحب البصمات...' : 'سحب البصمات'}
           </button>
           <button onClick={process} className="btn-primary text-xs py-1.5 px-3" disabled={processing}
             title="إعادة تطبيق قواعد الحضور والانصراف على التاريخ المحدد">
@@ -597,6 +597,13 @@ export default function AttendanceDailyPage() {
         reportType="attendance_daily"
         meta={{ period: dateAr, generatedBy: ACTOR }}
         orientation="portrait"
+      />
+
+      <FingerprintSyncModal
+        state={fpSync.state}
+        onClose={fpSync.close}
+        onRetry={fpSync.retry}
+        onViewLogs={() => { fpSync.close(); navigate('/attendance/logs'); }}
       />
 
       {absenceModal && (

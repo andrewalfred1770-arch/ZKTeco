@@ -203,7 +203,39 @@ ipcMain.handle('print:html', async (_e, { html, landscape = true, copies } = {})
     await new Promise((resolve, reject) => {
       // `copies`, when set, only pre-fills the native dialog's copies field —
       // silent:false means the user still sees and can change it there.
-      const printOpts = { silent: false, printBackground: true };
+      // `landscape` MUST be passed here — without it this call silently fell
+      // back to whatever the OS/driver's default page orientation was, while
+      // `html`'s own @page CSS (and every column width baked into it via
+      // computeColumnWidths()) was built for whichever orientation the user
+      // actually picked in Print Preview. webContents.print() (unlike
+      // printToPDF) has no `preferCSSPageSize` to fall back on — it does not
+      // read @page's orientation at all, so a Portrait document could
+      // physically print onto a Landscape (or vice-versa) page: content
+      // built for one page width rendered onto a page of a different width,
+      // clipping one edge and leaving blank space on the other. This is
+      // exactly the "table renders wide then gets clipped" defect — not a
+      // column-width bug, a lost orientation flag on this one IPC call.
+      //
+      // `pageSize`/`margins` pin down the SAME two assumptions this sibling
+      // pdf:export handler above already pins (pageSize:'A4', a zeroed
+      // driver margin). Without them, webContents.print()'s native OS dialog
+      // is free to default to the PRINTER DRIVER's own last-used paper size
+      // and margin — e.g. a Letter-default printer (narrower than A4, common
+      // on US-region driver installs) or a driver that adds its own inset
+      // margin ON TOP of the one already baked into every column's width via
+      // @page's own `margin` rule. Either one reproduces the exact same
+      // "wide table, clipped edge" symptom as the missing `landscape` above,
+      // independently of it — this is a second, separate gap in the same
+      // handler, not a rediscovery of the first. `marginType:'none'` is
+      // correct (not 'custom' with zeros, which some drivers still pad) —
+      // the printable inset already fully lives in `html`'s own @page rule,
+      // reusing the exact geometry columnLayoutEngine.js computed widths
+      // against; a second, driver-level margin would shrink the printable
+      // area below what the content was actually laid out for.
+      const printOpts = {
+        silent: false, printBackground: true, landscape,
+        pageSize: 'A4', margins: { marginType: 'none' },
+      };
       if (copies > 1) printOpts.copies = copies;
       pdfWin.webContents.print(printOpts, (success, errorType) => {
         if (!success && errorType !== 'cancelled') reject(new Error(errorType));

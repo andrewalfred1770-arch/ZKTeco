@@ -456,21 +456,80 @@ async function calculatePayrollImpl(employeeId, month, year) {
   return payroll;
 }
 
+// ─── C1 canonical safety boundary ──────────────────────────────────────────
+// Finalized/paid Payroll rows must never be silently overwritten by an
+// indirect recalculation cascade (rule change, holiday change, adjustment
+// approval, cleanup's recalc cascade — none of these are the user directly
+// opening and re-saving THAT payroll row, unlike PUT /payroll/:id or the
+// explicit "احتساب المرتبات" button in payroll.js, which intentionally keep
+// working unconditionally and are NOT touched by this function).
+//
+// This is a shared, batched pre-check — ONE Prisma query regardless of how
+// many {employeeId, month, year} targets are passed — used by every current
+// cascade caller (recalcEngine.recalcScope, adjustments.js) instead of each
+// duplicating its own finalized/paid lookup. calculatePayroll() itself is
+// deliberately left unmodified: it has no way to distinguish "an intentional
+// direct edit of this exact row" from "a side-effect of an unrelated change
+// elsewhere", so the decision belongs at each cascade's call site, not inside
+// the engine's single canonical write function.
+//
+// Returns { allowed, protectedTargets } — `allowed` is the subset of
+// `targets` safe to pass to calculatePayroll(); `protectedTargets` is the
+// subset that was finalized/paid and must be skipped, each annotated with
+// its current `status` for reporting/logging.
+async function filterProtectedPayrollTargets(targets) {
+  const list = (targets || []).filter(t => t && t.employeeId != null && t.month != null && t.year != null);
+  if (!list.length) return { allowed: [], protectedTargets: [] };
+
+  const employeeIds = [...new Set(list.map(t => t.employeeId))];
+  const monthOr = [...new Set(list.map(t => `${t.month}-${t.year}`))]
+    .map(k => { const [month, year] = k.split('-').map(Number); return { month, year }; });
+
+  const finalizedRows = await prisma.payroll.findMany({
+    where: { employeeId: { in: employeeIds }, OR: monthOr, status: { in: ['finalized', 'paid'] } },
+    select: { employeeId: true, month: true, year: true, status: true },
+  });
+  const protectedMap = new Map(finalizedRows.map(r => [`${r.employeeId}|${r.month}|${r.year}`, r.status]));
+
+  const allowed = [];
+  const protectedTargets = [];
+  for (const t of list) {
+    const key = `${t.employeeId}|${t.month}|${t.year}`;
+    if (protectedMap.has(key)) protectedTargets.push({ ...t, status: protectedMap.get(key) });
+    else allowed.push(t);
+  }
+  return { allowed, protectedTargets };
+}
+
 async function calculateMonthlyPayroll(month, year, branchId) {
   const employees = await prisma.employee.findMany({
     where: { status: true, branchId: branchId || undefined },
   });
 
+  // C1: this is the "احتساب المرتبات" bulk button — a whole-month/branch
+  // batch generation, not a targeted edit of any one Payroll row, and it has
+  // no confirmation flow. A month where SOME employees were already
+  // finalized/paid (a normal mid-cycle state: HR finalizes leavers early,
+  // then later reruns the bulk calc for everyone else still in draft) must
+  // not silently overwrite those already-closed rows. Same canonical,
+  // batched check every other cascade caller uses (Phase 13.3).
+  const targets = employees.map((emp) => ({ employeeId: emp.id, month, year }));
+  const { allowed, protectedTargets } = await filterProtectedPayrollTargets(targets);
+  if (protectedTargets.length) {
+    logger.warn(`[PAYROLL] calculateMonthlyPayroll ${month}/${year}: SKIPPED ${protectedTargets.length} finalized/paid employee(s): ` +
+      protectedTargets.map(t => `emp=${t.employeeId} (${t.status})`).join(', '));
+  }
+
   const results = [];
-  for (const emp of employees) {
+  for (const { employeeId } of allowed) {
     try {
-      const p = await calculatePayroll(emp.id, month, year);
+      const p = await calculatePayroll(employeeId, month, year);
       results.push(p);
     } catch (err) {
-      logger.error(`Payroll error emp ${emp.id}: ${err.message}`);
+      logger.error(`Payroll error emp ${employeeId}: ${err.message}`);
     }
   }
-  return results;
+  return { results, protectedTargets };
 }
 
-module.exports = { calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, computeDeductionsBreakdown, withPayrollKeyLock, calculatePayrollImpl, selectOvertimeMultiplier, computeRates };
+module.exports = { calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, computeDeductionsBreakdown, withPayrollKeyLock, calculatePayrollImpl, selectOvertimeMultiplier, computeRates, filterProtectedPayrollTargets };

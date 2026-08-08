@@ -37,7 +37,7 @@ const CHIPS = ['all', ...Object.keys(CATEGORY_LABELS)];
 const INERT_KEYS = new Set(['late_limit', 'overtime_rounding']);
 
 const ACT_COLOR = {
-  created:'#10b981', updated:'#3b82f6', enabled:'#22c55e',
+  created:'#10b981', updated:'#2F81F7', enabled:'#22c55e',
   disabled:'#94a3b8', deleted:'#ef4444',
 };
 const ACT_AR = {
@@ -210,7 +210,7 @@ function AuditDrawer({ rule, onClose }) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function RulesPage() {
-  const { agGridTheme } = useTheme();
+  const { agGridTheme, isLight } = useTheme();
   const gridRef = useRef();
 
   const [rules,    setRules]    = useState([]);
@@ -350,9 +350,9 @@ export default function RulesPage() {
         // Minutes-based values → human duration (never raw minute counts)
         const unit = String(data?.unit || '');
         if ((type === 'number' || !type) && /دقيق|min/i.test(unit) && value !== '' && !isNaN(Number(value))) {
-          return <span style={{ fontWeight:800, color:'#3b82f6' }}>{formatDuration(Number(value))}</span>;
+          return <span style={{ fontWeight:800, color: isLight ? '#3b82f6' : 'var(--text)' }}>{formatDuration(Number(value))}</span>;
         }
-        return <span style={{ fontWeight:800, color:'#3b82f6' }}>{westernDigits(String(value ?? ''))}</span>;
+        return <span style={{ fontWeight:800, color: isLight ? '#3b82f6' : 'var(--text)' }}>{westernDigits(String(value ?? ''))}</span>;
       },
       cellStyle:{ fontFamily:'Consolas,monospace', textAlign:'center', direction:'ltr', justifyContent:'center' },
     };
@@ -391,7 +391,7 @@ export default function RulesPage() {
             onClick={() => setEditing(data)}><Pencil style={{ width:13, height:13 }} /></IconBtn>
           {showAdvanced && (
             <>
-              <IconBtn title="سجل التعديلات" color='#3b82f6' bg='rgba(59,130,246,.1)'
+              <IconBtn title="سجل التعديلات" color='#2F81F7' bg='rgba(47,129,247,.1)'
                 onClick={() => setAuditRule(data)}><History style={{ width:13, height:13 }} /></IconBtn>
               <IconBtn title="حذف القاعدة" color='#ef4444' bg='rgba(239,68,68,.1)'
                 onClick={() => remove(data)}><Trash2 style={{ width:13, height:13 }} /></IconBtn>
@@ -467,7 +467,7 @@ export default function RulesPage() {
             </div>
             <h1 className="page-title" style={{ margin:0 }}>محرك القواعد الديناميكي</h1>
             <span style={{ padding:'2px 8px', borderRadius:6, background:'rgba(37,99,235,.15)',
-              color:'#3b82f6', fontSize:10.5, fontWeight:800, letterSpacing:.5 }}>ERP</span>
+              color:'#2F81F7', fontSize:10.5, fontWeight:800, letterSpacing:.5 }}>ERP</span>
           </div>
           <p style={{ fontSize:11.5, color:'var(--text-3)', margin:0 }}>
             قواعد قابلة للإنشاء والتعديل والتدقيق بالكامل · مرتبطة بمحركات الحضور والمرتبات

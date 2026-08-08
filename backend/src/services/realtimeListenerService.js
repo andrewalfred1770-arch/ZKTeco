@@ -191,7 +191,20 @@ async function ingestPunch(deviceId, io, zkUserId, timestamp, attempt = 1) {
       try {
         await attendanceEngine.processDate(timestamp, employee.id);
         const m = moment(timestamp);
-        await payrollEngine.calculatePayroll(employee.id, m.month() + 1, m.year());
+        // C1: a live punch is an automatic background trigger, not a direct
+        // edit of a Payroll row — a punch that happens to land in an
+        // already-finalized/paid month (device clock skew, a backlog punch,
+        // a late leaver clocking out after that month closed) must not
+        // silently overwrite it. Same canonical check every other cascade
+        // caller uses (Phase 13.3).
+        const { allowed, protectedTargets } = await payrollEngine.filterProtectedPayrollTargets([
+          { employeeId: employee.id, month: m.month() + 1, year: m.year() },
+        ]);
+        if (protectedTargets.length) {
+          logger.warn(`[RT] payroll SKIPPED (finalized/paid) device=${deviceId} employee=${employee.id} ${m.month() + 1}/${m.year()} (${protectedTargets[0].status})`);
+        } else if (allowed.length) {
+          await payrollEngine.calculatePayroll(employee.id, m.month() + 1, m.year());
+        }
         emit(io, 'attendance:processed', {
           employeeId: employee.id, employeeName: employee.name,
           timestamp, source: 'realtime',

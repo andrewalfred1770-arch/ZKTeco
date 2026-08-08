@@ -78,7 +78,11 @@ export function useCompanyBrand() {
       stampUrl:           resolveCompanyAssetUrl(s.stamp_url),
       printHeaderUrl:     resolveCompanyAssetUrl(s.print_header_url),
       printHeaderText:    s.print_header_text || '',
-      printFooterText:    s.print_footer_text || BRAND.copyright,
+      // Optional, like printHeaderText above — an unset footer text must not
+      // silently inject a copyright line into every printed document's
+      // footer (nothing else in the app currently reads this field, so there
+      // is no other consumer relying on the BRAND.copyright fallback).
+      printFooterText:    s.print_footer_text || '',
       printContactText:   s.print_contact_text || [s.company_address, s.company_phone, s.company_email].filter(Boolean).join(' · '),
     };
   }, [settings]);

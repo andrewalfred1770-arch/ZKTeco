@@ -1,20 +1,35 @@
 /**
  * CompactSalarySheet — 9-per-page A4 landscape payroll card grid.
  * Each card renders as a 3-column table: label | value | icon (RTL order).
+ *
+ * Visual tokens (navy/blue accents, card radius/shadow, Cairo typography,
+ * footer identity line) now come from printDesignSystem.js — the same
+ * source reportTemplate.js's table reports and SalaryCard use — so a
+ * printed bulk sheet reads as the same document family instead of a
+ * separate black-and-white card design. The 3×3 card grid, PER_PAGE=9, and
+ * every payroll field/calculation below are unchanged.
  */
 import React from 'react';
 import {
   Wallet, PlusCircle, MinusCircle, Clock, CreditCard, UserMinus, Banknote,
 } from 'lucide-react';
 import { displayNetSalary } from '../lib/formatters';
+import { useCompanyBrand } from '../lib/branding';
+import { COLORS, SHADOW, buildFooterLeft } from '../lib/printDesignSystem';
 
 export const PER_PAGE = 9; // 3 cols × 3 rows
 
-const r0 = (n) => Math.round(Number(n) || 0);
+// Phase 8.1: r0() was a byte-for-byte duplicate of formatters.js's
+// displayNetSalary() (same Math.round(Number(n)||0)) — removed in favor of
+// the shared function. fmtNum/fmtAmt/fmtBackend themselves stay local: they
+// deliberately never render a negative sign (Math.abs — this card has no
+// negative-value use case), which fmtMoney()/fmtInt() do not replicate, so
+// they are not interchangeable with any canonical formatter without risking
+// a different displayed string on a negative input.
 function fmtNum(n) {
-  return Math.abs(r0(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return Math.abs(displayNetSalary(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
-function fmtAmt(n) { return r0(n) === 0 ? '—' : fmtNum(n); }
+function fmtAmt(n) { return displayNetSalary(n) === 0 ? '—' : fmtNum(n); }
 // Display-only — '—' when the backend hasn't provided a value. Never a computed fallback.
 function fmtBackend(n) { return (n == null || isNaN(Number(n))) ? '—' : fmtNum(n); }
 
@@ -23,12 +38,12 @@ const MONTH_NUM = {
   'يوليو':7,'أغسطس':8,'سبتمبر':9,'أكتوبر':10,'نوفمبر':11,'ديسمبر':12,
 };
 
-// ── Scoped print-first styles ────────────────────────────────────────────────
+// ── Scoped print-first styles — tokens sourced from printDesignSystem.js ───
 const CSS = `
 .cps-root{
   direction:rtl;
   font-family:'Cairo','IBM Plex Sans Arabic',Tahoma,Arial,sans-serif;
-  color:#000; background:#fff;
+  color:${COLORS.i1}; background:#fff;
   font-feature-settings:'tnum' 1,'lnum' 1;
 }
 .cps-root *{box-sizing:border-box;}
@@ -92,9 +107,11 @@ const CSS = `
   .cps-cut-v,.cps-cut-h{ display:block; }
 }
 
-/* ── Individual card ───────────────────────────────────────────────────── */
+/* ── Individual card — same radius/shadow language as reportTemplate.js's
+   .table-wrap / SalaryCard's cards, at a scale that fits a 1/9-page card. ── */
 .cps-card{
-  border:1px solid #000; border-radius:2px; background:#fff;
+  border:1px solid ${COLORS.cardBorder}; border-radius:6px; background:#fff;
+  box-shadow:${SHADOW.card};
   display:flex; flex-direction:column;
   overflow:hidden; break-inside:avoid; page-break-inside:avoid;
   min-height:0; height:100%;
@@ -112,29 +129,30 @@ const CSS = `
 .cps-col-val{width:32%;}
 .cps-col-ico{width:16%;}
 
-/* ── Month header row (full-width, white bg, centered bold) ─────────── */
+/* ── Month header row — same soft-blue gradient as reportTemplate.js's
+   thead th, brand-ink text, instead of a plain white/black rule. ───────── */
 .cps-td-month{
-  text-align:center; font-size:9pt; font-weight:800; color:#000;
-  padding:1.5mm 3mm; border-bottom:1.5px solid #000;
-  background:#fff; line-height:1.2; white-space:nowrap;
+  text-align:center; font-size:9pt; font-weight:700; color:${COLORS.brandInk};
+  padding:1.5mm 3mm; border-bottom:1.5px solid ${COLORS.hair};
+  background:linear-gradient(180deg,#F8FBFF,#EDF4FF); line-height:1.2; white-space:nowrap;
 }
 
 /* ── Employee name row ─────────────────────────────────────────────────── */
 .cps-td-name{
-  text-align:center; font-size:16pt; font-weight:900; color:#000;
+  text-align:center; font-size:15pt; font-weight:700; color:${COLORS.brandInk};
   line-height:1.4; padding:2mm 3mm;
-  background:#f7f7f7;
-  border-top:1px solid #dcdcdc; border-bottom:1px solid #dcdcdc;
+  background:${COLORS.alt};
+  border-top:1px solid ${COLORS.cardBorder}; border-bottom:1px solid ${COLORS.cardBorder};
   vertical-align:middle;
   word-break:normal; overflow-wrap:break-word; white-space:normal;
 }
 
 /* ── Data rows ────────────────────────────────────────────────────────── */
 .cps-tbl tbody tr.r-data td{
-  border-bottom:0.5px solid #ddd; vertical-align:middle; overflow:hidden;
+  border-bottom:0.5px solid ${COLORS.bd}; vertical-align:middle; overflow:hidden;
 }
 .cps-td-lbl{
-  text-align:right; font-size:8pt; font-weight:600; color:#111;
+  text-align:right; font-size:8pt; font-weight:600; color:${COLORS.i2};
   padding:0 2mm; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
 .cps-td-val{
@@ -146,22 +164,36 @@ const CSS = `
 }
 .cps-ico-wrap{display:flex;align-items:center;justify-content:center;}
 
-/* Row accent colors */
-.r-basic .cps-td-ico svg{color:#555;}    .r-basic .cps-td-val{color:#000;}
-.r-ot    .cps-td-ico svg{color:#166534;} .r-ot    .cps-td-val{color:#166534;}
-.r-late  .cps-td-ico svg{color:#b91c1c;} .r-late  .cps-td-val{color:#b91c1c;}
-.r-abs   .cps-td-ico svg{color:#b91c1c;} .r-abs   .cps-td-val{color:#b91c1c;}
-.r-adv   .cps-td-ico svg{color:#92400e;} .r-adv   .cps-td-val{color:#92400e;}
-.r-adm   .cps-td-ico svg{color:#881337;} .r-adm   .cps-td-val{color:#881337;}
+/* Row accent colors — the same six-color enterprise palette every report
+   uses (COLORS.suc/dng/wrn/pur), not a bespoke bootstrap-ish scale. */
+.r-basic .cps-td-ico svg{color:${COLORS.i3};}    .r-basic .cps-td-val{color:${COLORS.i1};}
+.r-ot    .cps-td-ico svg{color:${COLORS.suc};}   .r-ot    .cps-td-val{color:${COLORS.suc};}
+.r-late  .cps-td-ico svg{color:${COLORS.dng};}   .r-late  .cps-td-val{color:${COLORS.dng};}
+.r-abs   .cps-td-ico svg{color:${COLORS.dng};}   .r-abs   .cps-td-val{color:${COLORS.dng};}
+.r-adv   .cps-td-ico svg{color:${COLORS.wrn};}   .r-adv   .cps-td-val{color:${COLORS.wrn};}
+.r-adm   .cps-td-ico svg{color:${COLORS.pur};}   .r-adm   .cps-td-val{color:${COLORS.pur};}
 
-/* ── Net salary row (highlighted) ─────────────────────────────────────── */
+/* ── Net salary row (highlighted) — same "totals row" treatment as
+   reportTemplate.js's tr.totals: soft-strong fill, inset shadow, navy ink. ── */
 .r-net td{
-  background:#efefef; border-top:1px solid #999; border-bottom:none;
+  background:${COLORS.softStrong}; border-top:none; border-bottom:none;
+  box-shadow:inset 0 3px 5px -3px rgba(15,39,75,0.35);
   vertical-align:middle; overflow:hidden;
 }
-.r-net .cps-td-lbl{font-size:9pt;font-weight:700;color:#000;padding:0 2mm;}
-.r-net .cps-td-val{font-size:14pt;font-weight:800;color:#000;padding:0 1mm;}
-.r-net .cps-td-ico svg{color:#000;}
+.r-net .cps-td-lbl{font-size:9pt;font-weight:700;color:${COLORS.p};padding:0 2mm;}
+.r-net .cps-td-val{font-size:14pt;font-weight:800;color:${COLORS.p};padding:0 1mm;}
+.r-net .cps-td-ico svg{color:${COLORS.p};}
+
+/* ── Page footer — same left(identity)/right(pagination) split as every
+   table report's @page footer. Real per-page numbers (not CSS counters):
+   this document's fixed-size page divs aren't rendered through an @page
+   margin box, so the exact page index is computed in JS below instead. ─── */
+.cps-footer{
+  flex:0 0 auto; margin-top:2mm; padding-top:1.5mm;
+  border-top:1px solid ${COLORS.bd};
+  display:flex; justify-content:space-between; align-items:center;
+  font-size:7.5pt; color:${COLORS.i3};
+}
 
 @media screen{
   .cps-page{margin:0 auto 8mm;box-shadow:0 1px 8px rgba(0,0,0,.12);}
@@ -181,15 +213,15 @@ function Card({ d, monthLabel, year }) {
   // ── Display only — every value is an explicit backend field, never an
   // inferred/residual subtraction, so this card can never silently drop or
   // double-count a deduction component as the total's composition changes.
-  const basic   = r0(ear.basicSalary);
-  const ot      = r0(ear.overtimeAmount);
-  const lateAmt = r0(ded.lateAmount);
-  const absAmt  = r0(ded.absentAmount);
-  const adv     = r0(ded.advances);
+  const basic   = displayNetSalary(ear.basicSalary);
+  const ot      = displayNetSalary(ear.overtimeAmount);
+  const lateAmt = displayNetSalary(ded.lateAmount);
+  const absAmt  = displayNetSalary(ded.absentAmount);
+  const adv     = displayNetSalary(ded.advances);
   // "خصم إداري" groups every remaining named deduction component (early-leave,
   // HR manual adjustment) — an explicit sum of known fields, not `total`
   // minus what's shown elsewhere. Row display only.
-  const admDed  = r0(ded.earlyAmount) + r0(ded.manualDeductionAdjustment);
+  const admDed  = displayNetSalary(ded.earlyAmount) + displayNetSalary(ded.manualDeductionAdjustment);
   // EF-019.1: "الصافي" is the ONE shared displayNetSalary() helper applied to
   // this card's own canonical `netSalary` field — not re-derived from the
   // rows above (which, notably, never included `bonus` in the old formula
@@ -199,7 +231,7 @@ function Card({ d, monthLabel, year }) {
   // ──────────────────────────────────
 
   // Optional absent-days count for label enrichment
-  const absDays = r0(
+  const absDays = displayNetSalary(
     d.absentDays ?? ded.absentDays ?? d.attendance?.absentDays ?? d.summary?.absentDays ?? 0
   );
   const absLabel = absDays > 0 ? `خصم الغياب (${absDays} أيام)` : 'خصم الغياب';
@@ -279,6 +311,9 @@ function Card({ d, monthLabel, year }) {
 
 // ── Root component ───────────────────────────────────────────────────────────
 export default function CompactSalarySheet({ sheets = [], monthLabel = '', year = '' }) {
+  const brand = useCompanyBrand();
+  const footerLeft = buildFooterLeft(brand, {});
+
   const valid = sheets.filter(Boolean);
   const pages = [];
   for (let i = 0; i < valid.length; i += PER_PAGE) pages.push(valid.slice(i, i + PER_PAGE));
@@ -301,6 +336,13 @@ export default function CompactSalarySheet({ sheets = [], monthLabel = '', year 
             <span className="cps-cut-v cps-cut-v2" aria-hidden="true" />
             <span className="cps-cut-h cps-cut-h1" aria-hidden="true" />
             <span className="cps-cut-h cps-cut-h2" aria-hidden="true" />
+          </div>
+
+          {/* Page footer — company identity (left) · real page N/M (right),
+              same visual language as every table report's footer. */}
+          <div className="cps-footer">
+            <span>{footerLeft}</span>
+            <span>صفحة {p + 1} من {pages.length}</span>
           </div>
 
         </div>

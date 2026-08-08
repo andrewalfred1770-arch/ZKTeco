@@ -23,6 +23,7 @@ const { PrismaClient } = require('@prisma/client');
 const { checkDbConnection, classifyDbError } = require('../utils/prisma');
 const { getConfigDir } = require('../utils/configDir');
 const logger = require('../utils/logger');
+const rateLimiter = require('../middleware/rateLimiter');
 
 function currentEnvPath() {
   return process.env.DOTENV_CONFIG_PATH || path.join(getConfigDir(), '.env');
@@ -108,7 +109,18 @@ router.get('/current', (_req, res) => {
   }
 });
 
-router.post('/test-connection', async (req, res) => {
+// M1 hardening: this router is unauthenticated by design (see the module
+// doc comment — it must work before any DB-backed login is possible) and
+// self-disables the instant the real app's DB is healthy (router.use()
+// above). The residual exposure is narrow — only reachable during an actual
+// DB-down window on a network-reachable backend — but within that window
+// /test-connection lets a caller supply an arbitrary host:port and get back
+// a coarse signal (auth-failed vs unreachable vs database-missing) about
+// what's listening there: a low-bandwidth internal-network/port oracle.
+// Rate-limiting doesn't change WHO can call this (no auth/trust-model
+// decision made here) — it just makes host/port scanning through it
+// impractically slow, the same defense-in-depth /auth/login already uses.
+router.post('/test-connection', rateLimiter(10, 60_000), async (req, res) => {
   const invalid = validateFields(req.body);
   if (invalid) return res.status(400).json({ error: invalid });
   const { host, port, database, username, password } = req.body;
@@ -116,7 +128,11 @@ router.post('/test-connection', async (req, res) => {
   res.json(result);
 });
 
-router.post('/save', async (req, res) => {
+// Same rationale as /test-connection above — /save already requires a
+// successful testCandidate() against a REAL reachable database before it
+// writes anything, so it's not itself a blind probe, but it's still the
+// destructive endpoint of this narrow window and gets the same throttle.
+router.post('/save', rateLimiter(5, 60_000), async (req, res) => {
   const invalid = validateFields(req.body);
   if (invalid) return res.status(400).json({ error: invalid });
   const { host, port, database, username, password } = req.body;

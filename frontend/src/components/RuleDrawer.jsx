@@ -8,13 +8,14 @@
  *  • Plain-Arabic labels, tooltips on every option, smart defaults.
  *  • Internally still stores the canonical formula string the engine expects.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   X, Save, Loader2, Info, Calculator, Sliders,
   FileText, History, Delete, RotateCcw, Clock3,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../lib/api';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 // ── Shared Exports (consumed by RulesPage) ────────────────────────────────────
 export const CATEGORY_LABELS = {
@@ -365,6 +366,19 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
 
   const catColor = CAT_COLOR[form.category] || '#2563eb';
 
+  // Phase 13.9: accessible-dialog semantics via the shared useFocusTrap hook
+  // (same engine Dialog/Drawer use) — this drawer's custom tabbed header
+  // doesn't map cleanly onto the shared <Drawer> primitive's title/footer
+  // prop API, so the focus-trap/restore behavior is wired directly onto its
+  // existing markup instead of restructuring it.
+  const titleId = useId();
+  const containerRef = useFocusTrap(true);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   // ── value editor for the الحسابات tab ───────────────────────────────────────
   const valueEditor = () => {
     switch (form.type) {
@@ -424,11 +438,18 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
       <div onClick={onClose} style={{ position:'fixed', inset:0, zIndex:60,
         background:'rgba(0,0,0,0.55)', backdropFilter:'blur(3px)' }} />
 
-      <div dir="rtl" style={{
+      <div
+        ref={containerRef}
+        tabIndex={-1}
+        dir="rtl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        style={{
         position:'fixed', top:0, bottom:0, left:0, zIndex:70, width:'min(560px,100vw)',
         background:'var(--bg)', borderRight:'1px solid var(--border)',
         boxShadow:'-8px 0 48px rgba(0,0,0,.4)', display:'flex', flexDirection:'column',
-        animation:'slideIn .22s ease' }}>
+        animation:'slideIn .22s ease', outline:'none' }}>
         <style>{`@keyframes slideIn{from{transform:translateX(-20px);opacity:.6}to{transform:translateX(0);opacity:1}}@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
 
         {/* Header */}
@@ -441,7 +462,7 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
                 display:'flex', alignItems:'center', justifyContent:'center',
                 fontSize:17, color:'#fff', fontWeight:700 }}>{TYPE_ICONS[form.type] || '#'}</div>
               <div>
-                <h2 style={{ margin:0, fontSize:15, fontWeight:800, color:'var(--text)' }}>
+                <h2 id={titleId} style={{ margin:0, fontSize:15, fontWeight:800, color:'var(--text)' }}>
                   {isEdit ? 'تعديل قاعدة' : 'إضافة قاعدة جديدة'}
                 </h2>
                 <p style={{ margin:'2px 0 0', fontSize:11.5, color:'var(--text-3)' }}>

@@ -16,6 +16,7 @@ const attendanceEngine = require('../engines/attendanceEngine');
 const logger = require('../utils/logger');
 const { authenticate, authorize } = require('../middleware/auth');
 const { currentMonthRange } = require('../utils/monthRange');
+const { writeAudit } = require('../utils/manualEditAudit');
 
 const prisma = getPrisma();
 
@@ -48,10 +49,25 @@ router.use(authenticate);
 function recalcForAdjustment(adj, io, why) {
   if (!adj) return;
   const m = moment(adj.date);
-  payrollEngine.calculatePayroll(adj.employeeId, m.month() + 1, m.year())
-    .then(() => {
-      logger.info(`[PAYROLL] adjustment ${why}: recalculated emp=${adj.employeeId} ${m.month() + 1}/${m.year()} (adj #${adj.id})`);
-      if (io) io.emit('attendance:processed', { employeeId: adj.employeeId, source: `adjustment-${why}` });
+  const target = { employeeId: adj.employeeId, month: m.month() + 1, year: m.year() };
+  // C1 canonical safety boundary: an adjustment approval/edit/revert is a
+  // side-effect trigger, not the user directly opening this Payroll row, and
+  // this path has no confirmation flow to fall back on (unlike cleanup.js) —
+  // so a finalized/paid target here is protected (skipped, not overwritten)
+  // rather than silently recalculated. See payrollEngine.
+  // filterProtectedPayrollTargets() for the shared check every such cascade
+  // caller (recalcEngine.recalcScope, this function, bulk-approve below) uses.
+  payrollEngine.filterProtectedPayrollTargets([target])
+    .then(({ allowed, protectedTargets }) => {
+      if (protectedTargets.length) {
+        logger.warn(`[PAYROLL] adjustment ${why}: SKIPPED emp=${adj.employeeId} ${m.month() + 1}/${m.year()} — payroll is ${protectedTargets[0].status} (adj #${adj.id})`);
+        return;
+      }
+      return payrollEngine.calculatePayroll(adj.employeeId, m.month() + 1, m.year())
+        .then(() => {
+          logger.info(`[PAYROLL] adjustment ${why}: recalculated emp=${adj.employeeId} ${m.month() + 1}/${m.year()} (adj #${adj.id})`);
+          if (io) io.emit('attendance:processed', { employeeId: adj.employeeId, source: `adjustment-${why}` });
+        });
     })
     .catch(err => logger.error(`[PAYROLL] adjustment ${why} recalc failed (adj #${adj.id}): ${err.message}`));
 }
@@ -379,14 +395,6 @@ router.put('/:id', authorize('admin', 'hr'), async (req, res) => {
       changedBy = 0, changedByName = 'HR', changedByRole = 'hr',
     } = req.body;
 
-    // Audit changed fields
-    const fields = { adjCheckIn, adjCheckOut, adjLateMinutes, adjOvertimeHours, adjLatePenalty, ignoreLate, reason };
-    for (const [k, v] of Object.entries(fields)) {
-      if (v !== undefined && String(v) !== String(existing[k])) {
-        await logAudit(id, 'field_changed', { field: k, old: existing[k], new: v, userId: changedBy, userName: changedByName, userRole: changedByRole });
-      }
-    }
-
     const updated = await prisma.attendanceAdjustment.update({
       where: { id },
       data: {
@@ -409,6 +417,32 @@ router.put('/:id', authorize('admin', 'hr'), async (req, res) => {
         updatedAt: new Date(),
       },
     });
+
+    // L1 fix: audit EVERY writable field this route can persist (previously
+    // only 7 of the ~16 actual fields in the update() block above were ever
+    // checked — adjTotalDeductions, adjIsAbsent, forcePresent, ignoreEarlyLeave,
+    // adjWorkedMinutes, adjMorningOT, adjEveningOT, adjEarlyPenalty, adjStatus,
+    // hrComment could all change with zero audit trail). Also moved AFTER the
+    // update succeeds and compared against the ACTUALLY-persisted `updated`
+    // row (not the raw request body) — previously this ran BEFORE the write,
+    // so a request whose update() call failed could still leave behind audit
+    // rows describing a change that was never actually applied.
+    const auditFields = [
+      'adjCheckIn', 'adjCheckOut', 'adjWorkedMinutes', 'adjLateMinutes',
+      'adjOvertimeHours', 'adjMorningOT', 'adjEveningOT',
+      'adjLatePenalty', 'adjEarlyPenalty', 'adjTotalDeductions',
+      'adjStatus', 'adjIsAbsent',
+      'ignoreLate', 'ignoreEarlyLeave', 'forcePresent',
+      'reason', 'hrComment',
+    ];
+    for (const k of auditFields) {
+      const oldV = existing[k];
+      const newV = updated[k];
+      if (String(oldV ?? '') !== String(newV ?? '')) {
+        await logAudit(id, 'field_changed', { field: k, old: oldV, new: newV, userId: changedBy, userName: changedByName, userRole: changedByRole });
+      }
+    }
+
     res.json(updated);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -489,7 +523,31 @@ router.post('/:id/revert', authorize('admin', 'hr'), async (req, res) => {
     catch (err) { logger.error(`[Adjustments] revert reprocess failed (adj #${id}): ${err.message}`); }
     recalcForAdjustment(adj, req.io, 'reverted');
 
-    await logAudit(id, 'reverted', { userId: revertedBy, userName: revertedByName, userRole: 'hr' }).catch(() => {});
+    // L1 fix: AdjustmentAuditLog.adjustmentId has onDelete: Cascade against
+    // AttendanceAdjustment (schema.prisma) — the delete() above already
+    // wiped out every prior audit row for this adjustment (created/approved/
+    // rejected/field_changed, its entire history), and logAudit(id,
+    // 'reverted', ...) here would try to INSERT a new row referencing an
+    // adjustmentId that no longer exists, violating that same foreign key.
+    // That's exactly why the previous code's `.catch(() => {})` always fired
+    // silently — this action has NEVER actually recorded an audit entry.
+    // Fix: write to the OTHER existing audit mechanism this codebase already
+    // uses for records that must survive independent of one specific row's
+    // lifecycle (writeAudit()/ManualEditAuditLog — used by payroll.js and
+    // attendance/manual.js) — keyed by employeeId/attendanceDailyId, neither
+    // of which this delete touches, so the record is durable. Not a new
+    // audit system: this is the pre-existing employee-level trail, reused.
+    await writeAudit({
+      employeeId: adj.employeeId,
+      attendanceDailyId: adj.attendanceDailyId,
+      fieldName: 'adjustment',
+      oldValue: `adjustment #${id} (${adj.approvalStatus})`,
+      newValue: 'reverted',
+      reason: 'إلغاء التعديل واسترجاع القيم الأصلية',
+      userId: revertedBy, userName: revertedByName, userRole: 'hr',
+      source: 'adjustment-revert',
+    }).catch((err) => logger.error(`[Adjustments] revert audit write failed (adj #${id}): ${err.message}`));
+
     res.json({ message: 'تم الإلغاء واسترجاع القيم الأصلية' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -558,7 +616,17 @@ router.post('/bulk-approve', authorize('admin', 'hr'), async (req, res) => {
       const key = `${r.adj.employeeId}|${m.month() + 1}|${m.year()}`;
       if (!recalcKeys.has(key)) recalcKeys.set(key, { employeeId: r.adj.employeeId, month: m.month() + 1, year: m.year() });
     }
-    for (const { employeeId, month, year } of recalcKeys.values()) {
+    // C1 canonical safety boundary: same protection as recalcForAdjustment()
+    // above, applied here as one batched pre-check (not per-key) so a bulk
+    // approval touching many employees/months still issues a single extra
+    // query instead of one per key.
+    const { allowed: allowedRecalcTargets, protectedTargets } =
+      await payrollEngine.filterProtectedPayrollTargets([...recalcKeys.values()]);
+    if (protectedTargets.length) {
+      logger.warn(`[PAYROLL] adjustment bulk-approved: SKIPPED ${protectedTargets.length} finalized/paid target(s): ` +
+        protectedTargets.map(t => `emp=${t.employeeId} ${t.month}/${t.year} (${t.status})`).join(', '));
+    }
+    for (const { employeeId, month, year } of allowedRecalcTargets) {
       try {
         await payrollEngine.calculatePayroll(employeeId, month, year);
         logger.info(`[PAYROLL] adjustment bulk-approved: recalculated emp=${employeeId} ${month}/${year}`);
@@ -568,7 +636,11 @@ router.post('/bulk-approve', authorize('admin', 'hr'), async (req, res) => {
       }
     }
 
-    res.json({ results: results.map(({ id, success }) => ({ id, success })), count: results.filter(r => r.success).length });
+    res.json({
+      results: results.map(({ id, success }) => ({ id, success })),
+      count: results.filter(r => r.success).length,
+      protectedPayroll: protectedTargets,
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

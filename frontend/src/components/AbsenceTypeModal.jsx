@@ -4,8 +4,9 @@
  * Auto-fills penaltyDays based on selection; مخصص lets HR enter any number.
  * Saving calls PUT /attendance/:id/absence-type and propagates to payroll engine.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import { X, ShieldCheck, ShieldX, Settings, CheckCircle } from 'lucide-react';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 const TYPES = [
   {
@@ -65,6 +66,16 @@ export default function AbsenceTypeModal({
     setCustomDays(initialType === 'custom' ? (initialPenaltyDays ?? 1) : 1);
   }, [isOpen, initialType, initialPenaltyDays, initialReason]);
 
+  // Phase 13.9: accessible-dialog semantics (focus trap/restore + Escape).
+  const titleId = useId();
+  const containerRef = useFocusTrap(isOpen);
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const selected = TYPES.find(t => t.key === type);
@@ -91,20 +102,26 @@ export default function AbsenceTypeModal({
       onClick={e => e.target === e.currentTarget && onClose()}
     >
       <div
+        ref={containerRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         dir="rtl"
         style={{
-          background: 'var(--surface, #0f1e35)',
-          border: '1px solid var(--border, rgba(99,130,191,0.18))',
+          background: 'var(--surface, #161B22)',
+          border: '1px solid var(--border, rgba(139,148,158,0.18))',
           borderRadius: 12,
           width: '100%', maxWidth: 440,
           padding: '24px',
           boxShadow: '0 24px 64px rgba(0,0,0,0.5)',
+          outline: 'none',
         }}
       >
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
           <div>
-            <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)', fontFamily: 'Cairo, sans-serif' }}>
+            <div id={titleId} style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)', fontFamily: 'Cairo, sans-serif' }}>
               نوع الغياب
             </div>
             {(employeeName || dateLabel) && (
@@ -136,8 +153,8 @@ export default function AbsenceTypeModal({
                 style={{
                   display: 'flex', alignItems: 'center', gap: 12,
                   padding: '12px 14px',
-                  background: active ? `${color}18` : 'var(--bg, #0a1628)',
-                  border: `2px solid ${active ? color : 'var(--border, rgba(99,130,191,0.18))'}`,
+                  background: active ? `${color}18` : 'var(--bg, #0D1117)',
+                  border: `2px solid ${active ? color : 'var(--border, rgba(139,148,158,0.18))'}`,
                   borderRadius: 8, cursor: 'pointer', textAlign: 'right',
                   transition: 'all 0.15s',
                 }}

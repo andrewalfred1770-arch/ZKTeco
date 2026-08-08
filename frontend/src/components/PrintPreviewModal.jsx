@@ -2,7 +2,7 @@
  * PrintPreviewModal — PETSHROW unified print / export dialog.
  * Live A4 preview (real Chromium-rendered HTML) → Print / PDF / Excel.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   X, Printer, FileText, FileSpreadsheet,
   ZoomIn, ZoomOut, Maximize2, StretchHorizontal, Loader2,
@@ -12,9 +12,11 @@ import toast from 'react-hot-toast';
 import { useTheme } from '../contexts/ThemeContext';
 import { printHTML, exportToPDF, exportToExcel, buildReportHTML } from '../lib/printUtils';
 import { useCompanyBrand } from '../lib/branding';
+import { PAPER_MM, MARGIN_PRESETS, MM_TO_PX } from '../lib/printDesignSystem';
 import { fmtTime, fmtMoney, fmtOTHours, fmtMinutes, fmtPenaltyUnits, fmtOvertimeUnits, fmtWorkedHours, fmtIntZero, fmtDec, STATUS_LABELS, displayNetSalary } from '../lib/formatters';
 import PrintSettingsSidebar from './print/PrintSettingsSidebar';
 import PrintThumbnails from './print/PrintThumbnails';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 const STATUS_TD = r => {
   const m = { present:'status-present', late:'status-late', absent:'status-absent',
@@ -121,39 +123,53 @@ export const REPORT_COLUMNS = {
   // صافي المرتب (13 canonical columns). أجر الساعة/hourlyRate and ساعات
   // الخصم/penaltyUnits were previously missing from print entirely — added
   // here, sourced from the same computePayroll()-overlaid GET /payroll
-  // fields the grid already renders, no new calculation. المستحقات isn't
-  // among the 13 canonical columns — kept, appended after صافي الراتب
-  // rather than interleaved.
+  // fields the grid already renders, no new calculation.
+  // المستحقات/grossEntitlements is intentionally OMITTED from this print-only
+  // column set (Portrait A4 layout spec) — it stays fully available on the
+  // Payroll screen grid, Excel export, API, and business logic, all of which
+  // read PayrollPage's own grid column defs, never this array.
+  // `priority` overrides columnLayoutEngine.js's generic name/code pattern
+  // classifier — a payroll report has domain-specific tiers a generic
+  // key/header regex can't infer (e.g. `employee.code` would otherwise match
+  // the generic "code$" LOW pattern, but a payroll report always needs the
+  // employee code visible): high = always-visible identity/pay figures,
+  // medium = overtime/late/deduction figures, low = informational/optional.
+  // `minPx` overrides the tier's blanket legibility floor (95px for 'high',
+  // tuned for a full employee name) with this column's OWN actual minimum —
+  // a code, a day count, or a money figure never needs a full name's width,
+  // and letting every 'high' column claim 95px regardless of content starves
+  // the medium-tier columns (Overtime/Deductions) of budget they need far
+  // more, forcing needless hiding of columns the spec calls out as
+  // Priority 2. Employee Name has no override — it keeps the full 95px
+  // floor and, per spec, the largest share of whatever width remains.
   payroll: [
-    { header: 'الكود',           key: 'employee.code',            thStyle: 'width:48px' },
-    { header: 'اسم الموظف',     key: 'employee.name',            thStyle: 'width:130px' },
-    { header: 'الراتب الأساسي', key: 'basicSalary',    format: v => fmtMoney(v), tdClass: ()=>'num', thStyle:'width:82px', total:'sum' },
+    { header: 'الكود',           key: 'employee.code',            thStyle: 'width:48px', priority: 'high', minPx: 50 },
+    { header: 'اسم الموظف',     key: 'employee.name',            thStyle: 'width:130px', priority: 'high' },
+    { header: 'الراتب الأساسي', key: 'basicSalary',    format: v => fmtMoney(v), tdClass: ()=>'num', thStyle:'width:82px', total:'sum', priority: 'high', minPx: 72 },
     { header: 'أجر الساعة',      key: 'hourlyRate',     format: v => fmtDec(v, 2),
-      tdClass: () => 'num muted', thStyle: 'width:66px' },
+      tdClass: () => 'num muted', thStyle: 'width:66px', priority: 'low' },
     { header: 'أيام الحضور',    key: 'workDays',   format: v => fmtIntZero(v),
-      tdClass: () => 'num green', thStyle: 'width:64px', total:'sum' },
+      tdClass: () => 'num green', thStyle: 'width:64px', total:'sum', priority: 'high', minPx: 52 },
     { header: 'الغياب',          key: 'absentDays', format: v => fmtIntZero(v),
-      tdClass: r => (r.absentDays||0)>0 ? 'num red':'num muted', thStyle:'width:56px', total:'sum' },
+      tdClass: r => (r.absentDays||0)>0 ? 'num red':'num muted', thStyle:'width:56px', total:'sum', priority: 'high', minPx: 50 },
     { header: 'ساعات الإضافي',  key: 'overtimeHours',  format: v => fmtOTHours(v),
-      tdClass: r=>(r.overtimeHours||0)>0?'num green':'num muted', thStyle:'width:74px', total:'sum' },
+      tdClass: r=>(r.overtimeHours||0)>0?'num green':'num muted', thStyle:'width:74px', total:'sum', priority: 'medium' },
     { header: 'قيمة الإضافي',   key: 'overtimeAmount', format: v => fmtMoney(v),
-      tdClass: r=>(r.overtimeAmount||0)>0?'num green':'num muted', thStyle:'width:78px', total:'sum' },
+      tdClass: r=>(r.overtimeAmount||0)>0?'num green':'num muted', thStyle:'width:78px', total:'sum', priority: 'medium' },
     { header: 'ساعات الخصم',     key: 'penaltyUnits',   format: v => fmtPenaltyUnits(v),
-      tdClass: r=>(r.penaltyUnits||0)>0?'num red':'num muted', thStyle:'width:70px', total:'sum' },
+      tdClass: r=>(r.penaltyUnits||0)>0?'num red':'num muted', thStyle:'width:70px', total:'sum', priority: 'medium' },
     { header: 'إجمالي الخصومات', key: 'deductions',   format: v => fmtMoney(v),
-      tdClass: r=>(r.deductions||0)>0?'num red':'num muted', thStyle:'width:78px', total:'sum' },
+      tdClass: r=>(r.deductions||0)>0?'num red':'num muted', thStyle:'width:78px', total:'sum', priority: 'medium' },
     { header: 'السلف',           key: 'advances',      format: v => (v||0)>0 ? fmtMoney(v):'—',
-      tdClass: r=>(r.advances||0)>0?'num red':'num muted', thStyle:'width:66px', total:'sum' },
+      tdClass: r=>(r.advances||0)>0?'num red':'num muted', thStyle:'width:66px', total:'sum', priority: 'low' },
     { header: 'خصم يدوي إضافي', key: 'manualDeductionAdjustment', format: v => (v||0)>0 ? fmtMoney(v):'—',
-      tdClass: r=>(r.manualDeductionAdjustment||0)>0?'num red':'num muted', thStyle:'width:78px', total:'sum' },
+      tdClass: r=>(r.manualDeductionAdjustment||0)>0?'num red':'num muted', thStyle:'width:78px', total:'sum', priority: 'low' },
     // EF-019.1: per-row cell uses the shared displayNetSalary() helper (same
     // as every other payroll consumer); the footer's `total:'sum'` still sums
     // the raw exact values and rounds once — the correct pattern for a grand
     // total, left unchanged.
     { header: 'صافي الراتب',    key: 'netSalary',      format: v => fmtMoney(displayNetSalary(v)),
-      tdClass: ()=>'num green', thStyle:'width:82px', total:'sum' },
-    { header: 'المستحقات',       key: 'grossEntitlements', format: v => fmtMoney(v),
-      tdClass: ()=>'num green', thStyle:'width:80px', total:'sum' },
+      tdClass: ()=>'num green', thStyle:'width:82px', total:'sum', priority: 'high', minPx: 72 },
   ],
 
   movement: [
@@ -231,17 +247,51 @@ export const REPORT_LABELS = {
   raw_logs:                  'سجلات البصمة',
 };
 
+// ── Enterprise Summary Strip — curated headline metrics per report type ────
+// Each entry is a REPORT_COLUMNS `key` (reusing that column's own already-
+// computed total, see buildReportHTML's summaryKeys param) or the sentinel
+// '__absence' (the status column's already-computed absent-row count). No
+// new figures — every one of these already exists as a column total or the
+// status breakdown above it. Report types not listed here fall back to
+// buildReportHTML's generic default (every totaled column + absence).
+const SUMMARY_KEYS = {
+  attendance_daily: [
+    { key: '__absence',             label: 'إجمالي الغياب' },
+    { key: 'effectiveLatePenalty',  label: 'إجمالي خصم التأخير' },
+    { key: 'effectiveOvertimeUnits', label: 'إجمالي الإضافي' },
+  ],
+  attendance_dashboard: [
+    { key: '__absence',             label: 'إجمالي الغياب' },
+    { key: 'effectiveLatePenalty',  label: 'إجمالي خصم التأخير' },
+    { key: 'effectiveOvertimeUnits', label: 'إجمالي الإضافي' },
+  ],
+  attendance_monthly: [
+    { key: 'absentDays',                    label: 'إجمالي أيام الغياب' },
+    { key: 'totalEffectiveOvertimeUnits',   label: 'إجمالي ساعات الإضافي' },
+    { key: 'totalEffectiveDeductionUnits',  label: 'إجمالي الخصومات' },
+  ],
+  movement: [
+    { key: '__absence',              label: 'إجمالي أيام الغياب' },
+    { key: 'totalOT',                label: 'إجمالي ساعات الإضافي' },
+    { key: 'effectiveTotalDeductions', label: 'إجمالي ساعات الخصم' },
+  ],
+  payroll: [
+    { key: '__count',       label: 'إجمالي الموظفين' },
+    { key: 'netSalary',     label: 'إجمالي الرواتب' },
+    { key: 'deductions',    label: 'إجمالي الخصومات' },
+    { key: 'overtimeAmount', label: 'إجمالي الإضافي' },
+  ],
+};
+
 // ── Page geometry ────────────────────────────────────────────────────────────
 // Real paper dimensions (mm) so "Paper Size"/"Margins" in the settings
-// sidebar are genuine — the same numbers feed reportTemplate.js's @page rule
-// AND the on-screen page box, so the preview always matches what prints.
-const PAPER_MM  = { A4: { w: 210, h: 297 }, Letter: { w: 215.9, h: 279.4 }, Legal: { w: 215.9, h: 355.6 } };
-const MARGIN_MM = { normal: { v: 10, h: 8 }, narrow: { v: 6, h: 5 }, wide: { v: 16, h: 14 } };
-const MM_TO_PX  = 3.7795275591; // 96dpi
-
+// sidebar are genuine — PAPER_MM/MARGIN_PRESETS/MM_TO_PX are imported from
+// printDesignSystem.js, the same source reportTemplate.js's @page rule reads,
+// so the preview always matches what prints (previously two hand-copied
+// constant tables that had to be kept in sync by convention only).
 function computePageBoxPx(paperSize, isLand, marginsKey) {
   const paper = PAPER_MM[paperSize] || PAPER_MM.A4;
-  const m     = MARGIN_MM[marginsKey] || MARGIN_MM.normal;
+  const m     = MARGIN_PRESETS[marginsKey] || MARGIN_PRESETS.normal;
   const fullW = isLand ? paper.h : paper.w;
   const fullH = isLand ? paper.w : paper.h;
   return {
@@ -272,6 +322,7 @@ export default function PrintPreviewModal({
   const [pdfBusy, setPdfBusy] = useState(false);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [contentHeightPx, setContentHeightPx] = useState(0);
+  const [measurementReady, setMeasurementReady] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [showSidebar, setShowSidebar] = useState(true);
   const [showThumbs, setShowThumbs] = useState(true);
@@ -280,11 +331,43 @@ export default function PrintPreviewModal({
     if (isOpen) { setActiveReport(reportType); setOri(orientation); setSettings(DEFAULT_SETTINGS); setCurrentPage(1); }
   }, [isOpen, reportType, orientation]);
 
+  // Phase 13.9: accessible-dialog semantics — full-screen workspace variant,
+  // not forced into the centered-card Dialog primitive per the audit's
+  // explicit instruction. Only the shared focus-trap/restore/Escape engine
+  // is applied; no visual layout change.
+  const titleId = useId();
+  const containerRef = useFocusTrap(isOpen);
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
+
   const { pageWidthPx, pageHeightPx } = useMemo(
     () => computePageBoxPx(settings.paperSize, ori === 'landscape', settings.margins),
     [settings.paperSize, settings.margins, ori]
   );
-  const pageCount = Math.max(1, Math.ceil(contentHeightPx / pageHeightPx) || 1);
+  // A trailing sliver of table border/margin (a few px) is not real content
+  // to paginate — without this tolerance, Math.ceil turns any such sliver
+  // into a whole phantom extra page whose thumbnail slice has nothing in
+  // it (see PrintThumbnails root-cause note). The epsilon is only applied
+  // to the LAST page's remainder, never subtracted from the full height —
+  // otherwise genuine overflow of up to PAGE_REMAINDER_EPSILON_PX on the
+  // final page would round down and vanish from the preview/thumbnail
+  // count while Chromium's native @page pagination still prints it,
+  // making the last printed page invisible in Print Preview.
+  const PAGE_REMAINDER_EPSILON_PX = 6;
+  const pageCount = Math.max(1, (() => {
+    if (contentHeightPx <= 0 || pageHeightPx <= 0) return 1;
+    const wholePages = Math.floor(contentHeightPx / pageHeightPx);
+    const remainderPx = contentHeightPx - wholePages * pageHeightPx;
+    if (remainderPx <= 0) return wholePages;
+    // Only a genuinely tiny remainder (a rendering sliver) is absorbed
+    // into the last whole page; anything larger is real content and
+    // gets its own page, matching what will actually print.
+    return remainderPx <= PAGE_REMAINDER_EPSILON_PX ? Math.max(1, wholePages) : wholePages + 1;
+  })());
   useEffect(() => { if (currentPage > pageCount) setCurrentPage(pageCount); }, [pageCount, currentPage]);
 
   // Navigating to a page (thumbnail click or the toolbar's prev/next) must
@@ -405,28 +488,66 @@ export default function PrintPreviewModal({
       paperSize: settings.paperSize, margins: settings.margins, scalePercent: settings.scalePercent,
       showHeaderFooter: settings.showHeaderFooter, repeatHeader: settings.repeatHeader,
       printBackground: settings.printBackground, watermarkText, showStamp: settings.showStamp,
+      summaryKeys: SUMMARY_KEYS[activeReport],
     });
-  }, [isOpen, filteredData, columns, reportTitle, meta, stats, ori, brand, settings, watermarkText]);
+  }, [isOpen, filteredData, columns, reportTitle, meta, stats, ori, brand, settings, watermarkText, activeReport]);
 
   // Write into iframe, auto-fit its height, and measure the total content
   // height — the one real input the page-count estimate and thumbnail
   // slicing both need (see computePageBoxPx above).
+  //
+  // Root cause of the old blank-thumbnail bug: this measurement used to run
+  // once at a fixed 120ms timeout (plus once when fonts.ready resolved) and
+  // never accounted for the company logo <img> — an in-page image with no
+  // width/height attributes renders at 0px until its network request
+  // finishes, so an early measurement could land BEFORE that image occupied
+  // its real space. Math.ceil() then had no tolerance for the resulting few
+  // stray pixels, so a rounding sliver silently became a whole extra
+  // "page" with nothing real in it — and PrintThumbnails, which renders
+  // each page as a fixed-height iframe slice, just showed blank white for
+  // that slice.
+  //
+  // Fix: keep measuring (via ResizeObserver, which also self-corrects for
+  // any late webfont swap) until the body's images have actually finished
+  // loading, THEN mark the measurement ready — thumbnails only render once
+  // `measurementReady` is true, and the epsilon tolerance above absorbs any
+  // remaining sub-row rounding noise.
   useEffect(() => {
     const ifr = iframeRef.current;
-    if (!ifr || !previewHTML) return;
+    if (!ifr || !previewHTML) { setMeasurementReady(false); return; }
     const doc = ifr.contentDocument;
     if (!doc) return;
+    setMeasurementReady(false);
     doc.open(); doc.write(previewHTML); doc.close();
+
+    let cancelled = false;
     const fit = () => {
+      if (cancelled) return;
       try {
         const h = doc.body.scrollHeight;
         ifr.style.height = h + 'px';
         setContentHeightPx(h);
       } catch {}
     };
-    const t = setTimeout(fit, 120);
-    if (doc.fonts?.ready) doc.fonts.ready.then(fit).catch(()=>{});
-    return () => clearTimeout(t);
+
+    const ro = new ResizeObserver(fit);
+    ro.observe(doc.body);
+    fit();
+
+    const imgs = Array.from(doc.images || []);
+    const imagesLoaded = Promise.all(imgs.map(img => img.complete
+      ? Promise.resolve()
+      : new Promise(res => { img.addEventListener('load', res, { once: true }); img.addEventListener('error', res, { once: true }); })
+    ));
+    const fontsReady = doc.fonts?.ready || Promise.resolve();
+
+    Promise.all([imagesLoaded, fontsReady]).then(() => {
+      if (cancelled) return;
+      fit();
+      setMeasurementReady(true);
+    });
+
+    return () => { cancelled = true; ro.disconnect(); };
   }, [previewHTML]);
 
   if (!isOpen) return null;
@@ -439,6 +560,7 @@ export default function PrintPreviewModal({
     showHeaderFooter: settings.showHeaderFooter, repeatHeader: settings.repeatHeader,
     printBackground: settings.printBackground, watermarkText, showStamp: settings.showStamp,
     showSignatures: settings.showSignatures, copies: settings.copies,
+    summaryKeys: SUMMARY_KEYS[activeReport],
   };
 
   // Routed through the one IPC print pipeline (printUtils.js → ipc.js's
@@ -502,7 +624,13 @@ export default function PrintPreviewModal({
     // A full-screen WORKSPACE, not a centered dialog card — the toolbar sits
     // flush against the real window edges like Word/Acrobat's own chrome,
     // so nothing reads as "a modal floating over the app".
-    <div style={{ position:'fixed', inset:0, zIndex:9999, background:'var(--surface)', display:'flex', flexDirection:'column' }} dir="rtl">
+    <div
+      ref={containerRef}
+      tabIndex={-1}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      style={{ position:'fixed', inset:0, zIndex:9999, background:'var(--surface)', display:'flex', flexDirection:'column', outline:'none' }} dir="rtl">
         {/* ── Toolbar — three zones: identity · view controls · export actions ── */}
         <div style={{
           padding:'10px 16px', background:'var(--surface)', borderBottom:'1px solid var(--border)',
@@ -510,8 +638,8 @@ export default function PrintPreviewModal({
         }}>
           {/* Zone 1 — identity */}
           <div style={{ display:'flex', alignItems:'center', gap:10, minWidth:0 }}>
-            <div style={{ width:28, height:28, borderRadius:8, flexShrink:0, background:'linear-gradient(135deg,#3b82f6,#1d4ed8)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, color:'#fff', fontSize:14 }}>P</div>
-            <span style={{ color:'var(--text)', fontWeight:700, fontSize:14, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', maxWidth:240 }}>{reportTitle}</span>
+            <div style={{ width:28, height:28, borderRadius:8, flexShrink:0, background: isLight ? 'linear-gradient(135deg,#3b82f6,#1d4ed8)' : 'linear-gradient(135deg,#2F81F7,#1F6FEB)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, color:'#fff', fontSize:14 }}>P</div>
+            <span id={titleId} style={{ color:'var(--text)', fontWeight:700, fontSize:14, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', maxWidth:240 }}>{reportTitle}</span>
             <span style={{ background:'var(--accent-soft)', color:'var(--accent)', padding:'2px 9px', borderRadius:99, fontSize:11, fontWeight:700, whiteSpace:'nowrap' }}>
               {filteredData.length} سجل
             </span>
@@ -638,6 +766,7 @@ export default function PrintPreviewModal({
             <PrintThumbnails
               previewHTML={previewHTML} pageWidthPx={pageWidthPx} pageHeightPx={pageHeightPx}
               contentHeightPx={contentHeightPx} pageCount={pageCount} currentPage={currentPage}
+              ready={measurementReady}
               onNavigate={goToPage}
             />
           )}

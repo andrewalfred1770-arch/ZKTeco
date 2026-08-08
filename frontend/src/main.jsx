@@ -12,16 +12,16 @@ class ErrorBoundary extends React.Component {
       return (
         <div style={{
           display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
-          height:'100vh', background:'#020817', color:'#f1f5f9', fontFamily:'monospace',
+          height:'100vh', background:'#0D1117', color:'#f1f5f9', fontFamily:'monospace',
           padding:'32px', gap:'16px', direction:'ltr',
         }}>
           <div style={{fontSize:'18px', color:'#f87171', fontWeight:'bold'}}>
             Renderer Error — React crashed on startup
           </div>
           <pre style={{
-            background:'#0f172a', padding:'16px', borderRadius:'8px',
+            background:'#21262D', padding:'16px', borderRadius:'8px',
             fontSize:'12px', color:'#fca5a5', maxWidth:'800px', overflow:'auto',
-            whiteSpace:'pre-wrap', border:'1px solid #374151',
+            whiteSpace:'pre-wrap', border:'1px solid #30363D',
           }}>
             {this.state.error?.message}
             {'\n\n'}

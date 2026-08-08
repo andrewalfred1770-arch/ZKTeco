@@ -73,13 +73,13 @@ export const timeCell = (value) => ({
   fontWeight:  '600',
 });
 
-/** Net salary — cyan accent */
+/** Net salary — emphasized primary value */
 export const netCell = () => ({
   ...NUM,
   color:       'var(--c-net)',
   fontWeight:  '800',
   fontSize:    '13px',
-  borderLeft:  '2px solid rgba(37,99,235,0.25)',
+  borderLeft:  '2px solid var(--c-net-border)',
 });
 
 /** Presence count / green */
