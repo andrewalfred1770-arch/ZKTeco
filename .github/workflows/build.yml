@@ -175,7 +175,7 @@ jobs:
         working-directory: frontend
         run: |
           set -e
-          APP_DIR=$(find ../dist-electron-legacy -maxdepth 1 -type d -name "*.app" | head -n1)
+          APP_DIR=$(find ../dist-electron-legacy -type d -name "*.app" | head -n1)
           echo "App bundle: $APP_DIR"
 
           echo "================ Info.plist (arch / min OS) ================"
@@ -213,7 +213,7 @@ jobs:
         working-directory: frontend
         run: |
           set +e
-          APP_DIR=$(find ../dist-electron-legacy -maxdepth 1 -type d -name "*.app" | head -n1)
+          APP_DIR=$(find ../dist-electron-legacy -type d -name "*.app" | head -n1)
           BIN=$(find "$APP_DIR/Contents/MacOS" -type f -maxdepth 1 | head -n1)
           echo "Launching: $BIN"
 
@@ -237,7 +237,7 @@ jobs:
       - name: Upload Mojave DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: petshrow-macos-mojave-verify
+          name: petshrow-macos-mojave-x64-2.28.0
           path: dist-electron-legacy/*.dmg
           if-no-files-found: error
 

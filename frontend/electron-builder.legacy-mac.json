@@ -21,7 +21,7 @@
     "category": "public.app-category.business",
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
-    "artifactName": "PETSHROW-ERP-Legacy-${arch}.${ext}",
+    "artifactName": "PETSHROW-ERP-Mojave-${version}-${arch}.${ext}",
     "extraResources": [
       {
         "from": "../backend",
@@ -56,7 +56,7 @@
   },
 
   "dmg": {
-    "artifactName": "PETSHROW-ERP-Legacy-${arch}.${ext}"
+    "artifactName": "PETSHROW-ERP-Mojave-${version}-${arch}.${ext}"
   },
 
   "files": [
