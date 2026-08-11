@@ -220,16 +220,43 @@ jobs:
 
           echo "================ Electron runtime version ================"
           FRAMEWORK_PLIST="$APP_DIR/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/Info.plist"
-          if [ -f "$FRAMEWORK_PLIST" ]; then
-            ELECTRON_RUNTIME_VERSION=$(plutil -extract CFBundleShortVersionString raw "$FRAMEWORK_PLIST")
-            echo "Bundled Electron Framework version: $ELECTRON_RUNTIME_VERSION"
-            if [ "$ELECTRON_RUNTIME_VERSION" != "26.6.10" ]; then
-              echo "FAIL: bundled Electron Framework version is $ELECTRON_RUNTIME_VERSION, expected 26.6.10"; exit 1
-            else
-              echo "OK: bundled Electron Framework version is 26.6.10"
-            fi
+          FRAMEWORK_BIN="$APP_DIR/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework"
+
+          if [ ! -f "$FRAMEWORK_PLIST" ]; then
+            echo "FAIL: Electron Framework Info.plist not found at $FRAMEWORK_PLIST"
+            echo "================ Frameworks directory contents (for diagnosis) ================"
+            find "$APP_DIR/Contents/Frameworks" -maxdepth 2 || true
+            exit 1
+          fi
+
+          set +e
+          ELECTRON_RUNTIME_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$FRAMEWORK_PLIST" 2>&1)
+          PLISTBUDDY_STATUS=$?
+          set -e
+          echo "Bundled Electron Framework version: $ELECTRON_RUNTIME_VERSION"
+          if [ $PLISTBUDDY_STATUS -ne 0 ] || [ "$ELECTRON_RUNTIME_VERSION" != "26.6.10" ]; then
+            echo "FAIL: bundled Electron Framework version is '$ELECTRON_RUNTIME_VERSION' (PlistBuddy exit $PLISTBUDDY_STATUS), expected 26.6.10"
+            echo "================ Full Electron Framework Info.plist (for diagnosis) ================"
+            plutil -p "$FRAMEWORK_PLIST" || true
+            exit 1
           else
-            echo "FAIL: Electron Framework Info.plist not found at $FRAMEWORK_PLIST"; exit 1
+            echo "OK: bundled Electron Framework version is 26.6.10"
+          fi
+
+          FRAMEWORK_IDENTIFIER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$FRAMEWORK_PLIST" 2>&1)
+          FRAMEWORK_EXECUTABLE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$FRAMEWORK_PLIST" 2>&1)
+          echo "Electron Framework CFBundleIdentifier: $FRAMEWORK_IDENTIFIER"
+          echo "Electron Framework CFBundleExecutable: $FRAMEWORK_EXECUTABLE"
+
+          echo "================ Electron Framework binary architecture ================"
+          if [ ! -f "$FRAMEWORK_BIN" ]; then
+            echo "FAIL: Electron Framework binary not found at $FRAMEWORK_BIN"; exit 1
+          fi
+          file "$FRAMEWORK_BIN"
+          if ! file "$FRAMEWORK_BIN" | grep -q "x86_64"; then
+            echo "FAIL: Electron Framework binary is not x86_64"; exit 1
+          else
+            echo "OK: Electron Framework binary is x86_64"
           fi
 
       - name: Launch packaged app and check for ERR_REQUIRE_ESM
