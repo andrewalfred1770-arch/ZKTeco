@@ -173,6 +173,7 @@ jobs:
 
       - name: Inspect packaged app (main entry, arch, min OS version, ESM check)
         working-directory: frontend
+        timeout-minutes: 10
         run: |
           set -e
           APP_DIR=$(find ../dist-electron-legacy -type d -name "*.app" | head -n1)
@@ -180,7 +181,18 @@ jobs:
 
           echo "================ Info.plist (arch / min OS) ================"
           plutil -p "$APP_DIR/Contents/Info.plist" | grep -iE "LSMinimumSystemVersion|CFBundleExecutable" || true
+          MIN_OS=$(plutil -extract LSMinimumSystemVersion raw "$APP_DIR/Contents/Info.plist")
+          if [ "$MIN_OS" != "10.14.0" ]; then
+            echo "FAIL: LSMinimumSystemVersion is $MIN_OS, expected 10.14.0"; exit 1
+          else
+            echo "OK: LSMinimumSystemVersion is 10.14.0"
+          fi
           file "$APP_DIR/Contents/MacOS/"* || true
+          if ! file "$APP_DIR/Contents/MacOS/"* | grep -q "x86_64"; then
+            echo "FAIL: packaged binary is not x86_64"; exit 1
+          else
+            echo "OK: packaged binary is x86_64"
+          fi
 
           RESOURCES="$APP_DIR/Contents/Resources"
           echo "================ Extracting app.asar ================"
@@ -207,10 +219,22 @@ jobs:
           fi
 
           echo "================ Electron runtime version ================"
-          "$APP_DIR/Contents/MacOS/"*  --version || true
+          FRAMEWORK_PLIST="$APP_DIR/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/Info.plist"
+          if [ -f "$FRAMEWORK_PLIST" ]; then
+            ELECTRON_RUNTIME_VERSION=$(plutil -extract CFBundleShortVersionString raw "$FRAMEWORK_PLIST")
+            echo "Bundled Electron Framework version: $ELECTRON_RUNTIME_VERSION"
+            if [ "$ELECTRON_RUNTIME_VERSION" != "26.6.10" ]; then
+              echo "FAIL: bundled Electron Framework version is $ELECTRON_RUNTIME_VERSION, expected 26.6.10"; exit 1
+            else
+              echo "OK: bundled Electron Framework version is 26.6.10"
+            fi
+          else
+            echo "FAIL: Electron Framework Info.plist not found at $FRAMEWORK_PLIST"; exit 1
+          fi
 
       - name: Launch packaged app and check for ERR_REQUIRE_ESM
         working-directory: frontend
+        timeout-minutes: 5
         run: |
           set +e
           APP_DIR=$(find ../dist-electron-legacy -type d -name "*.app" | head -n1)
@@ -222,6 +246,7 @@ jobs:
 
           sleep 8
           kill "$APP_PID" 2>/dev/null
+          pkill -f "$APP_DIR" 2>/dev/null
           wait "$APP_PID" 2>/dev/null
 
           echo "================ Launch output ================"

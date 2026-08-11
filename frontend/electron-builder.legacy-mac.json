@@ -19,6 +19,7 @@
     ],
     "icon": "assets/icon.png",
     "category": "public.app-category.business",
+    "minimumSystemVersion": "10.14.0",
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
     "artifactName": "PETSHROW-ERP-Mojave-${version}-${arch}.${ext}",
