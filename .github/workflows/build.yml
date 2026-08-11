@@ -230,7 +230,7 @@ jobs:
           fi
 
           set +e
-          ELECTRON_RUNTIME_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$FRAMEWORK_PLIST" 2>&1)
+          ELECTRON_RUNTIME_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$FRAMEWORK_PLIST" 2>&1)
           PLISTBUDDY_STATUS=$?
           set -e
           echo "Bundled Electron Framework version: $ELECTRON_RUNTIME_VERSION"
