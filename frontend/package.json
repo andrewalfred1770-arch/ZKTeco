@@ -22,7 +22,8 @@
   "electron:build:dir": "npm run build && electron-builder --win --x64 --dir",
   "electron:build:mac": "npm run build && electron-builder --mac",
   "electron:build:mac:dir": "npm run build && electron-builder --mac --dir",
-  "electron:build:mac:legacy": "npm run build && electron-builder --mac --config electron-builder.legacy-mac.json",
+  "build:mojave-main": "node scripts/build-mojave-main.mjs",
+  "electron:build:mac:legacy": "npm run build && npm run build:mojave-main && electron-builder --mac --config electron-builder.legacy-mac.json",
   "electron:build:manager": "npm run build:manager && electron-builder --win --x64 --config electron-builder.manager.json",
   "electron:build:manager:mac": "npm run build:manager && electron-builder --mac --config electron-builder.manager.json"
 },

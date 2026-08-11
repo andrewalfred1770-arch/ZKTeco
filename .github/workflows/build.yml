@@ -87,8 +87,15 @@ jobs:
           echo "================ DIST DIRECTORIES ================"
           find . -type d -name "dist*"
 
+      - name: Upload Modern DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: petshrow-macos-modern-verify
+          path: dist-electron/*.dmg
+          if-no-files-found: error
+
       - name: Upload Modern DMG to GitHub Release
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -97,9 +104,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-macos-legacy:
-    name: Build macOS Client (Legacy 10.14)
-    runs-on: macos-latest
+  build-macos-mojave:
+    name: Build macOS Client (Mojave / Electron 26.6.10)
+    runs-on: macos-15-intel
 
     permissions:
       contents: write
@@ -142,7 +149,11 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      - name: Build macOS Legacy DMG
+      - name: Build Mojave CommonJS main-process bundle
+        working-directory: frontend
+        run: npm run build:mojave-main
+
+      - name: Build macOS Mojave DMG
         working-directory: frontend
         run: npx electron-builder --mac --config electron-builder.legacy-mac.json --publish=never
 
@@ -160,8 +171,78 @@ jobs:
           echo "================ DIST DIRECTORIES ================"
           find . -type d -name "dist*"
 
-      - name: Upload Legacy DMG to GitHub Release
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+      - name: Inspect packaged app (main entry, arch, min OS version, ESM check)
+        working-directory: frontend
+        run: |
+          set -e
+          APP_DIR=$(find ../dist-electron-legacy -maxdepth 1 -type d -name "*.app" | head -n1)
+          echo "App bundle: $APP_DIR"
+
+          echo "================ Info.plist (arch / min OS) ================"
+          plutil -p "$APP_DIR/Contents/Info.plist" | grep -iE "LSMinimumSystemVersion|CFBundleExecutable" || true
+          file "$APP_DIR/Contents/MacOS/"* || true
+
+          RESOURCES="$APP_DIR/Contents/Resources"
+          echo "================ Extracting app.asar ================"
+          npx asar extract "$RESOURCES/app.asar" /tmp/asar-extracted
+
+          echo "================ packaged package.json main field ================"
+          node -e "console.log(require('/tmp/asar-extracted/package.json').main)"
+
+          echo "================ electron.mojave.cjs present? ================"
+          ls -la /tmp/asar-extracted/electron.mojave.cjs
+
+          echo "================ electron.js should NOT be present ================"
+          if [ -e /tmp/asar-extracted/electron.js ]; then
+            echo "FAIL: electron.js is packaged"; exit 1
+          else
+            echo "OK: electron.js not packaged"
+          fi
+
+          echo "================ ESM syntax check on electron.mojave.cjs ================"
+          if grep -nE "^\s*(import |export )" /tmp/asar-extracted/electron.mojave.cjs; then
+            echo "FAIL: ESM import/export syntax found in electron.mojave.cjs"; exit 1
+          else
+            echo "OK: no ESM import/export syntax found"
+          fi
+
+          echo "================ Electron runtime version ================"
+          "$APP_DIR/Contents/MacOS/"*  --version || true
+
+      - name: Launch packaged app and check for ERR_REQUIRE_ESM
+        working-directory: frontend
+        run: |
+          set +e
+          APP_DIR=$(find ../dist-electron-legacy -maxdepth 1 -type d -name "*.app" | head -n1)
+          BIN=$(find "$APP_DIR/Contents/MacOS" -type f -maxdepth 1 | head -n1)
+          echo "Launching: $BIN"
+
+          "$BIN" > /tmp/app-launch.log 2>&1 &
+          APP_PID=$!
+
+          sleep 8
+          kill "$APP_PID" 2>/dev/null
+          wait "$APP_PID" 2>/dev/null
+
+          echo "================ Launch output ================"
+          cat /tmp/app-launch.log
+
+          if grep -q "ERR_REQUIRE_ESM" /tmp/app-launch.log; then
+            echo "FAIL: ERR_REQUIRE_ESM detected in launch output"
+            exit 1
+          else
+            echo "OK: no ERR_REQUIRE_ESM in launch output"
+          fi
+
+      - name: Upload Mojave DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: petshrow-macos-mojave-verify
+          path: dist-electron-legacy/*.dmg
+          if-no-files-found: error
+
+      - name: Upload Mojave DMG to GitHub Release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: |

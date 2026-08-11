@@ -8,6 +8,10 @@
 
   "electronVersion": "26.6.10",
 
+  "extraMetadata": {
+    "main": "electron.mojave.cjs"
+  },
+
   "mac": {
     "target": [
       { "target": "dmg", "arch": ["x64"] },
@@ -56,13 +60,14 @@
   },
 
   "files": [
-    "electron.js",
-    "electron/**/*",
+    "electron.mojave.cjs",
     "preload.cjs",
     "splashPreload.cjs",
     "assets/**/*",
     "!assets/*.psd",
-    "!**/*.map"
+    "!**/*.map",
+    "!electron.js",
+    "!electron/**/*"
   ],
 
   "directories": {
