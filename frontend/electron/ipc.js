@@ -100,25 +100,51 @@ const SOCKET_AUTH_REJECTION_MESSAGES = new Set([
   'token غير صالح',
 ]);
 
-// Resolves to 'connected' | 'auth_required' | 'error'.
-function testSocketReachable(baseUrl, timeoutMs = 3000) {
+// Classifies a socket.io connect_error into a status the UI can render
+// distinctly, instead of collapsing every non-auth failure into one opaque
+// 'error' — keeps 'auth_required' exactly as before, splits the rest by what
+// engine.io actually reported (timeout / refused / transport-level / other).
+function classifySocketError(err) {
+  const message = err?.message || '';
+  if (SOCKET_AUTH_REJECTION_MESSAGES.has(message)) return { status: 'auth_required', detail: message };
+  if (message === 'timeout') return { status: 'timeout', detail: 'Socket.IO connection timed out' };
+  const description = err?.description;
+  const code = description?.code || (typeof description === 'string' ? description : null);
+  if (code === 'ECONNREFUSED') return { status: 'connection_refused', detail: 'connection refused' };
+  if (/xhr poll error|websocket error/i.test(message)) {
+    return { status: 'transport_error', detail: message };
+  }
+  return { status: 'network_error', detail: message || 'unknown Socket.IO error' };
+}
+
+// Resolves to { status, detail }. status: 'connected' | 'auth_required' |
+// 'timeout' | 'connection_refused' | 'transport_error' | 'network_error'.
+//
+// transports is deliberately 'polling' first, matching src/lib/socket.js (the
+// real persistent application socket) — a probe that dials 'websocket' first
+// answers a different question ("can Electron's main process open a raw WS
+// over this network path") than the one the UI is actually asking ("can the
+// app's real socket connect"), and can fail within a short timeout on links
+// (e.g. Tailscale) where the polling-first handshake the app actually uses
+// succeeds fine. reconnection stays false — this is a single bounded probe
+// for a UI button, not a long-lived connection; the app's real socket keeps
+// its own infinite-retry policy untouched.
+function testSocketReachable(baseUrl, timeoutMs = 8000) {
   return new Promise((resolve) => {
     let settled = false;
     let sock;
-    const finish = (status) => {
+    const finish = (result) => {
       if (settled) return;
       settled = true;
       try { sock?.close(); } catch {}
-      resolve(status);
+      resolve(result);
     };
     try {
-      sock = socketIOClient(baseUrl, { transports: ['websocket', 'polling'], reconnection: false, timeout: timeoutMs });
-      sock.on('connect', () => finish('connected'));
-      sock.on('connect_error', (err) => {
-        finish(SOCKET_AUTH_REJECTION_MESSAGES.has(err?.message) ? 'auth_required' : 'error');
-      });
-    } catch { finish('error'); return; }
-    setTimeout(() => finish('error'), timeoutMs);
+      sock = socketIOClient(baseUrl, { transports: ['polling', 'websocket'], reconnection: false, timeout: timeoutMs });
+      sock.on('connect', () => finish({ status: 'connected', detail: null }));
+      sock.on('connect_error', (err) => finish(classifySocketError(err)));
+    } catch (err) { finish({ status: 'network_error', detail: err?.message || 'socket init failed' }); return; }
+    setTimeout(() => finish({ status: 'timeout', detail: 'Socket.IO connection timed out' }), timeoutMs);
   });
 }
 
@@ -128,18 +154,20 @@ function testSocketReachable(baseUrl, timeoutMs = 3000) {
 ipcMain.handle('connection:test', async (_e, { mode, serverUrl } = {}) => {
   const baseUrl = getEffectiveBackendBaseUrl({ mode: mode || 'local', serverUrl: serverUrl || '' });
   const health = await fetchHealth(baseUrl, 4000);
-  const socketStatus = health.ok ? await testSocketReachable(baseUrl, 3000) : 'unreachable';
+  const socket = health.ok ? await testSocketReachable(baseUrl) : { status: 'unreachable', detail: null };
   const remoteApiVersion = health.body?.apiVersion ?? null;
   return {
     baseUrl,
     reachable: health.ok,
     dbConnected: health.body?.db === 'connected',
-    socketStatus,
+    socketStatus: socket.status,
     remoteVersion: health.body?.version || null,
     remoteApiVersion,
     requiredApiVersion: REQUIRED_API_VERSION,
     versionCompatible: remoteApiVersion == null ? null : remoteApiVersion === REQUIRED_API_VERSION,
-    error: health.ok ? null : (health.error || `HTTP ${health.status ?? 'no response'}`),
+    error: !health.ok
+      ? (health.error || `HTTP ${health.status ?? 'no response'}`)
+      : (socket.status !== 'connected' && socket.status !== 'auth_required' ? socket.detail : null),
   };
 });
 
