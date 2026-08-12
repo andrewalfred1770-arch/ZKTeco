@@ -1,6 +1,6 @@
 {
   "name": "petshrow-erp",
-  "version": "2.28.0",
+  "version": "20.26.10",
   "description": "PETSHROW ERP — نظام الموارد البشرية والرواتب",
   "author": "PETSHROW",
   "private": true,
@@ -23,7 +23,7 @@
   "electron:build:mac": "npm run build && electron-builder --mac",
   "electron:build:mac:dir": "npm run build && electron-builder --mac --dir",
   "build:mojave-main": "node scripts/build-mojave-main.mjs",
-  "electron:build:mac:legacy": "npm run build && npm run build:mojave-main && electron-builder --mac --config electron-builder.legacy-mac.json",
+  "electron:build:mac:legacy": "npm run build:manager && npm run build:mojave-main && electron-builder --mac --config electron-builder.legacy-mac.json",
   "electron:build:manager": "npm run build:manager && electron-builder --win --x64 --config electron-builder.manager.json",
   "electron:build:manager:mac": "npm run build:manager && electron-builder --mac --config electron-builder.manager.json"
 },

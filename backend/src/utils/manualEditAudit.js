@@ -19,13 +19,18 @@ const prisma = getPrisma();
  * @param {string} [opts.userName]
  * @param {string} [opts.userRole]
  * @param {string} [opts.source] - origin of the edit, e.g. 'inline-grid', 'modal'
+ * @param {object} [opts.tx] - optional Prisma transaction client; when given,
+ *   this audit write participates in the caller's own `$transaction(...)`
+ *   instead of the shared singleton, so it commits/rolls back together with
+ *   whatever it's auditing. Omitting it is identical to previous behavior.
  */
 async function writeAudit({
   employeeId, attendanceDailyId = null, payrollId = null,
   fieldName, oldValue = null, newValue = null, reason = null,
-  userId = 0, userName = 'HR', userRole = 'hr', source = 'inline-grid',
+  userId = 0, userName = 'HR', userRole = 'hr', source = 'inline-grid', tx = null,
 }) {
-  const row = await prisma.manualEditAuditLog.create({
+  const client = tx || prisma;
+  const row = await client.manualEditAuditLog.create({
     data: {
       employeeId,
       attendanceDailyId,

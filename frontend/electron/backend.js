@@ -1,9 +1,9 @@
 import { spawn, execSync } from 'child_process';
-import { existsSync, mkdirSync, copyFileSync } from 'fs';
+import { existsSync, mkdirSync, copyFileSync, readFileSync } from 'fs';
 import net from 'net';
 import http from 'http';
 import { app } from 'electron';
-import { BACKEND_PORT, IS_DEV, HEALTH_URL } from './constants.js';
+import { BACKEND_PORT, IS_DEV } from './constants.js';
 import { isBenignPipeError } from './observability.js';
 import { state } from './state.js';
 
@@ -19,29 +19,50 @@ function isPortListening(port) {
   });
 }
 
-// ─── Quick HTTP ping ──────────────────────────────────────────────────────────
-function quickPing(timeoutMs = 500) {
-  return new Promise(resolve => {
-    const req = http.get(HEALTH_URL, res => { res.resume(); resolve(true); })
-      .on('error', () => resolve(false));
-    req.setTimeout(timeoutMs, () => { req.destroy(); resolve(false); });
-  });
+// ─── Read AUTH_ENABLED straight out of the persistent .env ───────────────────
+// Deliberately not a full dotenv parse (no dependency for one key): a plain
+// `KEY=value` / `KEY="value"` line scan. Returns null when the file is
+// missing/unreadable or the key isn't present — callers treat null as
+// "can't verify" and fall back to the previous trusting behavior rather than
+// disrupting a healthy backend on a false alarm.
+function readExpectedAuthEnabled(envFile) {
+  if (!envFile || !existsSync(envFile)) return null;
+  try {
+    const text = readFileSync(envFile, 'utf8');
+    const match = text.match(/^\s*AUTH_ENABLED\s*=\s*"?(true|false)"?\s*$/mi);
+    return match ? match[1].toLowerCase() === 'true' : null;
+  } catch {
+    return null;
+  }
 }
 
 // ─── Kill stale backend on this port ─────────────────────────────────────────
-export async function killStaleBackend() {
+// `paths` is optional (callers that can't supply it yet keep the old
+// trusting behavior) — when given, an already-answering backend is only
+// adopted if its own /api/health confirms the SAME AUTH_ENABLED value the
+// current persistent .env holds. A process that was spawned before a later
+// .env edit still answers health checks fine but is running with a frozen,
+// now-stale env — adopting it silently would mean the edit never takes
+// effect until someone manually kills that process. Mismatch → fall through
+// and replace it with a freshly-spawned backend instead.
+export async function killStaleBackend(paths) {
   const inUse = await isPortListening(BACKEND_PORT);
   if (!inUse) return;
 
   console.log(`[Electron] Port ${BACKEND_PORT} in use — checking if it's a stale process`);
   try {
     // Check if it's OUR backend (responds to /api/health)
-    const alive = await quickPing(1000);
-    if (alive) {
-      // Backend already up — don't start another
-      console.log('[Electron] Backend already running — will use it');
-      state.backendReady = true;
-      return;
+    const health = await fetchHealth(`http://localhost:${BACKEND_PORT}`, 1000);
+    if (health.ok) {
+      const expectedAuth = readExpectedAuthEnabled(paths?.envFile);
+      const actualAuth   = health.body?.authEnabled;
+      if (expectedAuth === null || actualAuth === undefined || actualAuth === expectedAuth) {
+        // Backend already up and (as far as we can tell) matches current config — don't start another
+        console.log('[Electron] Backend already running — will use it');
+        state.backendReady = true;
+        return;
+      }
+      console.log(`[Electron] Backend on port ${BACKEND_PORT} is running with a stale AUTH_ENABLED (${actualAuth}, expected ${expectedAuth}) — replacing it with a freshly-configured process`);
     }
   } catch {}
 

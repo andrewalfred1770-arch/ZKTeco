@@ -309,7 +309,7 @@ const DEFAULT_SETTINGS = {
 export default function PrintPreviewModal({
   isOpen, onClose, data = [],
   reportType = 'attendance_daily',
-  customColumns = null, title = '', meta = {},
+  customColumns = null, customStats = null, title = '', meta = {},
   orientation = 'landscape',
 }) {
   const { isLight } = useTheme();
@@ -443,6 +443,11 @@ export default function PrintPreviewModal({
   }, [data, activeReport]);
 
   const stats = useMemo(() => {
+    // Phase 20.4: mirrors the customColumns escape hatch above — a caller
+    // that has already computed its own summary (e.g. EmployeeMonthlyStatement
+    // Drawer, whose on-screen KPI cards must stay identical to what prints)
+    // passes it straight through instead of this report-type-keyed default.
+    if (customStats) return customStats;
     if (activeReport.startsWith('attendance_daily') || activeReport === 'attendance_dashboard') {
       return [
         { label:'حاضر',  value: data.filter(r => ['present','late','early_leave'].includes(r.status)).length, color:'green' },
@@ -473,7 +478,7 @@ export default function PrintPreviewModal({
       ];
     }
     return null;
-  }, [data, activeReport]);
+  }, [data, activeReport, customStats]);
 
   const watermarkText = settings.watermarkEnabled ? (settings.watermarkText || brand.name) : '';
 
@@ -630,7 +635,7 @@ export default function PrintPreviewModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
-      style={{ position:'fixed', inset:0, zIndex:9999, background:'var(--surface)', display:'flex', flexDirection:'column', outline:'none' }} dir="rtl">
+      style={{ position:'fixed', inset:0, zIndex:'var(--z-modal)', background:'var(--surface)', display:'flex', flexDirection:'column', outline:'none' }} dir="rtl">
         {/* ── Toolbar — three zones: identity · view controls · export actions ── */}
         <div style={{
           padding:'10px 16px', background:'var(--surface)', borderBottom:'1px solid var(--border)',

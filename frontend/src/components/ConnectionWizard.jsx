@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Server, CheckCircle2, XCircle, Loader2, PlugZap, ArrowRight } from 'lucide-react';
+import { Server, CheckCircle2, XCircle, Info, Loader2, PlugZap, ArrowRight } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 
 // ─── Manager Edition — First-Run Connection Wizard (EP-011) ──────────────────
@@ -14,11 +14,14 @@ import { useTheme } from '../contexts/ThemeContext';
 // app relaunches so lifecycle.js picks up the new mode from a clean start.
 
 function ResultRow({ label, state }) {
+  // state: true | false | null (unknown/not-applicable) | 'auth_required'
   const icon = state === true
     ? <CheckCircle2 style={{ width: 15, height: 15, color: '#10b981' }} />
-    : state === false
-      ? <XCircle style={{ width: 15, height: 15, color: '#ef4444' }} />
-      : <span style={{ width: 15, height: 15, display: 'inline-block', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>—</span>;
+    : state === 'auth_required'
+      ? <Info style={{ width: 15, height: 15, color: '#3b82f6' }} />
+      : state === false
+        ? <XCircle style={{ width: 15, height: 15, color: '#ef4444' }} />
+        : <span style={{ width: 15, height: 15, display: 'inline-block', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>—</span>;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0' }}>
       {icon}
@@ -129,7 +132,10 @@ export default function ConnectionWizard() {
           <div style={{ padding: '4px 2px 8px', borderTop: '1px solid var(--border)', marginBottom: 4 }}>
             <ResultRow label="الخادم قابل للوصول" state={result.reachable} />
             <ResultRow label="قاعدة البيانات متصلة" state={result.reachable ? result.dbConnected : null} />
-            <ResultRow label="Socket.IO متصل" state={result.reachable ? result.socketConnected : null} />
+            <ResultRow
+              label={result.socketStatus === 'auth_required' ? 'Socket.IO يتطلب تسجيل الدخول' : 'Socket.IO متصل'}
+              state={result.reachable ? (result.socketStatus === 'connected' ? true : result.socketStatus === 'auth_required' ? 'auth_required' : false) : null}
+            />
             <ResultRow label="الإصدار متوافق" state={result.versionCompatible} />
             {result.remoteVersion && (
               <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 4 }}>

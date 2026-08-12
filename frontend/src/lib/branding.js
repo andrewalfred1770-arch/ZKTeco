@@ -22,8 +22,8 @@ export const BRAND = {
   module:      'الحضور والرواتب',
 
   // Meta
-  version:     '2.28.0',
-  buildMarker: 'BUILD: 2026-08-03-release-2.28.0',
+  version:     '20.26.10',
+  buildMarker: 'BUILD: 2026-08-12-release-20.26.10-central-server-auth-runtime-fix',
   copyright:   `© ${new Date().getFullYear()} PETSHROW ERP`,
 
   // Brand colors (kept in sync with the enterprise palette in index.css)
@@ -46,7 +46,8 @@ export const FILE_PREFIX = 'PETSHROW';
  * monogram as a fallback in that case).
  */
 export function useCompanyBrand() {
-  const settings = useCompanySettingsStore((s) => s.settings);
+  const settings   = useCompanySettingsStore((s) => s.settings);
+  const fetchError = useCompanySettingsStore((s) => s.fetchError);
 
   return useMemo(() => {
     const s = settings || {};
@@ -84,8 +85,9 @@ export function useCompanyBrand() {
       // is no other consumer relying on the BRAND.copyright fallback).
       printFooterText:    s.print_footer_text || '',
       printContactText:   s.print_contact_text || [s.company_address, s.company_phone, s.company_email].filter(Boolean).join(' · '),
+      fetchError,
     };
-  }, [settings]);
+  }, [settings, fetchError]);
 }
 
 export default BRAND;

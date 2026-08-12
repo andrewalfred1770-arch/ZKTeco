@@ -8,9 +8,33 @@ const { getRules } = require('../engines/rulesEngine');
 const { writeAudit } = require('../utils/manualEditAudit');
 const { monthRange } = require('../utils/monthRange');
 const { MONTHS_AR } = require('../utils/constants');
+const { pLimit } = require('../utils/pLimit');
 
 const prisma = getPrisma();
 router.use(authenticate, authorize('admin', 'hr'));
+
+// Phase 24.1: bounds every DB operation this route issues — the batch
+// preload queries AND the per-employee computePayroll() fan-out — through
+// ONE shared, module-level limiter. A limiter re-created per request only
+// bounds concurrency *within* a single request; the Prisma connection pool
+// is a process-wide resource, so with many simultaneous requests in flight
+// (e.g. several HR users opening the payroll page around the same time)
+// per-request bounding still lets N-requests × limit queries hit the pool
+// at once — measured empirically: even limit=10..25 per request still
+// produced 100% pool-timeout failures at HTTP-concurrency=50.
+//
+// Measured sweep (Load-Test DB, 1,067 employees, 50 concurrent identical
+// GET /api/payroll requests, default Prisma pool=13): global limiter values
+// 10/15/20/25/50 ALL produced 0 pool-timeout errors, 0 P2024, peak MySQL
+// connections capped at 27 — latency plateaued at p50≈24-27s across every
+// value tested (the remaining latency past ~15 is CPU-bound formula
+// computation on Node's single JS thread under 50× duplicate full-company
+// requests, not DB concurrency — raising this further does not help it).
+// 15 is chosen to leave headroom under the 13-connection pool for other
+// routes' concurrent traffic (scheduler, monthly-detail, etc.) sharing the
+// same process, rather than maximizing this route's throughput in isolation.
+const PAYROLL_COMPUTE_CONCURRENCY = parseInt(process.env.PAYROLL_COMPUTE_CONCURRENCY, 10) || 15;
+const payrollLimit = pLimit(PAYROLL_COMPUTE_CONCURRENCY);
 
 router.get('/', async (req, res) => {
   try {
@@ -33,11 +57,72 @@ router.get('/', async (req, res) => {
       where,
       include: {
         employee: {
-          select: { code: true, name: true },
+          select: { code: true, name: true, status: true, effectiveStopDate: true },
         },
       },
       orderBy: { employee: { name: 'asc' } },
     });
+
+    // Phase 22.1: authoritative eligibility rule — "استبعاد الموظف الموقوف من
+    // المرتبات بعد تاريخ الإيقاف" (Rules page, category "payroll", key
+    // exclude_stopped_employees_from_payroll). Gated by the rule's own
+    // enabled state like every other Dynamic Rules Engine key: when the rule
+    // row is inactive OR its value isn't 'true', this route applies NO
+    // eligibility filtering at all (pre-Phase-20.5 raw behavior) — the
+    // policy is off, not silently replaced by hardcoded logic here.
+    const rules = await getRules();
+    const stoppedEmployeeFilterEnabled = rules['exclude_stopped_employees_from_payroll'] === 'true';
+
+    let eligiblePayrolls = payrolls;
+    if (stoppedEmployeeFilterEnabled) {
+      const inactiveIds = [...new Set(
+        payrolls
+          .filter(p => p.employee.status === false && !['finalized', 'paid'].includes(p.status))
+          .map(p => p.employeeId)
+      )];
+
+      // Legacy fallback ONLY for inactive employees with no effectiveStopDate
+      // on record (pre-Phase-22.1 data — the field is never auto-backfilled,
+      // see Phase 22.1 audit). Once HR sets an effectiveStopDate for these via
+      // the Employees page, this branch stops applying to them entirely and
+      // the date-based rule below takes over. This is not a second competing
+      // eligibility system — it's the single decision function's handling of
+      // "authoritative date missing", not an independent parallel filter.
+      const undatedInactiveIds = inactiveIds.filter(id => {
+        const p = payrolls.find(row => row.employeeId === id);
+        return p && p.employee.effectiveStopDate == null;
+      });
+      let eligibleUndatedIds = new Set();
+      if (undatedInactiveIds.length) {
+        const { startDate, endDate } = monthRange(y, m);
+        const attended = await prisma.attendanceDaily.findMany({
+          where: {
+            employeeId: { in: undatedInactiveIds },
+            date: { gte: startDate, lte: endDate },
+            OR: [{ checkIn: { not: null } }, { checkOut: { not: null } }],
+          },
+          select: { employeeId: true },
+          distinct: ['employeeId'],
+        });
+        eligibleUndatedIds = new Set(attended.map(a => a.employeeId));
+      }
+
+      // Month-boundary convention (Phase 22.1 §5, verified against CASE A-D):
+      // eligible for month (m,y) iff effectiveStopDate is strictly AFTER the
+      // first day of that month — i.e. the stop date itself is the first
+      // excluded operational day. A stop date of Aug 1 excludes August
+      // entirely; Aug 15 keeps August (existing partial-month payroll
+      // behavior applies unchanged) but excludes September.
+      const { startDate: monthStart } = monthRange(y, m);
+      eligiblePayrolls = payrolls.filter(p => {
+        if (p.employee.status === true) return true;
+        if (['finalized', 'paid'].includes(p.status)) return true;
+        if (p.employee.effectiveStopDate != null) {
+          return new Date(p.employee.effectiveStopDate).getTime() > monthStart.getTime();
+        }
+        return eligibleUndatedIds.has(p.employeeId);
+      });
+    }
 
     // EF-017: netSalary (and the other money/attendance fields the grid
     // displays) must come from the same single canonical source every other
@@ -51,11 +136,51 @@ router.get('/', async (req, res) => {
     // (id/employeeId/month/year/status/notes/timestamps/employee) still come
     // from the stored row; every computed field is overlaid fresh, live, per
     // request — no value is ever persisted or cached here.
-    const fresh = await Promise.all(payrolls.map(p => computePayroll(p.employeeId, p.month, p.year)));
-    const result = payrolls.map((p, i) => {
+    // Phase 24.1: batch-preload the 4 per-employee queries computePayroll()
+    // would otherwise issue individually (employee, attendanceDaily,
+    // attendanceAdjustment, existing payroll row) into 4 total queries, then
+    // fan out through a bounded concurrency limiter instead of an unbounded
+    // Promise.all. Data handed to computePayroll() is identical row-for-row
+    // to what its own per-employee queries would have returned — same
+    // filters, same date range, same fields — so this is a data-access
+    // change only; the formula path inside computePayroll() is untouched.
+    const empIds = eligiblePayrolls.map(p => p.employeeId);
+    const { startDate: mStart, endDate: mEnd } = monthRange(y, m);
+    const [preloadEmployees, preloadRecords, preloadAdjustments, preloadExistingPayrolls] = empIds.length
+      ? await Promise.all([
+          payrollLimit(() => prisma.employee.findMany({ where: { id: { in: empIds } } })),
+          payrollLimit(() => prisma.attendanceDaily.findMany({ where: { employeeId: { in: empIds }, date: { gte: mStart, lte: mEnd } } })),
+          payrollLimit(() => prisma.attendanceAdjustment.findMany({ where: { employeeId: { in: empIds }, date: { gte: mStart, lte: mEnd }, approvalStatus: 'approved' } })),
+          payrollLimit(() => prisma.payroll.findMany({ where: { employeeId: { in: empIds }, month: m, year: y }, select: { employeeId: true, bonus: true, manualDeductionAdjustment: true } })),
+        ])
+      : [[], [], [], []];
+
+    const employeeById = new Map(preloadEmployees.map(e => [e.id, e]));
+    const groupByEmployeeId = (rows) => {
+      const map = new Map();
+      for (const row of rows) {
+        if (!map.has(row.employeeId)) map.set(row.employeeId, []);
+        map.get(row.employeeId).push(row);
+      }
+      return map;
+    };
+    const recordsByEmployee = groupByEmployeeId(preloadRecords);
+    const adjustmentsByEmployee = groupByEmployeeId(preloadAdjustments);
+    const existingPayrollByEmployee = new Map(preloadExistingPayrolls.map(p => [p.employeeId, p]));
+
+    const fresh = await Promise.all(eligiblePayrolls.map(p => payrollLimit(() => computePayroll(p.employeeId, p.month, p.year, {
+      preload: {
+        employee: employeeById.get(p.employeeId) || null,
+        rawRecords: recordsByEmployee.get(p.employeeId) || [],
+        monthAdjustments: adjustmentsByEmployee.get(p.employeeId) || [],
+        existingPayroll: existingPayrollByEmployee.get(p.employeeId) || null,
+      },
+    }))));
+    const result = eligiblePayrolls.map((p, i) => {
       const c = fresh[i];
       return {
         ...p,
+        employee: { code: p.employee.code, name: p.employee.name },
         basicSalary: c.basicSalary,
         dailyRate: c.dailyRate,
         hourlyRate: c.hourlyRate,
@@ -172,69 +297,80 @@ router.put('/:id', async (req, res) => {
     // "الراتب الأساسي" is sourced from the EMPLOYEE record — the engine derives
     // payroll.basicSalary from employee.salary on every recompute. So persist the
     // edit on the employee, not the payroll row (otherwise it would revert).
-    let salaryBefore = null, salaryAfter = null;
+    let newSalary = null;
     if (basicSalary !== undefined) {
-      const newSalary = parseFloat(basicSalary);
+      newSalary = parseFloat(basicSalary);
       if (isNaN(newSalary) || newSalary < 0) {
         return res.status(400).json({ error: 'قيمة الراتب الأساسي غير صالحة' });
       }
-      const emp = await prisma.employee.findUnique({ where: { id: payroll.employeeId }, select: { salary: true } });
-      salaryBefore = emp?.salary ?? null;
-      salaryAfter  = newSalary;
-      await prisma.employee.update({ where: { id: payroll.employeeId }, data: { salary: newSalary } });
     }
 
-    // EF-003.3.3: the bonus/manualDeductionAdjustment write and the recalc
-    // that immediately follows share the SAME payroll-key lock introduced in
-    // EF-003.3.2 — closing the window where a concurrent calculatePayroll()
-    // call (from an unrelated trigger) could read these fields between this
-    // write committing and this route's own recalc running. Calls
-    // calculatePayrollImpl() (the unlocked implementation) rather than the
-    // locked calculatePayroll() wrapper, since this block already holds the
-    // lock for this key — calling the locked wrapper here would self-deadlock
-    // (the inner acquisition would wait on this same block's own completion).
+    // EF-003.3.3 / EF-029.1: the employee-salary write, the payroll-field
+    // write, the recalculation upsert, and every audit-log row for this
+    // request now commit or roll back together in one prisma.$transaction —
+    // previously these were separate un-transacted calls, so a crash/DB error
+    // between steps (e.g. after the salary/payroll changed but before the
+    // audit row was written) could leave a changed salary or payroll with no
+    // audit trail. withPayrollKeyLock stays the OUTER wrapper exactly as
+    // before: it serializes concurrent calls for this employee/month (an
+    // in-process ordering guarantee against a DIFFERENT concurrent trigger),
+    // while $transaction gives atomicity for THIS call's own writes — the two
+    // solve different problems and are not redundant. calculatePayrollImpl()
+    // (the unlocked implementation) is still used inside the lock, exactly as
+    // before, to avoid self-deadlocking against the locked calculatePayroll()
+    // wrapper. No formula, schema, or calculation logic is touched here.
+    let salaryBefore = null, salaryAfter = null;
+    let updated;
     await withPayrollKeyLock(payroll.employeeId, payroll.month, payroll.year, async () => {
-      if (Object.keys(data).length) {
-        await prisma.payroll.update({ where: { id: payroll.id }, data });
-      }
+      await prisma.$transaction(async (tx) => {
+        if (newSalary !== null) {
+          const emp = await tx.employee.findUnique({ where: { id: payroll.employeeId }, select: { salary: true } });
+          salaryBefore = emp?.salary ?? null;
+          salaryAfter = newSalary;
+          await tx.employee.update({ where: { id: payroll.employeeId }, data: { salary: newSalary } });
+        }
 
-      await calculatePayrollImpl(payroll.employeeId, payroll.month, payroll.year);
-    });
+        if (Object.keys(data).length) {
+          await tx.payroll.update({ where: { id: payroll.id }, data });
+        }
 
-    const updated = await prisma.payroll.findUnique({
-      where: { id: payroll.id },
-      include: { employee: true },
-    });
+        await calculatePayrollImpl(payroll.employeeId, payroll.month, payroll.year, { tx });
 
-    for (const field of ['bonus', 'manualDeductionAdjustment', 'notes', 'status']) {
-      const oldVal = before[field];
-      const newVal = updated[field];
-      if (String(oldVal ?? '') !== String(newVal ?? '')) {
-        await writeAudit({
-          employeeId: payroll.employeeId,
-          payrollId: payroll.id,
-          fieldName: field,
-          oldValue: oldVal,
-          newValue: newVal,
-          reason: reason || null,
-          userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole,
-        });
-      }
-    }
+        updated = await tx.payroll.findUnique({ where: { id: payroll.id }, include: { employee: true } });
 
-    // basicSalary lives on the employee record, so audit it from the salary
-    // before/after captured above (not from the payroll row diff).
-    if (salaryBefore !== null && String(salaryBefore) !== String(salaryAfter)) {
-      await writeAudit({
-        employeeId: payroll.employeeId,
-        payrollId: payroll.id,
-        fieldName: 'basicSalary',
-        oldValue: salaryBefore,
-        newValue: salaryAfter,
-        reason: reason || null,
-        userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole,
+        for (const field of ['bonus', 'manualDeductionAdjustment', 'notes', 'status']) {
+          const oldVal = before[field];
+          const newVal = updated[field];
+          if (String(oldVal ?? '') !== String(newVal ?? '')) {
+            await writeAudit({
+              employeeId: payroll.employeeId,
+              payrollId: payroll.id,
+              fieldName: field,
+              oldValue: oldVal,
+              newValue: newVal,
+              reason: reason || null,
+              userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole,
+              tx,
+            });
+          }
+        }
+
+        // basicSalary lives on the employee record, so audit it from the
+        // salary before/after captured above (not from the payroll row diff).
+        if (salaryBefore !== null && String(salaryBefore) !== String(salaryAfter)) {
+          await writeAudit({
+            employeeId: payroll.employeeId,
+            payrollId: payroll.id,
+            fieldName: 'basicSalary',
+            oldValue: salaryBefore,
+            newValue: salaryAfter,
+            reason: reason || null,
+            userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole,
+            tx,
+          });
+        }
       });
-    }
+    });
 
     res.json(updated);
   } catch (err) {
@@ -258,11 +394,24 @@ router.put('/:id/advances', async (req, res) => {
     if (!payroll) return res.status(404).json({ error: 'Payroll not found' });
     const { employeeId, month, year } = payroll;
 
-    const existingAdvances = await prisma.advance.findMany({ where: { employeeId, month, year } });
-    const currentTotal = existingAdvances.reduce((s, a) => s + a.amount, 0);
-    const delta = parseFloat((newTotal - currentTotal).toFixed(2));
+    // EF-029.2: this route treats `amount` as the desired ABSOLUTE total and
+    // computes a delta Advance to reach it. Previously the read-current-total
+    // → create-delta step ran with no lock at all, so two near-simultaneous
+    // edits of the same payroll's advances could both read the same stale
+    // total and both apply their own delta — the second caller's "set to X"
+    // intent silently becomes "add X minus whatever the first caller also
+    // added". Wrapping the read + validation + write in the SAME
+    // withPayrollKeyLock this route already needed for calculatePayroll
+    // closes that window using the existing lock — no new locking primitive,
+    // no schema change. The DB write itself (advance create + payroll upsert
+    // + audit) is further wrapped in one prisma.$transaction so it commits or
+    // rolls back as a unit, matching PUT /:id's hardening above.
+    let currentTotal, delta, updated;
+    await withPayrollKeyLock(employeeId, month, year, async () => {
+      const existingAdvances = await prisma.advance.findMany({ where: { employeeId, month, year } });
+      currentTotal = existingAdvances.reduce((s, a) => s + a.amount, 0);
+      delta = parseFloat((newTotal - currentTotal).toFixed(2));
 
-    if (delta !== 0) {
       if (delta > 0) {
         const employee = await prisma.employee.findUnique({ where: { id: employeeId } });
         const rules = await getRules(employee.branchId, employee.departmentId, employee.id);
@@ -270,38 +419,41 @@ router.put('/:id/advances', async (req, res) => {
         if (maxPercent > 0) {
           const maxAllowed = (employee.salary || 0) * (maxPercent / 100);
           if (newTotal > maxAllowed) {
-            return res.status(400).json({
-              error: `إجمالي السلف (${newTotal.toFixed(2)}) يتجاوز الحد الأقصى المسموح (${maxAllowed.toFixed(2)} = ${maxPercent}% من الراتب الأساسي)`,
-            });
+            const err = new Error(`إجمالي السلف (${newTotal.toFixed(2)}) يتجاوز الحد الأقصى المسموح (${maxAllowed.toFixed(2)} = ${maxPercent}% من الراتب الأساسي)`);
+            err.statusCode = 400;
+            throw err;
           }
         }
       }
 
-      await prisma.advance.create({
-        data: {
-          employeeId, month, year, amount: delta, date: new Date(),
-          reason: reason || 'تعديل يدوي من شاشة المرتبات', status: 'approved',
-        },
+      await prisma.$transaction(async (tx) => {
+        if (delta !== 0) {
+          await tx.advance.create({
+            data: {
+              employeeId, month, year, amount: delta, date: new Date(),
+              reason: reason || 'تعديل يدوي من شاشة المرتبات', status: 'approved',
+            },
+          });
+        }
+
+        await calculatePayrollImpl(employeeId, month, year, { tx });
+
+        updated = await tx.payroll.findUnique({ where: { id: payroll.id }, include: { employee: true } });
+
+        if (delta !== 0) {
+          await writeAudit({
+            employeeId, payrollId: payroll.id, fieldName: 'advances',
+            oldValue: currentTotal, newValue: newTotal, reason: reason || null,
+            userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole,
+            tx,
+          });
+        }
       });
-    }
-
-    await calculatePayroll(employeeId, month, year);
-
-    const updated = await prisma.payroll.findUnique({
-      where: { id: payroll.id },
-      include: { employee: true },
     });
-
-    if (delta !== 0) {
-      await writeAudit({
-        employeeId, payrollId: payroll.id, fieldName: 'advances',
-        oldValue: currentTotal, newValue: newTotal, reason: reason || null,
-        userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole,
-      });
-    }
 
     res.json(updated);
   } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ error: err.message });
     res.status(500).json({ error: err.message });
   }
 });

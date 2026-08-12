@@ -9,6 +9,14 @@ const { monthRange } = require('../utils/monthRange');
 const prisma = getPrisma();
 router.use(authenticate);
 
+// Phase 31 (F1 fix — Phase 25 audit, Critical): these three export routes
+// previously required only a valid login, no role check — an employee-role
+// account could download the full company payroll or any colleague's
+// attendance export. No self-service export UI exists for these, so
+// admin/hr only, matching the equivalent write-side routes elsewhere in
+// the app (payroll.js, rules.js) which were already correctly gated.
+router.use(authorize('admin', 'hr'));
+
 // Monthly attendance report - Excel export
 router.get('/attendance/monthly/export', async (req, res) => {
   try {

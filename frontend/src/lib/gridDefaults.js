@@ -169,11 +169,37 @@ export function isAbsentRow(data) {
 }
 
 /**
+ * isHolidayRow — the ONE canonical check for "this row is an official
+ * holiday", mirroring isAbsentRow's dual boolean-flag/status-string check.
+ * `data.isHoliday` is the real Holiday-table flag (rulesEngine.js#isHoliday,
+ * a branch-wide, exact-date-configured holiday). `data.status === 'holiday'`
+ * additionally covers the case where HR explicitly set a SPECIFIC
+ * employee's day to "عطلة" via the attendance status dropdown
+ * (PUT /attendance/daily/:id or /:id/manual-penalty — status is one of the
+ * existing STATUS_OPTIONS, not a new concept) — that manual override
+ * correctly does NOT set isHoliday=true (it's not a real branch-wide
+ * Holiday-table row, so isHoliday stays sourced only from that table,
+ * unchanged), but it IS an explicit holiday designation for that day and
+ * must get the same blue treatment. Phase 19.1.
+ */
+export function isHolidayRow(data) {
+  return !!(data && (data.isHoliday || data.status === 'holiday'));
+}
+
+/**
  * attendanceRowClass — shared getRowClass priority chain (Monitored >
  * Holiday > Weekend > Absent > Late > Overtime). Previously duplicated
  * verbatim across AttendanceDailyPage/AttendanceMonthlyPage/
  * EmployeeMovementPage; centralized here so the "entire row" absence
  * highlight (and every other row state) is defined exactly once.
+ *
+ * Phase 19 correction: an earlier revision of this function added a fourth
+ * "excused absence" branch (row-leave) that gave approved-permission
+ * absences their own blue tint. That was reverted — the corrected product
+ * requirement is narrower: only an explicit official holiday (isHolidayRow)
+ * gets the blue "official holiday" treatment. Weekly off and approved-
+ * leave/permission keep their pre-existing presentation, unchanged by this
+ * file.
  *
  * Pass directly as the `getRowClass` prop on <AgGridReact>.
  */
@@ -181,7 +207,7 @@ export function attendanceRowClass({ data }) {
   if (!data) return '';
   const classes = [];
   if      (data.isMonitored) classes.push('row-monitored');
-  if      (data.isHoliday)   classes.push('row-holiday');
+  if      (isHolidayRow(data)) classes.push('row-holiday');
   else if (data.isWeekend)   classes.push('row-weekend');
   else if (isAbsentRow(data)) classes.push('row-absent');
   else if ((data.effectiveLatePenalty   || 0) > 0) classes.push('row-late');

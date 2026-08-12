@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import api, { LONG_OP } from '../lib/api';
 import toast from 'react-hot-toast';
 import { westernDigits, fmtTime, fmtPenaltyUnits, fmtOvertimeUnits, STATUS_LABELS } from '../lib/formatters';
+import { attendanceRowClass } from '../lib/gridDefaults';
 import { useTheme } from '../contexts/ThemeContext';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
@@ -87,6 +88,7 @@ export default function DashboardPage() {
   const canDownloadFingerprints = !authEnabled || ['admin', 'hr'].includes(user?.role);
 
   const [data,         setData]         = useState(null);
+  const [loadError,    setLoadError]    = useState(null);
   const [devices,      setDevices]      = useState([]);
   const [roster,       setRoster]       = useState([]);
   const [departments,  setDepartments]  = useState([]);
@@ -128,7 +130,26 @@ export default function DashboardPage() {
       setDepartments(depts.data || []);
       setDeviceEvents(evRes.data?.logs || []);
       setSyncLogs(syncLogsRes.data || []);
-    } catch { toast.error('تعذر تحميل البيانات'); }
+      setLoadError(null);
+    } catch (err) {
+      // Distinguish "server reachable but rejected the request" from "no
+      // response at all" so a 401 (e.g. server-side AUTH_ENABLED on while
+      // this client never logs in) reads as an auth/config problem instead
+      // of looking identical to a dead network — and, critically, does NOT
+      // get silently repainted as "0 employees" (see W() fallback below):
+      // this banner is what tells the user the numbers on screen are stale/
+      // unreliable, not a real empty state.
+      const status = err?.response?.status;
+      const message = status === 401
+        ? 'تعذر تحميل البيانات — الخادم يطلب تسجيل الدخول (تحقّق من إعداد AUTH_ENABLED على الخادم المركزي)'
+        : status >= 500
+        ? 'تعذر تحميل البيانات — خطأ في الخادم'
+        : !err?.response
+        ? 'تعذر الاتصال بالخادم'
+        : 'تعذر تحميل البيانات';
+      toast.error(message);
+      setLoadError(message);
+    }
     finally { setLoading(false); }
   };
 
@@ -287,6 +308,17 @@ export default function DashboardPage() {
           </p>
         </div>
       </div>
+
+      {loadError && (
+        <div style={{
+          background:'var(--danger-bg, #fee2e2)', color:'var(--danger, #b91c1c)',
+          border:'1px solid var(--danger, #b91c1c)', borderRadius:'var(--radius)',
+          padding:'10px 16px', fontSize:14, fontWeight:600, display:'flex',
+          alignItems:'center', gap:8,
+        }}>
+          {loadError} — الأرقام أدناه قد لا تعكس البيانات الفعلية.
+        </div>
+      )}
 
       <FingerprintSyncModal
         state={fpSync.state}
@@ -474,7 +506,7 @@ export default function DashboardPage() {
                       لا توجد تنبيهات — جميع الموظفين منتظمون اليوم
                     </td></tr>
                   ) : alerts.map((r, i) => (
-                    <tr key={r.id || i} className={r.isAbsent ? 'row-absent' : (r.effectiveLatePenalty||0)>0 ? 'row-late' : 'row-overtime'}>
+                    <tr key={r.id || i} className={attendanceRowClass({ data: r })}>
                       <td className="num" style={{ color:'var(--text-3)' }}>{W(i+1)}</td>
                       <td style={{ fontWeight:700, color: r.isAbsent ? 'var(--row-absent-name)' : 'var(--c-name)' }}>{r.employeeName}</td>
                       <td style={{ color:'var(--text-2)' }}>{r.department || '—'}</td>

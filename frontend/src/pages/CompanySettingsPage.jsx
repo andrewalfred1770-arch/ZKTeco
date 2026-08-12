@@ -111,12 +111,34 @@ export default function CompanySettingsPage() {
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState('');
 
+  // Keys the user has typed into since the last confirmed sync with the
+  // server. A live update (another window's save, or a socket broadcast of
+  // our own save) must never clobber a field the user is actively editing —
+  // so the merge below only ever overwrites keys NOT in this set. Cleared
+  // per-key the moment that key's own save round-trip confirms.
+  const dirtyKeysRef = useRef(new Set());
+
   useEffect(() => { fetchSettings(); }, []);
 
-  // Sync local form state whenever the live store updates (e.g. another window edits)
-  useEffect(() => { setForm(settings || {}); }, [settings]);
+  // Merge live store updates into the local form, but never overwrite a
+  // field the user has an unsaved edit in — this is what previously let a
+  // save in one section (or another client's save) silently discard
+  // unsaved input in a different section.
+  useEffect(() => {
+    if (!settings) return;
+    setForm((prev) => {
+      const merged = { ...prev };
+      for (const key of Object.keys(settings)) {
+        if (!dirtyKeysRef.current.has(key)) merged[key] = settings[key];
+      }
+      return merged;
+    });
+  }, [settings]);
 
-  const setField = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+  const setField = (key, value) => {
+    dirtyKeysRef.current.add(key);
+    setForm((f) => ({ ...f, [key]: value }));
+  };
 
   const saveSection = async (keys, label) => {
     setSaving(label);
@@ -124,6 +146,10 @@ export default function CompanySettingsPage() {
       const partial = {};
       for (const k of keys) partial[k] = form[k] ?? '';
       await update(partial, ACTOR);
+      // Saved and server-confirmed — these keys are no longer "dirty", so the
+      // next store sync (including the one this save's own socket broadcast
+      // triggers) is free to adopt the server's value for them again.
+      for (const k of keys) dirtyKeysRef.current.delete(k);
       toast.success('تم حفظ التغييرات — تنعكس فورًا في كل الشاشات');
     } catch {
       toast.error('فشل الحفظ');

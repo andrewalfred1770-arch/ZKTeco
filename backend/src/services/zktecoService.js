@@ -492,7 +492,8 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
     // log (a 27k-record first pull used to issue 27k employee lookups).
     const employees = await prisma.employee.findMany({
       where: { NOT: { zkUserId: '' } },
-      select: { id: true, zkUserId: true },
+      select: { id: true, zkUserId: true, status: true },
+      orderBy: { status: 'asc' }, // Phase 23.1: active (true) processed last, so it wins the Map.set overwrite below when a number is shared by a stopped + reused-active pair.
     });
     const empByZk = new Map(employees.map((e) => [e.zkUserId, e.id]));
 

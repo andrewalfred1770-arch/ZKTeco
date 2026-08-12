@@ -127,9 +127,16 @@ async function advanceCheckpoint(deviceId, timestamp) {
 // ─── Ingest a single realtime punch (exactly-once, retried) ───────────────
 async function ingestPunch(deviceId, io, zkUserId, timestamp, attempt = 1) {
   try {
+    // Phase 23.1: a number is now allowed to be shared by (one active +
+    // N stopped) employees when reused after termination — a live punch for
+    // that number always belongs to whoever currently holds it, so an
+    // active match must always win over a historical one. `orderBy` (not a
+    // second query) keeps this a single round-trip; MySQL boolean columns
+    // sort false(0) before true(1), so `desc` puts the active row first.
     const employee = await prisma.employee.findFirst({
       where: { zkUserId },
       select: { id: true, name: true, code: true },
+      orderBy: { status: 'desc' },
     });
 
     let inserted = true;

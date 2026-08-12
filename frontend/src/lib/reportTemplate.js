@@ -14,7 +14,7 @@ import { CAIRO_FONTS } from './fonts/cairoFontData.js';
 import { PLEX_FONTS } from './fonts/ibmPlexArabicFontData.js';
 import { BRAND } from './branding.js';
 import { westernDigits, getNestedValue } from './formatters.js';
-import { isAbsentRow } from './gridDefaults.js';
+import { isAbsentRow, attendanceRowClass } from './gridDefaults.js';
 import {
   tokensCSS, PAPER_SIZE_KEYWORDS, MARGIN_PRESETS, buildFooterLeft,
 } from './printDesignSystem.js';
@@ -75,9 +75,15 @@ export const EMBEDDED_FONT_CSS_PLEX = PLEX_CSS;
  *  both the detailed (Cairo) and compact (Plex) layouts render correctly. */
 export const EMBEDDED_FONT_CSS_ALL = FONT_CSS + PLEX_CSS;
 
+// Phase 25.1 (F5): must escape all 5 HTML-significant characters — this
+// value is interpolated both into element text content AND into quoted HTML
+// attributes (alt="...", src="...") elsewhere in this file. Escaping only
+// &/</> left a `"` in an attribute value (e.g. company branding name/logo
+// URL) free to close the attribute early and inject a new one.
 function esc(v) {
   return String(v ?? '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // Escape a value for use inside a CSS double-quoted string (content property)
@@ -391,7 +397,15 @@ export function buildReportHTML(o = {}) {
       const style = c.align && c.align !== 'num' ? `text-align:${c.align}` : '';
       return `<td class="${cls}" style="${style}">${esc(val)}</td>`;
     }).join('');
-    const rowCls = [i % 2 === 1 ? 'alt' : '', isAbsentRow(row) ? 'row-absent' : ''].filter(Boolean).join(' ');
+    // Phase 19: reuses the SAME shared classifier the live grids use
+    // (gridDefaults.js#attendanceRowClass) instead of a second, hand-rolled
+    // absent-only check — print now shows the same official-holiday
+    // distinction the grid already does, not just plain vs. absent.
+    // attendanceRowClass can also emit row-monitored/row-weekend/row-late/
+    // row-overtime; this stylesheet defines a rule for none of those (only
+    // row-absent and row-holiday, below), so their presence in the class
+    // list here is a harmless no-op, not a new print behavior.
+    const rowCls = [i % 2 === 1 ? 'alt' : '', attendanceRowClass({ data: row })].filter(Boolean).join(' ');
     return `<tr class="${rowCls}">${showRowIndex ? `<td class="idx">${westernDigits(i + 1)}</td>` : ''}${cells}</tr>`;
   }).join('');
 
@@ -752,6 +766,17 @@ tbody tr.alt td{ background: var(--alt); }
    that true leading edge. */
 tbody tr.row-absent td{ background: #FEF2F2; }
 tbody tr.row-absent td:first-child{ box-shadow: inset -4px 0 0 var(--dng); }
+
+/* Phase 19 (corrected scope): official-holiday row tint only — previously
+   this stylesheet had NO row-level background for holiday at all (only the
+   status-text-color rule further below), so a printed attendance report
+   showed an official holiday with no visual distinction from an ordinary
+   working day. Weekly off / approved leave intentionally get NO new print
+   styling here — the corrected requirement keeps their existing (unchanged)
+   presentation, only official holiday (data.isHoliday, an explicit
+   Holiday-table match) becomes blue. */
+tbody tr.row-holiday td{ background: #DBEAFE; }
+tbody tr.row-holiday td:first-child{ box-shadow: inset -4px 0 0 var(--a); }
 
 /* Row-index column (auto #) — same nowrap contract as .num above, plus its
    own muted/small styling. Width is set generously (see idxPx above) so

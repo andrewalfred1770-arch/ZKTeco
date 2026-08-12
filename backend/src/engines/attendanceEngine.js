@@ -189,13 +189,30 @@ async function processDateImpl(date, employeeId, opts = {}) {
   // (with the missing side reflected by the null checkIn/checkOut field, not
   // by the status). See canonical business rule, EP business-rule audit.
   if (!effCheckIn && !effCheckOut) {
-    const isNonWorkingAbsent = weekend || holiday ? false : true;
     const absentStatus = weekend ? 'weekend' : holiday ? 'holiday' : 'absent';
+    // Phase 19.1 fix: `status` already correctly honored a manual override
+    // (manual?.status || absentStatus) but `isAbsent` previously did NOT —
+    // it was computed only from the real weekend/holiday calendar flags,
+    // completely ignoring manual.status. That let HR mark a day's status
+    // 'holiday' (or 'present'/'late'/etc.) via the "الحالة" dropdown
+    // (PUT /attendance/daily/:id, no checkIn/checkOut touched) while the
+    // stored row silently kept isAbsent=true underneath — a contradictory
+    // status='holiday' + isAbsent=true row that every downstream absence
+    // count (attendance summaries, payroll's absentDays) still counted as a
+    // real absence despite displaying as a holiday. finalStatus now drives
+    // BOTH fields consistently, matching the same "manual status decides
+    // isAbsent" pattern already used elsewhere in this file (see
+    // computeDerivedFields's finalIsAbsent below). isWeekend/isHoliday
+    // themselves are untouched — still sourced only from the real
+    // calendar/Holiday-table lookup above, never from a manual override, so
+    // this cannot fabricate a fake official-holiday record.
+    const finalStatus = manual?.status || absentStatus;
+    const isAbsentFinal = finalStatus === 'absent';
     if (!manual) {
       logger.info(`[RULE-MATCH] employee=${employeeId} date=${dateStr} → status=${absentStatus} (no punches)`);
     }
     await upsertDaily(employeeId, dateStr, {
-      isAbsent: isNonWorkingAbsent, status: manual?.status || absentStatus,
+      isAbsent: isAbsentFinal, status: finalStatus,
       isWeekend: weekend, isHoliday: holiday,
       totalDeductionUnits: 0,
       ...(manual ? { manualEdit: true } : {}),

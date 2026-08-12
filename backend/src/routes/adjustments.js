@@ -79,7 +79,8 @@ function toHHMM(dt) {
 }
 
 async function logAudit(adjustmentId, action, opts = {}) {
-  await prisma.adjustmentAuditLog.create({
+  const client = opts.tx || prisma;
+  await client.adjustmentAuditLog.create({
     data: {
       adjustmentId,
       action,
@@ -121,8 +122,12 @@ function mergeEffective(daily, adj) {
   };
 }
 
+// Phase 31 (F1 fix — Phase 25 audit, Critical): these four GETs previously
+// required only a valid login. Adjustment/deduction records are HR/payroll
+// administrative data with no self-service view in the app, so admin/hr
+// only — matching the already-correctly-gated write routes below.
 // ── GET /api/adjustments — list all with filters ───────────────────────────────
-router.get('/', async (req, res) => {
+router.get('/', authorize('admin', 'hr'), async (req, res) => {
   try {
     const { employeeId, branchId, from, to, status, page = 1, limit = 100 } = req.query;
 
@@ -170,7 +175,7 @@ router.get('/', async (req, res) => {
 
 // ── GET /api/adjustments/daily — full attendance + adjustment overlay ──────────
 // Main page data source: returns all daily records with adjustment status merged in
-router.get('/daily', async (req, res) => {
+router.get('/daily', authorize('admin', 'hr'), async (req, res) => {
   try {
     const { employeeId, branchId, from, to, date } = req.query;
 
@@ -274,7 +279,7 @@ router.get('/daily', async (req, res) => {
 });
 
 // ── GET /api/adjustments/:id — single adjustment with full audit ───────────────
-router.get('/:id', async (req, res) => {
+router.get('/:id', authorize('admin', 'hr'), async (req, res) => {
   try {
     const adj = await prisma.attendanceAdjustment.findUnique({
       where: { id: parseInt(req.params.id) },
@@ -575,7 +580,7 @@ router.post('/:id/flag', authorize('admin', 'hr'), async (req, res) => {
 });
 
 // ── GET /api/adjustments/:id/audit — full audit trail ─────────────────────────
-router.get('/:id/audit', async (req, res) => {
+router.get('/:id/audit', authorize('admin', 'hr'), async (req, res) => {
   try {
     const logs = await prisma.adjustmentAuditLog.findMany({
       where: { adjustmentId: parseInt(req.params.id) },
@@ -590,17 +595,31 @@ router.post('/bulk-approve', authorize('admin', 'hr'), async (req, res) => {
   try {
     const { ids = [], approvedBy = 0, approvedByName = 'HR Manager' } = req.body;
     const results = [];
+    // EF-029.4: the 3 writes for one adjustment (adjustment status,
+    // AttendanceDaily.manualEdit flag, audit log) now commit or roll back
+    // together per adjustment. Previously the AttendanceDaily write had a
+    // swallowing `.catch(() => {})`, so an adjustment could be reported
+    // success:true while its daily row silently never got manualEdit=true
+    // (losing the flag that protects the override from later auto-reprocess);
+    // and a failure at the audit-log step could leave the adjustment already
+    // approved with no rollback and no audit row. Each adjustment's own
+    // transaction is independent, so the existing per-id "some fail, some
+    // succeed" bulk contract is unchanged — only now every reported result
+    // accurately reflects what was actually persisted.
     for (const id of ids) {
       try {
-        const adj = await prisma.attendanceAdjustment.update({
-          where: { id: parseInt(id) },
-          data: { approvalStatus: 'approved', approvedBy, approvedByName, approvedAt: new Date(), updatedAt: new Date() },
+        const adj = await prisma.$transaction(async (tx) => {
+          const adj = await tx.attendanceAdjustment.update({
+            where: { id: parseInt(id) },
+            data: { approvalStatus: 'approved', approvedBy, approvedByName, approvedAt: new Date(), updatedAt: new Date() },
+          });
+          await tx.attendanceDaily.update({
+            where: { id: adj.attendanceDailyId },
+            data: { manualEdit: true, updatedAt: new Date() },
+          });
+          await logAudit(parseInt(id), 'approved', { userId: approvedBy, userName: approvedByName, userRole: 'hr', reason: 'Bulk approve', tx });
+          return adj;
         });
-        await prisma.attendanceDaily.update({
-          where: { id: adj.attendanceDailyId },
-          data: { manualEdit: true, updatedAt: new Date() },
-        }).catch(() => {});
-        await logAudit(parseInt(id), 'approved', { userId: approvedBy, userName: approvedByName, userRole: 'hr', reason: 'Bulk approve' });
         results.push({ id, success: true, adj });
       } catch { results.push({ id, success: false }); }
     }

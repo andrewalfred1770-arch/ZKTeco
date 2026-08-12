@@ -88,22 +88,37 @@ ipcMain.handle('session:clear', () => {
   }
 });
 
+// Exact messages backend/src/index.js's Socket.IO io.use() auth middleware
+// sends via next(new Error(...)) when AUTH_ENABLED=true and no/invalid JWT is
+// offered (unchanged there — never touched by this probe). This pre-login
+// test intentionally never sends a token, so on an AUTH_ENABLED=true server
+// it always hits this branch — that's expected auth-required behavior, not a
+// network failure, and must be reported to the UI as such rather than as
+// "disconnected".
+const SOCKET_AUTH_REJECTION_MESSAGES = new Set([
+  'غير مصرح — يجب تسجيل الدخول أولاً',
+  'token غير صالح',
+]);
+
+// Resolves to 'connected' | 'auth_required' | 'error'.
 function testSocketReachable(baseUrl, timeoutMs = 3000) {
   return new Promise((resolve) => {
     let settled = false;
     let sock;
-    const finish = (ok) => {
+    const finish = (status) => {
       if (settled) return;
       settled = true;
       try { sock?.close(); } catch {}
-      resolve(ok);
+      resolve(status);
     };
     try {
       sock = socketIOClient(baseUrl, { transports: ['websocket', 'polling'], reconnection: false, timeout: timeoutMs });
-      sock.on('connect', () => finish(true));
-      sock.on('connect_error', () => finish(false));
-    } catch { finish(false); return; }
-    setTimeout(() => finish(false), timeoutMs);
+      sock.on('connect', () => finish('connected'));
+      sock.on('connect_error', (err) => {
+        finish(SOCKET_AUTH_REJECTION_MESSAGES.has(err?.message) ? 'auth_required' : 'error');
+      });
+    } catch { finish('error'); return; }
+    setTimeout(() => finish('error'), timeoutMs);
   });
 }
 
@@ -113,13 +128,13 @@ function testSocketReachable(baseUrl, timeoutMs = 3000) {
 ipcMain.handle('connection:test', async (_e, { mode, serverUrl } = {}) => {
   const baseUrl = getEffectiveBackendBaseUrl({ mode: mode || 'local', serverUrl: serverUrl || '' });
   const health = await fetchHealth(baseUrl, 4000);
-  const socketConnected = health.ok ? await testSocketReachable(baseUrl, 3000) : false;
+  const socketStatus = health.ok ? await testSocketReachable(baseUrl, 3000) : 'unreachable';
   const remoteApiVersion = health.body?.apiVersion ?? null;
   return {
     baseUrl,
     reachable: health.ok,
     dbConnected: health.body?.db === 'connected',
-    socketConnected,
+    socketStatus,
     remoteVersion: health.body?.version || null,
     remoteApiVersion,
     requiredApiVersion: REQUIRED_API_VERSION,

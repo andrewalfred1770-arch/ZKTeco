@@ -50,4 +50,33 @@ function currentMonthRange() {
   return monthRangeForDate(moment());
 }
 
-module.exports = { monthRange, monthRangeMoment, monthRangeForDate, currentMonthRange };
+/**
+ * Native Date for "today", in the server's LOCAL calendar day, constructed
+ * the same UTC-midnight-of-Y-M-D way `monthRange()` builds its own dates —
+ * NOT a raw `new Date()` (UTC-anchored), which can disagree with the local
+ * calendar day by up to 24h on a server running outside UTC (this one runs
+ * at UTC+3). Comparing a raw `new Date()` against `monthRange()`'s dates
+ * would be exactly the kind of mismatch that risks an off-by-one-day bug.
+ */
+function todayDate() {
+  return new Date(moment().format('YYYY-MM-DD'));
+}
+
+/**
+ * Effective end-of-range Date for a monthly day-by-day view (Phase 23.4):
+ * the full month for a past month, but never later than today for the
+ * current (or a future) month — a day that hasn't happened yet has no
+ * attendance to show. For a future month this naturally yields
+ * effectiveEnd < the month's startDate, which callers can pass straight
+ * into a `{gte: startDate, lte: effectiveEnd}` filter — Prisma/MySQL return
+ * an empty set for an inverted range, which is exactly "no future days".
+ * Single shared boundary so every consumer of the same query result (a
+ * statement table, its KPI totals, its print output) can never disagree.
+ */
+function getEffectiveMonthEndDate(year, month) {
+  const { endDate } = monthRange(year, month);
+  const today = todayDate();
+  return endDate < today ? endDate : today;
+}
+
+module.exports = { monthRange, monthRangeMoment, monthRangeForDate, currentMonthRange, todayDate, getEffectiveMonthEndDate };

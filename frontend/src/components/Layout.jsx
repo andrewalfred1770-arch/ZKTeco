@@ -272,9 +272,19 @@ export default function Layout() {
           </div>
         </header>
 
-        {/* First-run: no company configured */}
-        {!brand.name || brand.name === 'PETSHROW' ? null : null}
-        {brand.address === '' && brand.phone === '' && brand.nameAr === 'PETSHROW' && (
+        {/* Company data fetch failed (server/auth error) — must read as a
+            connection problem, never be mistaken for genuine first-run. */}
+        {brand.fetchError && (
+          <div style={{ padding:'8px 16px', background:'rgba(220,38,38,0.10)', borderBottom:'1px solid rgba(220,38,38,0.28)', display:'flex', alignItems:'center', gap:10, flexShrink:0 }}>
+            <span style={{ fontSize:13, color:'#991b1b', fontWeight:600, flex:1 }}>
+              ⚠ تعذر تحميل بيانات الشركة من الخادم — تحقق من الاتصال بالخادم المركزي.
+            </span>
+          </div>
+        )}
+
+        {/* First-run: no company configured (only when the API call itself
+            succeeded and genuinely returned an empty company). */}
+        {!brand.fetchError && brand.address === '' && brand.phone === '' && brand.nameAr === 'PETSHROW' && (
           <div style={{ padding:'8px 16px', background:'rgba(245,158,11,0.10)', borderBottom:'1px solid rgba(245,158,11,0.28)', display:'flex', alignItems:'center', gap:10, flexShrink:0 }}>
             <span style={{ fontSize:13, color:'#92400e', fontWeight:600, flex:1 }}>
               ⚠ لم يتم إعداد بيانات الشركة بعد — يرجى إعداد الشركة قبل استخدام النظام.

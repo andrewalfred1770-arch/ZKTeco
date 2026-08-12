@@ -39,8 +39,12 @@ function formatDevice(d) {
   };
 }
 
+// Phase 31 (F1 fix — Phase 25 audit, Critical): device/ZKTeco diagnostic GETs
+// previously required only a valid login. Device IPs and sync diagnostics
+// aren't employee-relevant data, so admin/hr only — matching the
+// already-correctly-gated write routes below.
 // ── List all devices ──────────────────────────────────────────────────────────
-router.get('/', async (req, res) => {
+router.get('/', authorize('admin', 'hr'), async (req, res) => {
   try {
     const devices = await prisma.device.findMany({
       where: { isArchived: false },
@@ -64,7 +68,7 @@ router.get('/', async (req, res) => {
 });
 
 // ── Aggregate stats for KPI cards ─────────────────────────────────────────────
-router.get('/stats', async (req, res) => {
+router.get('/stats', authorize('admin', 'hr'), async (req, res) => {
   try {
     const devices = await prisma.device.findMany({ where: { isArchived: false }, select: { status: true, lastSync: true, totalLogsCount: true } });
     const online   = devices.filter(d => d.status === 'online').length;
@@ -88,7 +92,7 @@ router.get('/stats', async (req, res) => {
 });
 
 // ── Recent sync logs (all devices) ────────────────────────────────────────────
-router.get('/sync-logs/recent', async (req, res) => {
+router.get('/sync-logs/recent', authorize('admin', 'hr'), async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
     const logs = await prisma.deviceSyncLog.findMany({
@@ -116,7 +120,7 @@ router.get('/relink-diagnostics', authorize('admin', 'hr'), async (req, res) => 
 
 // ── Realtime listener status (all devices) ───────────────────────────────────
 // Must be registered before GET /:id so it isn't shadowed by the :id matcher.
-router.get('/realtime-status', async (req, res) => {
+router.get('/realtime-status', authorize('admin', 'hr'), async (req, res) => {
   try {
     res.json({
       devices: realtimeListener.getStatus(),
@@ -128,7 +132,7 @@ router.get('/realtime-status', async (req, res) => {
 });
 
 // ── Get single device ─────────────────────────────────────────────────────────
-router.get('/:id', async (req, res) => {
+router.get('/:id', authorize('admin', 'hr'), async (req, res) => {
   try {
     const device = await prisma.device.findUnique({
       where: { id: parseInt(req.params.id) },
@@ -142,7 +146,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // ── Sync logs for one device ───────────────────────────────────────────────────
-router.get('/:id/sync-logs', async (req, res) => {
+router.get('/:id/sync-logs', authorize('admin', 'hr'), async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 30;
     const logs = await prisma.deviceSyncLog.findMany({
@@ -163,7 +167,7 @@ router.get('/:id/sync-logs', async (req, res) => {
 // actionable, so the gap report focuses on what recovery can realistically fix).
 const RECOVERY_WINDOW_DAYS = 90;
 
-router.get('/:id/recovery-diagnostics', async (req, res) => {
+router.get('/:id/recovery-diagnostics', authorize('admin', 'hr'), async (req, res) => {
   try {
     const deviceId = parseInt(req.params.id);
     const device = await prisma.device.findUnique({ where: { id: deviceId } });
@@ -331,7 +335,15 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
     const device = await prisma.device.findUnique({ where: { id } });
     if (!device) return res.status(404).json({ error: 'الجهاز غير موجود' });
 
-    realtimeListener.stopListener(id);
+    // EF-029.5: the physical device/listener can't participate in a DB
+    // transaction, so the two are ordered instead — the in-memory listener is
+    // only ever stopped AFTER a DB write is confirmed committed, never
+    // before. Previously stopListener() ran unconditionally up front: if
+    // every DB path below then failed, the device row stayed untouched
+    // (still enabled) while its listener had already gone dark — a live
+    // device silently stops receiving punches with no DB-visible sign
+    // anything changed. Now, if nothing below commits, the listener is never
+    // touched either — DB and in-memory state stay consistent on failure.
 
     // Does the device have raw attendance logs that must be preserved?
     const rawLogs = await prisma.attendanceLog.count({ where: { deviceId: id } });
@@ -342,12 +354,23 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
         where: { id },
         data: { isArchived: true, enabled: false, autoSync: false, status: 'offline' },
       });
+      realtimeListener.stopListener(id); // DB confirmed archived — safe to stop now.
       return res.json({ message: 'Device archived', mode: 'soft', preservedLogs: rawLogs });
     }
 
-    // No raw logs → safe hard delete (remove sync logs first, FK = cascade anyway).
-    await prisma.deviceSyncLog.deleteMany({ where: { deviceId: id } });
-    await prisma.device.delete({ where: { id } });
+    // No raw logs → attempt hard delete. Both statements now commit or roll
+    // back together (previously two separate calls): a late-arriving
+    // FK-restrict error — e.g. a new AttendanceLog row inserted by a
+    // concurrent sync between the count above and this delete — could
+    // previously leave the sync-log history already deleted while the device
+    // row itself survived the failed delete. A single $transaction closes
+    // that partial-state window; the outer catch below still falls back to
+    // archiving on any failure, unchanged.
+    await prisma.$transaction([
+      prisma.deviceSyncLog.deleteMany({ where: { deviceId: id } }),
+      prisma.device.delete({ where: { id } }),
+    ]);
+    realtimeListener.stopListener(id); // DB confirmed deleted — safe to stop now.
     return res.json({ message: 'Device deleted', mode: 'hard' });
   } catch (err) {
     // Last-resort fallback: if the hard delete still hit an FK constraint, archive.
@@ -356,8 +379,14 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
         where: { id },
         data: { isArchived: true, enabled: false, autoSync: false, status: 'offline' },
       });
+      realtimeListener.stopListener(id); // DB confirmed archived — safe to stop now.
       return res.json({ message: 'Device archived', mode: 'soft-fallback' });
     } catch (err2) {
+      // Neither the hard delete nor the fallback archive persisted anything —
+      // the device row is untouched, and the listener was never stopped
+      // either, so DB state and in-memory state remain consistent (both
+      // still "active") rather than reporting or half-applying a change that
+      // never actually happened.
       return res.status(500).json({ error: err2.message });
     }
   }

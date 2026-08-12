@@ -41,11 +41,37 @@ const corsAllowList = (process.env.CORS_ORIGINS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 const isLocalhostOrigin = (origin) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
 
+// EF-029.6: the intended architecture is Windows Server → LAN → Mac (or any
+// other machine's browser) client, with NO login/JWT in either mode — but
+// desktop mode (AUTH_ENABLED=false, the default) previously allowed only
+// localhost, so a Mac/second machine hitting the Windows box's own LAN IP was
+// rejected by CORS before ever reaching the (still-unauthenticated) routes.
+// This widens desktop mode to also allow the standard private-LAN ranges
+// (RFC1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) — never a wildcard,
+// never a public origin, no specific IP hardcoded (works on any LAN), and
+// adds no authentication of any kind. AUTH_ENABLED=true's explicit
+// CORS_ORIGINS allowlist below is unchanged.
+function isPrivateLanOrigin(origin) {
+  let hostname;
+  try { hostname = new URL(origin).hostname; } catch { return false; }
+  return (
+    /^10\.(\d{1,3}\.){2}\d{1,3}$/.test(hostname) ||
+    /^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
+    /^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)
+  );
+}
+
 function corsOriginCheck(origin, cb) {
   // No-origin requests: Electron renderer, curl, health-check — always allow
   if (!origin) return cb(null, true);
-  // Desktop mode: allow only localhost (packaged/dev Electron, local tooling)
-  if (!AUTH_ENABLED) return isLocalhostOrigin(origin) ? cb(null, true) : cb(new Error(`CORS: origin ${origin} not allowed`));
+  // Desktop mode: allow localhost (packaged/dev Electron, local tooling) AND
+  // private-LAN origins (Windows Server ↔ LAN client model — e.g. a Mac
+  // browser hitting http://<windows-lan-ip>:PORT). Still never a public origin.
+  if (!AUTH_ENABLED) {
+    return (isLocalhostOrigin(origin) || isPrivateLanOrigin(origin))
+      ? cb(null, true)
+      : cb(new Error(`CORS: origin ${origin} not allowed`));
+  }
   // LAN/Cloud mode: only explicitly listed origins
   if (corsAllowList.includes(origin)) return cb(null, true);
   cb(new Error(`CORS: origin ${origin} not allowed`));
@@ -130,6 +156,11 @@ app.get('/api/health', async (_req, res) => {
     timestamp: new Date(),
     version: APP_VERSION,      // product release version (informational)
     apiVersion: API_VERSION,   // contract version — used by clients for compatibility checks
+    // Boolean only — never the JWT secret or any credential. Lets Electron's
+    // killStaleBackend() tell an already-running process apart from one still
+    // carrying a stale AUTH_ENABLED value from before a persistent-config
+    // edit, instead of blindly adopting whatever answers on the port.
+    authEnabled: AUTH_ENABLED,
   };
   // Additive only — never sent when connected. A fixed, safe category (never
   // the raw error/connection string) so "db:disconnected" is diagnosable
@@ -231,6 +262,8 @@ const PORT = parseInt(process.env.PORT) || 5000;
 // network interface, which still includes localhost/127.0.0.1 — so local
 // Electron/dev usage is unaffected. Still fully overridable via HOST for a
 // deployment that wants to bind to one specific interface instead.
+// Network binding is intentionally independent of AUTH_ENABLED — Local Mode
+// and Server Mode are both selected via HOST, never coupled to auth.
 const HOST = process.env.HOST || '0.0.0.0';
 
 // Attached before the async init gap below so it's guaranteed live before
@@ -271,6 +304,22 @@ const { runFirstRunInit } = require('./init');
     // old separate attendanceProcessor (a duplicate 15-min processToday path
     // racing the scheduler's 10-min one) has been removed.
     setImmediate(() => {
+      // Phase 31: SKIP_SCHEDULER=true lets a second backend process share the
+      // same production MySQL database (same DATABASE_URL) purely as an
+      // API/auth endpoint — e.g. the public-tunnel instance — without also
+      // starting a second set of ZKTeco device TCP connections and
+      // attendance-processing crons. syncScheduler is already documented
+      // above as the SINGLE owner of that work; running it twice against one
+      // DB would mean duplicate device connections and racing recalculation
+      // jobs, not just wasted work. Unset (default) is byte-for-byte the
+      // existing single-instance behavior — every current deployment is
+      // unaffected.
+      if (process.env.SKIP_SCHEDULER === 'true') {
+        logger.info('[SKIP_SCHEDULER] set — this instance will not start ZKTeco listeners or attendance crons (API/auth only)');
+        startupState.servicesStarted = true;
+        return;
+      }
+
       try { startSyncScheduler(io); }
       catch (err) { logger.error('SyncScheduler error:', err.message); }
       finally { startupState.servicesStarted = true; }

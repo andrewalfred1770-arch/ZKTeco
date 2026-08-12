@@ -285,6 +285,17 @@ router.get('/:id/audit', async (req, res) => {
 // Auto-recalc on rule change is scoped to the current month (cheap, immediate).
 // Use this when historical attendance/payroll must reflect a rule that was
 // just changed retroactively — explicit, admin-only, bounded by date range.
+// Business dates are supported system-wide through 2099 (e.g. holidays,
+// planning data). This endpoint is different: it recomputes ATTENDANCE from
+// existing punches/rules for the given range, and attendance cannot exist
+// for a date that hasn't happened yet. So — unlike a generic business-date
+// field — `to` here is explicitly rejected (not silently clamped) once it's
+// in the future, on top of recalcEngine's own defensive clamp (recalcEngine.js,
+// which stays as-is). `from` only needs a sanity floor, not the stricter
+// MIN_VALID_TS used for raw punch timestamps in utils/timestamps.js — that
+// validator is for fingerprint events, not business date ranges.
+const RECALC_MIN_FROM = moment('2000-01-01', 'YYYY-MM-DD');
+
 router.post('/recalculate-full', authorize('admin'), async (req, res) => {
   try {
     const { from, to, branchId, departmentId, employeeId } = req.body;
@@ -293,6 +304,14 @@ router.post('/recalculate-full', authorize('admin'), async (req, res) => {
     const f = moment(from), t = moment(to);
     if (!f.isValid() || !t.isValid() || t.isBefore(f)) {
       return res.status(400).json({ error: 'نطاق تاريخ غير صالح' });
+    }
+    if (f.isBefore(RECALC_MIN_FROM)) {
+      return res.status(400).json({ error: `تاريخ البداية قبل الحد الأدنى المسموح (${RECALC_MIN_FROM.format('YYYY-MM-DD')})` });
+    }
+    if (t.isAfter(moment())) {
+      return res.status(400).json({
+        error: 'لا يمكن إعادة احتساب الحضور لتاريخ مستقبلي — الحضور يُشتق من بصمات فعلية لم تحدث بعد. أدخل تاريخ نهاية لا يتجاوز اليوم الحالي.',
+      });
     }
 
     const result = await recalcEngine.recalcScope({

@@ -5,7 +5,7 @@ import 'ag-grid-community/styles/ag-theme-quartz.css';
 import {
   RefreshCw, Download, ChevronRight, ChevronLeft,
   CheckCircle, XCircle, Clock, TrendingUp, Loader2, Play, Printer,
-  Fingerprint, Pencil, Lock } from 'lucide-react';
+  Fingerprint, Pencil, Lock, UserX } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import api, { LONG_OP } from '../lib/api';
@@ -26,7 +26,7 @@ import { useKeyboardShortcut } from '../hooks/useKeyboardShortcut';
 import AbsenceTypeModal, { ABSENCE_TYPE_LABELS } from '../components/AbsenceTypeModal';
 import AttendanceFilterBar from '../components/AttendanceFilterBar';
 import { useAttendanceFilter } from '../hooks/useAttendanceFilter';
-import { ACTOR, HHMM_RE, OVERRIDE_FIELD_MAP, normalizeDailyUpdate, replaceAttendanceRow, applyRowFieldUpdate } from '../lib/attendanceUtils';
+import { ACTOR, HHMM_RE, OVERRIDE_FIELD_MAP, normalizeDailyUpdate, replaceAttendanceRow, replaceAttendanceRows, applyRowFieldUpdate } from '../lib/attendanceUtils';
 
 const INLINE_REASON = 'تعديل مباشر من الجدول (Inline Grid)';
 
@@ -50,6 +50,8 @@ export default function AttendanceDailyPage() {
   const [departments, setDepts]   = useState([]);
   const [absenceModal, setAbsenceModal] = useState(null);
   const [absenceSaving, setAbsenceSaving] = useState(false);
+  const [selectedRows, setSelectedRows] = useState([]);
+  const [bulkSaving, setBulkSaving] = useState(false);
   const gridRef = useRef();
   // per-cell "saving" affordance
   const savingCellsRef = useRef(new Set());
@@ -86,6 +88,11 @@ export default function AttendanceDailyPage() {
   };
 
   const cols = useMemo(() => [
+    {
+      headerName:'', width:44, pinned:'right',
+      sortable:false, filter:false, resizable:false,
+      checkboxSelection: true, headerCheckboxSelection: true,
+      headerCheckboxSelectionFilteredOnly: true },
     {
       headerName:'#', valueGetter:'node.rowIndex + 1', width:50, pinned:'right',
       sortable:false, filter:false, headerClass:'ag-header-center',
@@ -436,6 +443,55 @@ export default function AttendanceDailyPage() {
     }
   }, [absenceModal, load]);
 
+  const handleSelectionChanged = useCallback(() => {
+    setSelectedRows(gridRef.current?.api?.getSelectedRows() ?? []);
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    gridRef.current?.api?.deselectAll();
+    setSelectedRows([]);
+  }, []);
+
+  const selectedAbsent = useMemo(() => selectedRows.filter(r => r.isAbsent), [selectedRows]);
+
+  // Same PUT→server-confirm→replace-row pipeline as handleAbsenceSave, applied
+  // to many rows from one request. Uses the existing editCountRef guard so
+  // useRulesLiveSync/useDeviceLiveSync defer any background reload until the
+  // bulk save (and its server response) has fully landed — no full-grid
+  // reload, no optimistic UI, only the server-confirmed rows are applied.
+  const handleBulkUnauthorizedAbsence = useCallback(async () => {
+    if (!selectedAbsent.length) return;
+    const confirmed = window.confirm(
+      `سيتم تحويل غياب ${selectedAbsent.length} موظف إلى "غياب بدون إذن" وتطبيق عقوبة الغياب حسب قواعد النظام.\n\nهل تريد المتابعة؟`
+    );
+    if (!confirmed) return;
+
+    editCountRef.current++;
+    setBulkSaving(true);
+    try {
+      const { data } = await api.post('/attendance/bulk-mark-unauthorized', {
+        ids: selectedAbsent.map(r => r.id),
+        modifiedByName: ACTOR,
+        source: 'bulk-unauthorized-absence',
+      });
+      const normalized = (data.updated || []).map(normalizeDailyUpdate);
+      setRows(rs => replaceAttendanceRows(rs, normalized));
+      if (data.updatedCount) {
+        toast.success(`تم تحديث ${data.updatedCount} موظف بنجاح`);
+      }
+      if (data.skippedCount) {
+        toast.error(`تم تجاهل ${data.skippedCount} موظف (ليسوا في حالة غياب)`);
+      }
+      clearSelection();
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'فشل تحديث الغياب بدون إذن');
+    } finally {
+      editCountRef.current--;
+      setBulkSaving(false);
+      if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }
+    }
+  }, [selectedAbsent, clearSelection, load]);
+
   const process = async () => {
     setProc(true);
     try {
@@ -542,6 +598,38 @@ export default function AttendanceDailyPage() {
         </div>
       </div>
 
+      {/* Bulk selection toolbar — only visible once at least one row is selected */}
+      {selectedRows.length > 0 && (
+        <div className="card p-3 flex flex-wrap items-center justify-between gap-3"
+          style={{ borderColor: 'var(--c-red, #ef4444)', borderWidth: 1 }}>
+          <div className="flex items-center gap-3 text-sm font-semibold">
+            <span>تم تحديد {selectedRows.length} موظف</span>
+            {selectedAbsent.length > 0 && selectedAbsent.length !== selectedRows.length && (
+              <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>
+                ({selectedAbsent.length} منهم غياب ويمكن تحديثهم)
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={clearSelection} className="btn-ghost text-xs py-1.5 px-3">إلغاء التحديد</button>
+            <button
+              onClick={handleBulkUnauthorizedAbsence}
+              disabled={!selectedAbsent.length || bulkSaving}
+              className="text-xs py-1.5 px-3 flex items-center gap-1.5 rounded-lg font-semibold"
+              style={{
+                background: 'var(--c-red, #ef4444)', color: '#fff',
+                opacity: (!selectedAbsent.length || bulkSaving) ? 0.5 : 1,
+                cursor: (!selectedAbsent.length || bulkSaving) ? 'not-allowed' : 'pointer',
+              }}
+              title={!selectedAbsent.length ? 'لا يوجد موظفين غائبين ضمن التحديد' : ''}
+            >
+              {bulkSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UserX className="w-3.5 h-3.5" />}
+              غياب بدون إذن {selectedAbsent.length ? `(${selectedAbsent.length})` : ''}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Filter bar */}
       <AttendanceFilterBar
         filters={filters}
@@ -567,6 +655,7 @@ export default function AttendanceDailyPage() {
             getRowStyle={getRowStyle}
             onCellEditingStopped={handleCellEdit}
             onGridReady={handleGridReady}
+            onSelectionChanged={handleSelectionChanged}
             isExternalFilterPresent={gridIsExternalFilterPresent}
             doesExternalFilterPass={gridDoesExternalFilterPass}
             singleClickEdit={editMode}

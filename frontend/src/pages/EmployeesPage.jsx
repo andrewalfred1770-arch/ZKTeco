@@ -10,6 +10,8 @@ import { fmtMoney } from '../lib/formatters';
 import { useTheme } from '../contexts/ThemeContext';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS } from '../lib/gridDefaults';
+import { fmtDate } from '../lib/formatters';
+import Dialog from '../components/ui/Dialog';
 
 const NUM = { textAlign: 'right', direction: 'ltr', justifyContent: 'flex-end', fontFamily: 'Consolas, monospace' };
 
@@ -72,12 +74,9 @@ function DeleteInfoModal({ open, info, onClose, onConfirm }) {
               <p className="font-bold text-white mt-0.5">{emp.name}</p>
             </div>
             <div>
-              <span className="text-gray-500 text-xs">الكود</span>
-              <p className="font-mono text-gray-300 mt-0.5">{emp.code || '—'}</p>
-            </div>
-            <div>
-              <span className="text-gray-500 text-xs">ZK ID</span>
-              <p className="font-mono text-gray-300 mt-0.5">{emp.zkUserId}</p>
+              {/* Phase 23.1: code and zkUserId are enforced identical — one label. */}
+              <span className="text-gray-500 text-xs">رقم الموظف</span>
+              <p className="font-mono text-gray-300 mt-0.5">{emp.code || emp.zkUserId || '—'}</p>
             </div>
             <div>
               <span className="text-gray-500 text-xs">الفرع</span>
@@ -234,14 +233,13 @@ function EmployeeModal({ open, onClose, onSaved, emp, branches, departments }) {
               onChange={e => setForm({...form, name: e.target.value})} placeholder="اسم الموظف الكامل" />
           </div>
           <div>
-            <label className="label">رقم الجهاز (ZK ID) *</label>
+            {/* Phase 23.1: code and zkUserId are enforced identical by the
+                backend (routes/employees.js resolveUnifiedNumber) — one
+                field drives both, no separate "كود الموظف" input. */}
+            <label className="label">رقم الموظف / كود البصمة *</label>
             <input className="input font-mono" required value={form.zkUserId}
-              onChange={e => setForm({...form, zkUserId: e.target.value})} placeholder="الرقم في جهاز البصمة" />
-          </div>
-          <div>
-            <label className="label">كود الموظف</label>
-            <input className="input font-mono" value={form.code}
-              onChange={e => setForm({...form, code: e.target.value})} placeholder="EMP-001" />
+              onChange={e => setForm({...form, zkUserId: e.target.value, code: e.target.value})}
+              placeholder="الرقم في جهاز البصمة" />
           </div>
           <div>
             <label className="label">رقم الهاتف</label>
@@ -340,6 +338,9 @@ export default function EmployeesPage() {
   const [editing,     setEditing]     = useState(null);
   const [deleteInfo,  setDeleteInfo]  = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [stopTarget, setStopTarget] = useState(null); // employee being stopped — Phase 22.1
+  const [stopDate, setStopDate] = useState('');
+  const [stopSaving, setStopSaving] = useState(false);
   const gridRef = useRef();
 
   const cols = useMemo(() => [
@@ -376,10 +377,17 @@ export default function EmployeesPage() {
         : null,
       cellStyle: { justifyContent: 'center' } },
     {
-      field: 'status', headerName: 'الحالة', width: 90, headerClass: 'ag-header-center',
-      cellRenderer: ({ value }) => value
+      field: 'status', headerName: 'الحالة', width: 110, headerClass: 'ag-header-center',
+      cellRenderer: ({ value, data }) => value
         ? <span className="badge-green">نشط</span>
-        : <span className="badge-red">موقوف</span>,
+        : (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, lineHeight: 1.1 }}>
+            <span className="badge-red">موقوف</span>
+            {data?.effectiveStopDate && (
+              <span style={{ fontSize: 10, color: 'var(--text-3)' }}>{fmtDate(data.effectiveStopDate)}</span>
+            )}
+          </div>
+        ),
       cellStyle: { justifyContent: 'center' } },
     {
       headerName: 'إجراء', width: 180, sortable: false, filter: false, headerClass: 'ag-header-center',
@@ -423,21 +431,42 @@ export default function EmployeesPage() {
   };
 
   const handleStatusToggle = async (emp, newStatus) => {
-    const msg = newStatus
-      ? `هل تريد إعادة تفعيل الموظف "${emp.name}"؟`
-      : `هل تريد إيقاف الموظف "${emp.name}"؟\nيمكن إعادة تفعيله لاحقاً.`;
+    // Phase 22.1: stopping an employee now requires an effective stop date
+    // (routes/employees.js PUT /:id rejects status:false without one) — the
+    // date is what backend/src/routes/payroll.js uses to decide future
+    // payroll eligibility, so it can't be optional. Reactivation is
+    // unchanged: no date involved, and effectiveStopDate is preserved
+    // (backend leaves it untouched when omitted from the request body).
+    if (newStatus === false) {
+      setStopDate(new Date().toISOString().slice(0, 10));
+      setStopTarget(emp);
+      return;
+    }
+    const msg = `هل تريد إعادة تفعيل الموظف "${emp.name}"؟`;
     if (!window.confirm(msg)) return;
     try {
-      // P1 fix: send ONLY the field actually being changed. The backend
-      // (routes/employees.js PUT /:id) now leaves every omitted field
-      // untouched, so this can no longer silently overwrite another
-      // window's concurrent edit to this employee's other fields with the
-      // stale copy cached in this page's grid.
       await api.put(`/employees/${emp.id}`, { status: newStatus });
-      toast.success(newStatus ? `تم تفعيل "${emp.name}"` : `تم إيقاف "${emp.name}"`);
+      toast.success(`تم تفعيل "${emp.name}"`);
       loadAll();
     } catch (err) {
       toast.error(err.response?.data?.error || 'فشل التحديث');
+    }
+  };
+
+  const confirmStop = async () => {
+    if (!stopTarget || !stopDate) return;
+    setStopSaving(true);
+    try {
+      // P1 fix (unchanged): send ONLY the fields actually being changed —
+      // the backend leaves every omitted field untouched.
+      await api.put(`/employees/${stopTarget.id}`, { status: false, effectiveStopDate: stopDate });
+      toast.success(`تم إيقاف "${stopTarget.name}" بتاريخ ${fmtDate(stopDate)}`);
+      setStopTarget(null);
+      loadAll();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'فشل التحديث');
+    } finally {
+      setStopSaving(false);
     }
   };
 
@@ -597,6 +626,34 @@ export default function EmployeesPage() {
         onClose={() => setDeleteInfo(null)}
         onConfirm={handleDeleteConfirm}
       />
+
+      <Dialog
+        open={!!stopTarget}
+        onClose={() => setStopTarget(null)}
+        title={`إيقاف الموظف "${stopTarget?.name || ''}"`}
+        footer={(
+          <>
+            <button type="button" className="btn-primary" disabled={stopSaving || !stopDate} onClick={confirmStop}>
+              {stopSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : null} تأكيد الإيقاف
+            </button>
+            <button type="button" className="btn-secondary" onClick={() => setStopTarget(null)}>إلغاء</button>
+          </>
+        )}
+      >
+        <div>
+          <label className="label">تاريخ الإيقاف *</label>
+          <input
+            className="input"
+            type="date"
+            required
+            value={stopDate}
+            onChange={(e) => setStopDate(e.target.value)}
+          />
+          <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 8 }}>
+            من هذا التاريخ لن يظهر الموظف في كشوف المرتبات للفترات التي تبدأ بعده. يمكن إعادة تفعيل الموظف لاحقاً.
+          </p>
+        </div>
+      </Dialog>
     </div>
   );
 }

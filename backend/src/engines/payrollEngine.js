@@ -89,11 +89,24 @@ function applyApprovedAdjustment(r, adj) {
  *   of a proposed-but-not-yet-saved manual edit.
  */
 async function computePayroll(employeeId, month, year, opts = {}) {
-  const { recordsOverride } = opts;
+  const { recordsOverride, preload } = opts;
+  // `opts.tx` — see calculatePayrollImpl below. When present, every read this
+  // function issues goes through the CALLER's own transaction client instead
+  // of the shared singleton, so it sees that transaction's own uncommitted
+  // writes (e.g. an employee.salary update earlier in the same transaction)
+  // rather than the pre-transaction snapshot a separate connection would see.
+  // Omitting it is identical to previous behavior.
+  const client = opts.tx || prisma;
 
-  const employee = await prisma.employee.findUnique({
-    where: { id: employeeId },
-  });
+  // Phase 24.1: `preload` lets a bulk caller (e.g. GET /api/payroll) hand in
+  // data it already batch-fetched across all employees in one query instead
+  // of this function re-querying per employee (was the N+1 driving Prisma
+  // pool exhaustion at ~1,000 employees). Optional and additive — every
+  // existing single-employee caller that omits `preload` is byte-for-byte
+  // unaffected, still issuing the same 4 queries it always did.
+  const employee = preload?.employee !== undefined
+    ? preload.employee
+    : await client.employee.findUnique({ where: { id: employeeId } });
 
   if (!employee) throw new Error('Employee not found');
 
@@ -101,14 +114,16 @@ async function computePayroll(employeeId, month, year, opts = {}) {
 
   const { startDate, endDate } = monthRange(year, month);
 
-  const [rawRecords, monthAdjustments, existingPayroll] = await Promise.all([
-    prisma.attendanceDaily.findMany({
+  const [rawRecords, monthAdjustments, existingPayroll] = preload
+    ? [preload.rawRecords, preload.monthAdjustments, preload.existingPayroll]
+    : await Promise.all([
+    client.attendanceDaily.findMany({
       where: {
         employeeId,
         date: { gte: startDate, lte: endDate },
       },
     }),
-    prisma.attendanceAdjustment.findMany({
+    client.attendanceAdjustment.findMany({
       where: {
         employeeId,
         date: { gte: startDate, lte: endDate },
@@ -118,7 +133,7 @@ async function computePayroll(employeeId, month, year, opts = {}) {
     // Existing row is fetched to PRESERVE manual `bonus` and
     // `manualDeductionAdjustment` fields across recalculations — both are
     // HR-entered, never derived, and must survive every engine recalc.
-    prisma.payroll.findUnique({
+    client.payroll.findUnique({
       where: { employeeId_month_year: { employeeId, month, year } },
       select: { bonus: true, manualDeductionAdjustment: true },
     }),
@@ -397,8 +412,19 @@ async function calculatePayroll(employeeId, month, year) {
   return withPayrollKeyLock(employeeId, month, year, () => calculatePayrollImpl(employeeId, month, year));
 }
 
-async function calculatePayrollImpl(employeeId, month, year) {
-  const computed = await computePayroll(employeeId, month, year);
+// `opts.tx` is an optional Prisma transaction client — additive and
+// backward-compatible: every existing caller that omits it is byte-for-byte
+// unaffected (falls back to the shared singleton, same as before). Passing
+// `tx` lets a caller (e.g. routes/payroll.js PUT /:id) include this upsert in
+// its own `prisma.$transaction(...)`, so the recalculated payroll row commits
+// or rolls back together with whatever other writes that request made — no
+// second engine, no formula change, computePayroll()'s math is untouched.
+async function calculatePayrollImpl(employeeId, month, year, opts = {}) {
+  const client = opts.tx || prisma;
+  // Forward tx into computePayroll too — otherwise its employee/attendance
+  // reads would go through the shared singleton and could miss this same
+  // transaction's own uncommitted writes (see computePayroll's opts.tx doc).
+  const computed = await computePayroll(employeeId, month, year, { tx: opts.tx });
   const {
     basicSalary, hourlyRate, workDays, absentDays, latePenalty,
     penaltyUnits, penaltyAmount,
@@ -413,7 +439,7 @@ async function calculatePayrollImpl(employeeId, month, year) {
     `net=${netSalary.toFixed(2)} adjustmentsApplied=${appliedAdjustments}`
   );
 
-  const payroll = await prisma.payroll.upsert({
+  const payroll = await client.payroll.upsert({
     where: { employeeId_month_year: { employeeId, month, year } },
     update: {
       basicSalary,

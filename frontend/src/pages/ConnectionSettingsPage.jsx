@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Wifi, Server, HardDrive, Loader2, CheckCircle2, XCircle,
-  Save, RotateCcw, PlugZap,
+  Wifi, Server, HardDrive, Loader2, CheckCircle2, XCircle, Info,
+  Save, RotateCcw, PlugZap, Globe,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import api from '../lib/api';
 
 // ─── Connection Layer settings (EP-003 Hybrid Client/Server) ─────────────────
 // Electron-only page: the mode/serverUrl decide whether this desktop install
@@ -14,16 +15,113 @@ import toast from 'react-hot-toast';
 // A saved change only takes effect after restart, same as Update Center prefs.
 
 function ResultRow({ label, state }) {
-  // state: true | false | null (unknown/not-applicable)
+  // state: true | false | null (unknown/not-applicable) | 'auth_required'
+  // (server + network are healthy — Socket.IO just correctly requires login
+  // before this pre-login probe can hold a real-time connection open)
   const icon = state === true
     ? <CheckCircle2 style={{ width: 15, height: 15, color: '#10b981' }} />
-    : state === false
-      ? <XCircle style={{ width: 15, height: 15, color: '#ef4444' }} />
-      : <span style={{ width: 15, height: 15, display: 'inline-block', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>—</span>;
+    : state === 'auth_required'
+      ? <Info style={{ width: 15, height: 15, color: '#3b82f6' }} />
+      : state === false
+        ? <XCircle style={{ width: 15, height: 15, color: '#ef4444' }} />
+        : <span style={{ width: 15, height: 15, display: 'inline-block', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>—</span>;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
       {icon}
       <span style={{ fontSize: 13, color: 'var(--text-2)' }}>{label}</span>
+    </div>
+  );
+}
+
+// Phase 29 — Web Client: this page is inherently pinned to whatever server
+// served it (see src/lib/api.js — a plain browser falls back to a
+// same-origin relative baseURL). There is deliberately no "connect to a
+// different server" field here: accepting an arbitrary cross-origin URL
+// from the page would require relaxing the backend's CORS allowlist to
+// match, which is a real security regression (see F2 in the Phase 25
+// audit) for a convenience the web deployment model doesn't need — the web
+// client is meant to be served BY the server it talks to (Section 19).
+// This view is read-only: it reports the effective (same-origin) server
+// and lets the manager verify reachability, matching Section 22's
+// Connected/Server-unavailable requirement without exposing internals.
+const REQUIRED_API_VERSION = 1; // mirrors frontend/electron/constants.js
+
+function BrowserConnectionView() {
+  const [testing, setTesting] = useState(false);
+  const [result, setResult]   = useState(null);
+
+  const runTest = async () => {
+    setTesting(true);
+    setResult(null);
+    try {
+      const { data } = await api.get('/health');
+      const remoteApiVersion = data?.apiVersion ?? null;
+      setResult({
+        reachable: true,
+        dbConnected: data?.db === 'connected',
+        remoteVersion: data?.version || null,
+        remoteApiVersion,
+        versionCompatible: remoteApiVersion == null ? null : remoteApiVersion === REQUIRED_API_VERSION,
+      });
+      toast.success('الاتصال ناجح');
+    } catch (err) {
+      setResult({ reachable: false, error: 'تعذّر الوصول إلى الخادم' });
+      toast.error('تعذّر الوصول إلى الخادم');
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  useEffect(() => { runTest(); }, []);
+
+  return (
+    <div className="flex flex-col gap-4" dir="rtl">
+      <div className="page-header">
+        <h1 className="page-title">إعدادات الاتصال</h1>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="card p-5 flex flex-col gap-3">
+          <h3 style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>
+            <Globe style={{ width: 16, height: 16, color: '#79C0FF' }} />
+            خادم PETSHROW
+          </h3>
+          <p style={{ fontSize: 12, color: 'var(--text-3)' }}>
+            نسخة الويب متصلة دائماً بالخادم الذي قدّم هذه الصفحة — لا يمكن تغييره من هنا.
+          </p>
+          <div style={{ fontSize: 12, color: 'var(--text-2)', direction: 'ltr', textAlign: 'right', wordBreak: 'break-all' }}>
+            {window.location.origin}
+          </div>
+          <button className="btn-secondary text-xs justify-center" onClick={runTest} disabled={testing} style={{ marginTop: 4 }}>
+            {testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wifi className="w-3.5 h-3.5" />}
+            اختبار الاتصال
+          </button>
+        </div>
+        <div className="card p-5 flex flex-col gap-2">
+          <h3 style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: 'var(--text-1)', marginBottom: 4 }}>
+            <Wifi style={{ width: 16, height: 16, color: '#34d399' }} />
+            حالة الاتصال
+          </h3>
+          {testing && !result && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0' }}>
+              <Loader2 style={{ width: 14, height: 14, color: '#79C0FF', animation: 'spin 1s linear infinite' }} />
+              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>جاري الفحص...</span>
+            </div>
+          )}
+          {result && (
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <ResultRow label="الخادم قابل للوصول" state={result.reachable} />
+              <ResultRow label="قاعدة البيانات متصلة" state={result.reachable ? result.dbConnected : null} />
+              <ResultRow label="الإصدار متوافق" state={result.versionCompatible} />
+              {result.remoteVersion && (
+                <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)', fontSize: 11, color: 'var(--text-3)' }}>
+                  إصدار الخادم: {result.remoteVersion} (بروتوكول {result.remoteApiVersion ?? '—'})
+                </div>
+              )}
+              {result.error && <span style={{ fontSize: 11, color: '#f87171' }}>{result.error}</span>}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -87,18 +185,7 @@ export default function ConnectionSettingsPage() {
   const restartNow = () => window.electron.relaunch();
 
   if (!isElectron) {
-    return (
-      <div className="flex flex-col gap-4" dir="rtl">
-        <div className="page-header">
-          <h1 className="page-title">إعدادات الاتصال</h1>
-        </div>
-        <div className="card p-5">
-          <p style={{ fontSize: 13, color: 'var(--text-3)' }}>
-            هذه الصفحة متاحة فقط داخل تطبيق سطح المكتب.
-          </p>
-        </div>
-      </div>
-    );
+    return <BrowserConnectionView />;
   }
 
   const modeChangedPendingRestart = savedMode !== mode;
@@ -214,7 +301,10 @@ export default function ConnectionSettingsPage() {
             <div style={{ display: 'flex', flexDirection: 'column' }}>
               <ResultRow label="الخادم قابل للوصول" state={result.reachable} />
               <ResultRow label="قاعدة البيانات متصلة" state={result.reachable ? result.dbConnected : null} />
-              <ResultRow label="Socket.IO متصل" state={result.reachable ? result.socketConnected : null} />
+              <ResultRow
+                label={result.socketStatus === 'auth_required' ? 'Socket.IO يتطلب تسجيل الدخول' : 'Socket.IO متصل'}
+                state={result.reachable ? (result.socketStatus === 'connected' ? true : result.socketStatus === 'auth_required' ? 'auth_required' : false) : null}
+              />
               <ResultRow label="الإصدار متوافق" state={result.versionCompatible} />
               <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)', fontSize: 11, color: 'var(--text-3)', display: 'flex', flexDirection: 'column', gap: 2 }}>
                 <span dir="ltr" style={{ textAlign: 'right' }}>العنوان: {result.baseUrl}</span>

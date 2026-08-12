@@ -72,39 +72,42 @@ model Shift {
 }
 
 model Employee {
-  id               Int                    @id @default(autoincrement())
-  name             String
-  zkUserId         String
-  code             String?                @unique
-  phone            String?
-  email            String?
-  nationalId       String?
-  position         String?
-  hireDate         DateTime?
-  salary           Float                  @default(0)
-  departmentId     Int?
-  branchId         Int
-  shiftId          Int?
-  userId           Int?                   @unique
-  status           Boolean                @default(true)
-  createdAt        DateTime               @default(now())
-  updatedAt        DateTime               @updatedAt
-  isMonitored      Boolean                @default(false)
-  monitorColor     String?                @db.VarChar(20)
-  advances         Advance[]
-  adjustments      AttendanceAdjustment[]
-  attendanceDaily  AttendanceDaily[]
-  attendanceLogs   AttendanceLog[]
-  branch           Branch                 @relation(fields: [branchId], references: [id])
-  department       Department?            @relation(fields: [departmentId], references: [id])
-  shift            Shift?                 @relation(fields: [shiftId], references: [id])
-  user             User?                  @relation(fields: [userId], references: [id])
-  manualEditAudits ManualEditAuditLog[]
-  payrolls         Payroll[]
+  id                Int                    @id @default(autoincrement())
+  name              String
+  zkUserId          String
+  code              String?
+  phone             String?
+  email             String?
+  nationalId        String?
+  position          String?
+  hireDate          DateTime?
+  effectiveStopDate DateTime?
+  salary            Float                  @default(0)
+  departmentId      Int?
+  branchId          Int
+  shiftId           Int?
+  userId            Int?                   @unique
+  status            Boolean                @default(true)
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  isMonitored       Boolean                @default(false)
+  monitorColor      String?                @db.VarChar(20)
+  advances          Advance[]
+  adjustments       AttendanceAdjustment[]
+  attendanceDaily   AttendanceDaily[]
+  attendanceLogs    AttendanceLog[]
+  branch            Branch                 @relation(fields: [branchId], references: [id])
+  department        Department?            @relation(fields: [departmentId], references: [id])
+  shift             Shift?                 @relation(fields: [shiftId], references: [id])
+  user              User?                  @relation(fields: [userId], references: [id])
+  manualEditAudits  ManualEditAuditLog[]
+  payrolls          Payroll[]
 
   @@index([branchId], map: "employees_branchId_fkey")
   @@index([departmentId], map: "employees_departmentId_fkey")
   @@index([shiftId], map: "employees_shiftId_fkey")
+  @@index([code], map: "employees_code_idx")
+  @@index([zkUserId], map: "employees_zkuserid_idx")
   @@map("employees")
 }
 

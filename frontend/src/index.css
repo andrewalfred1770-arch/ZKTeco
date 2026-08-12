@@ -168,6 +168,10 @@ html.dark, html:not(.light) {
   /* --status-half-day removed 2026-06-22 */
   --status-weekend:        #8B949E;
   --status-weekend-bg:     rgba(139,148,158,0.12);
+  /* Official holiday — the ONLY state Phase 19 recolors. Sourced exclusively
+     from data.isHoliday (rulesEngine.js#isHoliday: an exact-date match
+     against the Holiday table) — never inferred from weekend/leave. Value
+     unchanged from before Phase 19. */
   --status-holiday:        #3FB9B0;
   --status-holiday-bg:     rgba(63,185,176,0.14);
   --status-overtime:       #A371F7;
@@ -321,6 +325,8 @@ html.light {
   /* --status-half-day removed 2026-06-22 */
   --status-weekend:        #475569;
   --status-weekend-bg:     rgba(71,85,105,0.08);
+  /* Official holiday — see the dark-theme block's comment. Value unchanged
+     from before Phase 19. */
   --status-holiday:        #1d4ed8;
   --status-holiday-bg:     rgba(29,78,216,0.11);
 
@@ -902,7 +908,15 @@ html.dark  .row-late     { background:var(--status-late-bg) !important;     box-
 html.dark  .row-overtime { background:var(--status-overtime-bg) !important; box-shadow: inset 4px 0 0 var(--status-overtime); }
 /* row-half-day removed 2026-06-22 */
 html.dark  .row-weekend  { opacity:0.44 !important; }
-html.dark  .row-holiday  { background:var(--status-holiday-bg) !important;  box-shadow: inset 4px 0 0 var(--status-holiday); }
+/* Phase 19: official holiday needs the 3-part `.ag-row.row-holiday`
+   selector (not just `.row-holiday`) to out-specify the zebra-striping
+   `html.<theme> .ag-row.ag-row-odd/-even` "extra enforcement" rules (also
+   !important, also 3 class-parts) — verified live that the 2-part selector
+   this rule used before silently lost that specificity tie on whichever
+   rows the zebra stripe also touched, so the existing blue token never
+   actually rendered on about half of all holiday rows. Color value itself
+   is unchanged. */
+html.dark  .ag-row.row-holiday  { background:var(--status-holiday-bg) !important;  box-shadow: inset 4px 0 0 var(--status-holiday); }
 html.dark  .row-monitored { background:var(--status-late-bg) !important; }
 
 /* Light mode */
@@ -911,7 +925,7 @@ html.light .row-late     { background:#fde68a !important; box-shadow: inset 5px 
 html.light .row-overtime { background:#c7d2fe !important; box-shadow: inset 5px 0 0 #4338ca; }
 /* row-half-day removed 2026-06-22 */
 html.light .row-weekend  { background:#e2e8f0 !important; opacity:0.72 !important; }
-html.light .row-holiday  { background:#bfdbfe !important; box-shadow: inset 5px 0 0 #1d4ed8; color:#1e3a8a !important; }
+html.light .ag-row.row-holiday  { background:#bfdbfe !important; box-shadow: inset 5px 0 0 #1d4ed8; color:#1e3a8a !important; }
 /* Monitored rows: highest visual priority — declared last to win over all state rows */
 html.light .row-monitored { background:rgba(245,158,11,0.18) !important; }
 

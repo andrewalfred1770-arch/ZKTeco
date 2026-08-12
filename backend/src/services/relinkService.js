@@ -63,9 +63,17 @@ async function relinkAttendanceLogs({ employeeId, deviceId, io, reason } = {}) {
   };
   if (employeeId) employeeWhere.id = employeeId;
 
+  // Phase 23.1: a zkUserId can now be shared by (one active + N stopped)
+  // employees when a number is reused after termination. This loop claims
+  // orphaned logs for a zkUserId on a first-come basis (the first employee
+  // processed wins; later ones for the same zkUserId find count=0 and
+  // no-op) — ordering active first ensures a genuinely orphaned live punch
+  // for a reused number always attaches to whoever currently holds it, not
+  // to whichever stopped historical row `findMany` happened to return first.
   const employees = await prisma.employee.findMany({
     where: employeeWhere,
     select: { id: true, name: true, code: true, zkUserId: true, status: true },
+    orderBy: { status: 'desc' },
   });
 
   emit(io, 'relink:start', { reason: reason || null, employeeCount: employees.length });
@@ -215,6 +223,7 @@ async function getRelinkDiagnostics() {
   const employees = await prisma.employee.findMany({
     where: { NOT: { zkUserId: '' } },
     select: { id: true, name: true, code: true, zkUserId: true, status: true },
+    orderBy: { status: 'asc' }, // Phase 23.1: active processed last, wins the Map.set overwrite for a reused number.
   });
   const empByZk = new Map(employees.map(e => [e.zkUserId, e]));
 

@@ -36,7 +36,18 @@ function emit(io, event, payload) {
  */
 async function recalcScope({ from, to, branchId, departmentId, employeeId, employeeIds, io, reason, allowFinalizedPayroll = false } = {}) {
   const start = moment(from).startOf('day');
-  const end = moment(to).endOf('day');
+  // Phase 23.4: a day that hasn't happened yet has no attendance to compute —
+  // same invariant attendanceEngine.processMonth() already enforces (EF-005.4)
+  // but this engine never had. Without this clamp, any caller passing a `to`
+  // at or past month-end (e.g. recalcCurrentAndFuture()'s currentMonthRange())
+  // walks attendanceEngine.processDate() across future dates, writing
+  // synthetic "absent" AttendanceDaily rows for days that haven't occurred —
+  // confirmed live: a single global rule toggle produced 2,224 such rows
+  // across 106 employees in one run. This is the ONE shared recalc entry
+  // point (rules.js, holidays.js, cleanup.js's cascade, and every
+  // recalcCurrentAndFuture() caller all funnel through here), so clamping
+  // once here — rather than in each caller — closes the gap everywhere at once.
+  const end = moment.min(moment(to).endOf('day'), moment().endOf('day'));
 
   const employees = await prisma.employee.findMany({
     where: {

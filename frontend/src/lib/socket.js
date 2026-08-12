@@ -5,8 +5,15 @@ import { io as socketIO } from 'socket.io-client';
 // to whichever backend the main process resolved at startup. Shared here so
 // every page that needs live updates reuses ONE connection instead of
 // opening a new socket per mounted page.
+//
+// Phase 29 — plain-browser (Web Client) fallback: previously hardcoded to
+// 'http://localhost:5000', which only ever worked for local dev against the
+// default port. A Web Client build served from (and meant to talk to)
+// whatever host/port actually hosts it must default to same-origin, exactly
+// like lib/api.js's empty-string fallback — socket.io-client connects to the
+// current page's origin when given an empty string.
 const backendBase = window.electron?.backendBaseUrl
-  ?? (window.electron?.backendPort ? `http://localhost:${window.electron.backendPort}` : 'http://localhost:5000');
+  ?? (window.electron?.backendPort ? `http://localhost:${window.electron.backendPort}` : '');
 
 let socket = null;
 

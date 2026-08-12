@@ -79,6 +79,19 @@ export function replaceAttendanceRow(rows, updatedRow) {
   return rows.map(r => (r.id === updatedRow.id ? updatedRow : r));
 }
 
+// ── Bulk row-update pipeline ────────────────────────────────────────────────
+/**
+ * Same full-replacement contract as replaceAttendanceRow(), applied to many
+ * rows from one bulk-endpoint response in a single pass (POST
+ * /attendance/bulk-mark-unauthorized). Rows not present in `updatedRows` are
+ * left untouched.
+ */
+export function replaceAttendanceRows(rows, updatedRows) {
+  if (!updatedRows?.length) return rows;
+  const byId = new Map(updatedRows.map(r => [r.id, r]));
+  return rows.map(r => byId.get(r.id) ?? r);
+}
+
 // ── Concurrent-edit-safe row apply ──────────────────────────────────────────
 /**
  * A PUT response reflects the backend's row state at the moment THAT request

@@ -1,4 +1,4 @@
-const moment = require('moment');
+const { fmtDate, fmtTime } = require('./fastDate');
 const { hasVerifiedManualEdit } = require('./manualEditAudit');
 
 // ─── Canonical Attendance Row Builder (Phase 12.1) ────────────────────────────
@@ -40,9 +40,9 @@ function buildAttendanceRow({ employee, merged, dateStr, verifiedManualIds, adj 
     department: employee.department?.name || '',
     branch: employee.branch?.name || '',
     shift: employee.shift?.name || '',
-    date: merged?.date ? moment(merged.date).format('YYYY-MM-DD') : dateStr,
-    checkIn: merged?.checkIn ? moment(merged.checkIn).format('HH:mm') : null,
-    checkOut: merged?.checkOut ? moment(merged.checkOut).format('HH:mm') : null,
+    date: merged?.date ? fmtDate(merged.date) : dateStr,
+    checkIn: merged?.checkIn ? fmtTime(merged.checkIn) : null,
+    checkOut: merged?.checkOut ? fmtTime(merged.checkOut) : null,
     // Preserves the pre-existing type quirk exactly: a record with 0 worked
     // minutes formats to the STRING "0.00"; no record at all yields the
     // NUMBER 0 — this was already true of GET /daily's output before this

@@ -112,7 +112,7 @@ console.log("AFTER createMainWindow");
   //    readiness poller below still confirms it's actually reachable.
   if (state.connectionMode === 'local') {
     (async () => {
-      await killStaleBackend();
+      await killStaleBackend(paths);
       startBackend(paths);
     })().catch(err => console.error('[Electron] backend init error:', err.message));
   } else {

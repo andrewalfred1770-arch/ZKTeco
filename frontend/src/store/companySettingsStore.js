@@ -18,14 +18,19 @@ const useCompanySettingsStore = create((set, get) => ({
   settings: {},
   loading: false,
   loaded: false,
+  // Distinguishes "the API call itself failed" (e.g. a 401 from a
+  // misconfigured server, or the server being unreachable) from a genuine
+  // first-run empty company — both leave `settings` at `{}`, but only the
+  // latter should trigger the "company not configured yet" onboarding banner.
+  fetchError: false,
 
   async fetch() {
     set({ loading: true });
     try {
       const { data } = await api.get('/settings/company');
-      set({ settings: data || {}, loading: false, loaded: true });
+      set({ settings: data || {}, loading: false, loaded: true, fetchError: false });
     } catch {
-      set({ loading: false });
+      set({ loading: false, fetchError: true });
     }
   },
 

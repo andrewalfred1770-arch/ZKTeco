@@ -364,20 +364,31 @@ router.put('/:id/manual-penalty', authorize('admin', 'hr'), async (req, res) => 
       updateData.manualEdit = true;
     }
 
-    const updated = await prisma.attendanceDaily.update({ where: { id: rec.id }, data: updateData });
-
-    for (const c of changedFields) {
-      await writeAudit({
-        employeeId: rec.employeeId,
-        attendanceDailyId: rec.id,
-        fieldName: c.field,
-        oldValue: c.old,
-        newValue: c.new,
-        reason: effReason,
-        userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole,
-        source: source || 'inline-grid',
-      });
-    }
+    // EF-029.3: the row update and every one of its audit rows now commit or
+    // roll back together — previously these were separate calls, so a crash
+    // between them could leave manualLatePenaltyUnits/status changed with no
+    // matching ManualEditAuditLog entry. Payroll recalculation stays OUTSIDE
+    // this transaction, unchanged from before (EF-022.1): it's a deliberate,
+    // documented trade-off — a recalc failure must not undo an attendance
+    // correction that already has a valid, now-fully-audited committed state;
+    // the failure is still surfaced via `payrollError`, never silently hidden.
+    const updated = await prisma.$transaction(async (tx) => {
+      const updated = await tx.attendanceDaily.update({ where: { id: rec.id }, data: updateData });
+      for (const c of changedFields) {
+        await writeAudit({
+          employeeId: rec.employeeId,
+          attendanceDailyId: rec.id,
+          fieldName: c.field,
+          oldValue: c.old,
+          newValue: c.new,
+          reason: effReason,
+          userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole,
+          source: source || 'inline-grid',
+          tx,
+        });
+      }
+      return updated;
+    });
 
     // EF-022.1 / C1: see manual-edit handler above for rationale.
     const m = moment(rec.date);
@@ -427,36 +438,42 @@ router.put('/:id/absence-type', authorize('admin', 'hr'), async (req, res) => {
 
     const before = { absenceType: rec.absenceType, penaltyDays: rec.penaltyDays, absenceReason: rec.absenceReason };
 
-    const updated = await prisma.attendanceDaily.update({
-      where: { id: rec.id },
-      data: {
-        absenceType,
-        penaltyDays: pd,
-        absenceReason: absenceReason ?? rec.absenceReason,
-        absenceSetBy:  modifiedByName ?? rec.absenceSetBy,
-        absenceSetAt:  new Date(),
-      },
-    });
+    // EF-029.3: same hardening as /manual-penalty above — the row update and
+    // its audit rows commit or roll back as one unit. Payroll recalc stays
+    // outside the transaction (EF-022.1, unchanged behavior).
+    const updated = await prisma.$transaction(async (tx) => {
+      const updated = await tx.attendanceDaily.update({
+        where: { id: rec.id },
+        data: {
+          absenceType,
+          penaltyDays: pd,
+          absenceReason: absenceReason ?? rec.absenceReason,
+          absenceSetBy:  modifiedByName ?? rec.absenceSetBy,
+          absenceSetAt:  new Date(),
+        },
+      });
 
-    // Audit trail
-    for (const [field, oldVal, newVal] of [
-      ['absenceType',   before.absenceType,   updated.absenceType],
-      ['penaltyDays',   before.penaltyDays,   updated.penaltyDays],
-      ['absenceReason', before.absenceReason, updated.absenceReason],
-    ]) {
-      if (String(oldVal ?? '') !== String(newVal ?? '')) {
-        await writeAudit({
-          employeeId: rec.employeeId,
-          attendanceDailyId: rec.id,
-          fieldName: field,
-          oldValue: oldVal,
-          newValue: newVal,
-          reason: absenceReason || `تحديد نوع الغياب: ${absenceType}`,
-          userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole,
-          source: source || 'absence-type-modal',
-        });
+      for (const [field, oldVal, newVal] of [
+        ['absenceType',   before.absenceType,   updated.absenceType],
+        ['penaltyDays',   before.penaltyDays,   updated.penaltyDays],
+        ['absenceReason', before.absenceReason, updated.absenceReason],
+      ]) {
+        if (String(oldVal ?? '') !== String(newVal ?? '')) {
+          await writeAudit({
+            employeeId: rec.employeeId,
+            attendanceDailyId: rec.id,
+            fieldName: field,
+            oldValue: oldVal,
+            newValue: newVal,
+            reason: absenceReason || `تحديد نوع الغياب: ${absenceType}`,
+            userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole,
+            source: source || 'absence-type-modal',
+            tx,
+          });
+        }
       }
-    }
+      return updated;
+    });
 
     // Recalculate payroll — penalty days change affects the deduction amount.
     // EF-022.1 / C1: see manual-edit handler above for rationale.
@@ -466,6 +483,155 @@ router.put('/:id/absence-type', authorize('admin', 'hr'), async (req, res) => {
     if (req.io) req.io.emit('attendance:processed', { employeeId: rec.employeeId, source: 'absence-type' });
 
     res.json({ ...await buildDailyResponseRow(updated), payroll, payrollError, payrollProtected });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Bulk Unauthorized Absence ──────────────────────────────────────────────
+// User selects N already-absent rows in the Daily/Monthly Attendance grid and
+// marks them all "غياب بدون إذن" (without_permission) in one action. This is
+// NOT a new absence concept — it drives the exact same absenceType/penaltyDays
+// fields and the exact same ABSENCE_TYPE_DEFAULT_DAYS.without_permission (2)
+// constant the single-row PUT /:id/absence-type endpoint above already uses,
+// so the existing Rules/Payroll Engine computes the deduction exactly as it
+// would for one manual edit at a time. penaltyDays is never accepted from the
+// request body — only the backend-resolved default, so the client cannot set
+// its own penalty value.
+//
+// Per-row eligibility (not-absent, future-date, missing id) is skipped with a
+// reported reason rather than failing the whole batch — a mixed selection of
+// Present+Absent employees must silently leave the Present ones untouched
+// (never modify them, never error the whole request over them). The eligible
+// subset's row updates AND their audit rows commit together in one
+// $transaction (all succeed or none do — EF-029.3); payroll recalculation
+// stays outside it and reports per-target success/failure explicitly via
+// `payrollResults`, same EF-022.1 rationale as the single-row routes above.
+router.post('/bulk-mark-unauthorized', authorize('admin', 'hr'), async (req, res) => {
+  try {
+    const { ids, absenceReason, modifiedBy, modifiedByName, modifiedByRole, source } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'ids مطلوب (مصفوفة من معرّفات سجلات الحضور)' });
+    }
+    const idList = [...new Set(ids.map(Number))].filter(Number.isInteger);
+    if (!idList.length) {
+      return res.status(400).json({ error: 'ids غير صالحة' });
+    }
+
+    const records = await prisma.attendanceDaily.findMany({ where: { id: { in: idList } } });
+    const foundIds = new Set(records.map(r => r.id));
+    const today = moment().startOf('day');
+
+    const eligible = [];
+    const skipped = [];
+    for (const id of idList) {
+      if (!foundIds.has(id)) { skipped.push({ id, reason: 'not_found' }); continue; }
+      const rec = records.find(r => r.id === id);
+      if (moment(rec.date).startOf('day').isAfter(today)) {
+        skipped.push({ id, employeeId: rec.employeeId, reason: 'future_date' });
+        continue;
+      }
+      if (!rec.isAbsent) {
+        skipped.push({ id, employeeId: rec.employeeId, reason: 'not_absent' });
+        continue;
+      }
+      eligible.push(rec);
+    }
+
+    if (!eligible.length) {
+      return res.status(400).json({ error: 'لا يوجد سجلات غياب صالحة ضمن التحديد', skipped });
+    }
+
+    const penaltyDays = ABSENCE_TYPE_DEFAULT_DAYS.without_permission;
+    const setAt = new Date();
+    const before = new Map(eligible.map(rec => [rec.id, {
+      absenceType: rec.absenceType, penaltyDays: rec.penaltyDays, absenceReason: rec.absenceReason,
+    }]));
+
+    // EF-029.3: row updates and their audit rows now commit or roll back as
+    // one unit (was: array-form $transaction for the updates only, with audit
+    // writes as separate, un-transacted calls afterward — a crash between the
+    // two could leave rows marked without_permission with zero audit trail).
+    const updatedRows = await prisma.$transaction(async (tx) => {
+      const rows = [];
+      for (const rec of eligible) {
+        const updated = await tx.attendanceDaily.update({
+          where: { id: rec.id },
+          data: {
+            absenceType: 'without_permission',
+            penaltyDays,
+            absenceReason: absenceReason ?? rec.absenceReason,
+            absenceSetBy: modifiedByName ?? rec.absenceSetBy,
+            absenceSetAt: setAt,
+          },
+        });
+        rows.push(updated);
+      }
+
+      // Audit trail — same per-field, only-if-changed pattern as the single-row route.
+      for (const updated of rows) {
+        const b = before.get(updated.id);
+        for (const [field, oldVal, newVal] of [
+          ['absenceType', b.absenceType, updated.absenceType],
+          ['penaltyDays', b.penaltyDays, updated.penaltyDays],
+          ['absenceReason', b.absenceReason, updated.absenceReason],
+        ]) {
+          if (String(oldVal ?? '') !== String(newVal ?? '')) {
+            await writeAudit({
+              employeeId: updated.employeeId,
+              attendanceDailyId: updated.id,
+              fieldName: field,
+              oldValue: oldVal,
+              newValue: newVal,
+              reason: absenceReason || 'غياب بدون إذن (تحديد جماعي)',
+              userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole,
+              source: source || 'bulk-unauthorized-absence',
+              tx,
+            });
+          }
+        }
+      }
+
+      return rows;
+    });
+
+    // Dedupe recalculation targets by employee+month+year (adjustments.js's
+    // bulk-approve established this pattern — one calculatePayroll call per
+    // unique target, not one per row, even if several selected rows land in
+    // the same employee/month).
+    const recalcTargets = new Map();
+    for (const updated of updatedRows) {
+      const m = moment(updated.date);
+      const key = `${updated.employeeId}|${m.month() + 1}|${m.year()}`;
+      if (!recalcTargets.has(key)) {
+        recalcTargets.set(key, { employeeId: updated.employeeId, month: m.month() + 1, year: m.year() });
+      }
+    }
+
+    const payrollResults = [];
+    for (const target of recalcTargets.values()) {
+      const { payroll, payrollError, payrollProtected } = await recalcPayrollProtected(
+        target.employeeId, target.month, target.year, 'bulk-unauthorized-absence'
+      );
+      payrollResults.push({ ...target, payrollError, payrollProtected, hasPayroll: !!payroll });
+    }
+
+    const updatedEmployeeIds = [...new Set(updatedRows.map(r => r.employeeId))];
+    if (req.io) {
+      for (const employeeId of updatedEmployeeIds) {
+        req.io.emit('attendance:processed', { employeeId, source: 'bulk-unauthorized-absence' });
+      }
+    }
+
+    const responseRows = await Promise.all(updatedRows.map(r => buildDailyResponseRow(r)));
+
+    res.json({
+      updated: responseRows,
+      skipped,
+      updatedCount: responseRows.length,
+      skippedCount: skipped.length,
+      payrollResults,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

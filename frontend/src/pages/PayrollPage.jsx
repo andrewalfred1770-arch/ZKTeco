@@ -3,7 +3,7 @@ import { useFocusTrap } from '../hooks/useFocusTrap';
 import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-quartz.css';
-import { Download, Play, Loader2, RefreshCw, Users, Printer, AlertTriangle, X } from 'lucide-react';
+import { Download, Play, Loader2, RefreshCw, Users, Printer, AlertTriangle, X, ClipboardList, ChevronDown, ChevronUp, CalendarDays } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api, { LONG_OP } from '../lib/api';
 import { useTheme } from '../contexts/ThemeContext';
@@ -11,6 +11,8 @@ import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import { fmtMoney, fmtIntZero, fmtOTHours, fmtPenaltyUnits, fmtEditableZero, fmtDec, displayNetSalary } from '../lib/formatters';
 import FinalSalaryModal from '../components/FinalSalaryModal';
 import PrintPreviewModal from '../components/PrintPreviewModal';
+import PayrollBreakdownDialog from '../components/PayrollBreakdownDialog';
+import EmployeeMonthlyStatementDrawer from '../components/EmployeeMonthlyStatementDrawer';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
 import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_TINY, tabToNextCell, safeRefreshCells } from '../lib/gridDefaults';
@@ -75,23 +77,64 @@ function EmployeeNameCell(p) {
 function DetailBtnRenderer(p) {
   if (!p.data) return null;
   return (
-    <button
-      onClick={() => p.context?.openDetail(p.data)}
-      style={{
-        background: 'transparent',
-        border: '1px solid var(--border)',
-        borderRadius: 5,
-        padding: '2px 10px',
-        cursor: 'pointer',
-        color: 'var(--c-accent)',
-        fontSize: 11,
-        fontFamily: 'var(--font-ui)',
-        whiteSpace: 'nowrap',
-        lineHeight: '1.6',
-      }}
-    >
-      بيان
-    </button>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 5, height: '100%' }}>
+      {/* Phase 20.3: replaces the removed "مسودة" status text with an icon
+          button that opens the SAME EmployeeMonthlyStatementDrawer already
+          built in Phase 20.1 (GET /attendance/monthly-detail, employeeId-
+          narrowed) — reused verbatim, not a new attendance view — for this
+          row's employee and the Payroll page's currently selected month/year.
+          Guarded the same way as the other two buttons in this renderer. */}
+      <button
+        onClick={() => { if (typeof p.context?.openMonthlyStatement === 'function') p.context.openMonthlyStatement(p.data); }}
+        title="الكشف الشهري"
+        style={{
+          background: 'transparent', border: '1px solid var(--border)', borderRadius: 5,
+          width: 24, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          cursor: 'pointer', color: 'var(--text-3)', flexShrink: 0,
+        }}
+      >
+        <CalendarDays style={{ width: 12, height: 12 }} />
+      </button>
+      <button
+        onClick={() => { if (typeof p.context?.openDetail === 'function') p.context.openDetail(p.data); }}
+        style={{
+          background: 'transparent',
+          border: '1px solid var(--border)',
+          borderRadius: 5,
+          padding: '2px 10px',
+          cursor: 'pointer',
+          color: 'var(--c-accent)',
+          fontSize: 11,
+          fontFamily: 'var(--font-ui)',
+          whiteSpace: 'nowrap',
+          lineHeight: '1.6',
+        }}
+      >
+        بيان
+      </button>
+      {/* Phase 20.3: opens PayrollBreakdownDialog — display-only breakdown of
+          the SAME data "بيان" already fetches (GET /payroll/final-sheet),
+          plus status/audit/comparison. Separate button so the existing
+          "بيان" print/export flow is completely untouched. Guarded (not a
+          bare call) — AG Grid can invoke a cell renderer's event handlers
+          during an internal render/measurement pass before this row's
+          `context` prop is fully attached; a bare call intermittently threw
+          "openReview is not a function" during that pass even though every
+          real user click (verified live) always had a valid context. */}
+      <button
+        onClick={() => { if (typeof p.context?.openReview === 'function') p.context.openReview(p.data); }}
+        title="مراجعة كشف المرتبات"
+        style={{
+          background: 'transparent', border: '1px solid var(--border)', borderRadius: 5,
+          width: 24, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          cursor: 'pointer', color: 'var(--text-3)', flexShrink: 0,
+        }}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+        </svg>
+      </button>
+    </div>
   );
 }
 
@@ -104,6 +147,9 @@ export default function PayrollPage() {
   const [modal,       setModal]       = useState(null); // { row, bulk }
   const [calcConfirm, setCalcConfirm] = useState(false); // payroll calc confirmation
   const [printOpen,   setPrintOpen]   = useState(false);
+  const [reviewRow,   setReviewRow]   = useState(null); // Phase 20.3 breakdown dialog target
+  const [reviewPanelOpen, setReviewPanelOpen] = useState(false); // Phase 20.2 review panel
+  const [statementRow, setStatementRow] = useState(null); // Phase 20.3 monthly statement icon target
 
   // Phase 13.9: accessible-dialog semantics for the calc-confirm dialog.
   // Escape only ever mirrors the existing Cancel/X button (dismiss without
@@ -152,6 +198,8 @@ export default function PayrollPage() {
   // Stable callback for the detail button — passed via AG Grid context so the
   // cell renderer can open the FinalSalaryModal without being re-registered.
   const openDetail = useCallback((row) => setModal({ row, bulk: false }), []);
+  const openReview = useCallback((row) => setReviewRow(row), []);
+  const openMonthlyStatement = useCallback((row) => setStatementRow(row), []);
 
   const cols = useMemo(() => [
     // ── Identity (pinned right, always visible while scrolling) ───────────────
@@ -260,8 +308,13 @@ export default function PayrollPage() {
       cellStyle: { ...MONEY, fontSize: '13.5px', color: 'var(--c-net)', borderLeft: '2px solid #2563eb', background: 'var(--accent-soft)' },
     },
     // ── Action: opens the full salary statement (pinned left) ─────────────────
+    // Phase 20.3: the "الحالة" column was removed from this grid (the text
+    // "مسودة" no longer appears anywhere on the page); Payroll.status itself
+    // is untouched and still shown as a badge inside PayrollBreakdownDialog's
+    // title (see that component). Width widened by the removed column's
+    // freed space to fit the three action buttons this column now holds.
     {
-      field: '_action', headerName: '', width: 64, minWidth: 60, pinned: 'left',
+      field: '_action', headerName: '', width: 150, minWidth: 140, pinned: 'left',
       sortable: false, filter: false, suppressHeaderMenuButton: true,
       headerClass: 'ag-header-center',
       cellRenderer: DetailBtnRenderer,
@@ -434,6 +487,40 @@ export default function PayrollPage() {
     net:         rows.reduce((s, r) => s + (r.netSalary                  || 0), 0),
   }), [rows]);
 
+  // ── Phase 20.2: Payroll Review flags ──────────────────────────────────────
+  // PRESENTATION-ONLY. These are review heuristics, not payroll/business
+  // rules — they never read from or write to any rule/threshold table, and
+  // never alter a single payroll value. No system-wide "max absence days" or
+  // "max deduction %" threshold exists anywhere in this codebase (checked:
+  // rulesEngine.js has no such rule key) other than the Rules Engine's own
+  // `overtime_cap_hours`, which is already enforced INSIDE the actual
+  // overtimeHours calculation — a row already at/under that cap cannot look
+  // "unusual" by definition, so it isn't a useful review signal here.
+  // Instead, deductions/overtime/absence are flagged RELATIVE to this same
+  // month's own dataset (more than double the average, among employees who
+  // actually have a nonzero value) — a self-calibrating heuristic that
+  // adapts to each company's real pay scale instead of a fabricated fixed
+  // number. Net<=0 and "no basic salary configured" are the only absolute
+  // (non-heuristic) flags, since those are objectively incomplete/broken
+  // regardless of company scale.
+  const reviewFlags = useMemo(() => {
+    const nonZero = (key) => rows.filter(r => (r[key] || 0) > 0).map(r => r[key]);
+    const avg = (arr) => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0;
+    const avgDeduct = avg(nonZero('deductions'));
+    const avgOT     = avg(nonZero('overtimeHours'));
+    const avgAbsent = avg(nonZero('absentDays'));
+
+    return rows.map(row => {
+      const flags = [];
+      if ((row.netSalary || 0) <= 0) flags.push({ key: 'zeroNet', label: 'صافي راتب صفر أو سالب', severity: 'high' });
+      if ((row.basicSalary || 0) === 0) flags.push({ key: 'noBasic', label: 'لا يوجد راتب أساسي مُعرَّف', severity: 'high' });
+      if (avgDeduct > 0 && (row.deductions || 0) > avgDeduct * 2) flags.push({ key: 'highDeduct', label: 'خصومات أعلى من ضعف المتوسط', severity: 'medium' });
+      if (avgOT > 0 && (row.overtimeHours || 0) > avgOT * 2) flags.push({ key: 'highOT', label: 'ساعات إضافي أعلى من ضعف المتوسط', severity: 'low' });
+      if (avgAbsent > 0 && (row.absentDays || 0) > avgAbsent * 2) flags.push({ key: 'highAbsent', label: 'أيام غياب أعلى من ضعف المتوسط', severity: 'medium' });
+      return { row, flags };
+    }).filter(r => r.flags.length > 0);
+  }, [rows]);
+
   return (
     <div className="flex flex-col gap-3" style={{ flex: 1, minHeight: 0 }} dir="rtl">
 
@@ -495,7 +582,57 @@ export default function PayrollPage() {
             <PayrollMetric {...m} />
           </div>
         ))}
+        {/* Phase 20.9: "موظفون يحتاجون مراجعة" — count of rows flagged by
+            reviewFlags above (presentation heuristics only, see comment
+            there). Clicking toggles the review panel below. */}
+        <button
+          onClick={() => setReviewPanelOpen(v => !v)}
+          style={{
+            flex: '1 1 150px', borderRight: '1px solid var(--border)', border: 0, borderInlineStart: '1px solid var(--border)',
+            background: reviewFlags.length ? 'rgba(245,158,11,0.06)' : 'transparent', cursor: 'pointer', textAlign: 'inherit',
+          }}
+        >
+          <div className="metric" style={{ '--m-accent': '#f59e0b', '--m-color': reviewFlags.length ? '#f59e0b' : 'var(--text-3)' }}>
+            <span className="metric-label" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              موظفون يحتاجون مراجعة
+              {reviewPanelOpen ? <ChevronUp style={{ width: 11, height: 11 }} /> : <ChevronDown style={{ width: 11, height: 11 }} />}
+            </span>
+            <span className="metric-value" style={{ direction: 'ltr', fontSize: 22 }}>{reviewFlags.length}</span>
+          </div>
+        </button>
       </div>
+
+      {/* ── Phase 20.2: Payroll Review panel — flagged rows only, opens the
+          SAME PayrollBreakdownDialog as the grid's own review button.
+          Never modifies any payroll value; purely a filtered read view. ── */}
+      {reviewPanelOpen && (
+        <div className="card p-3" style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 220, overflowY: 'auto' }}>
+          {reviewFlags.length === 0 ? (
+            <p style={{ fontSize: 12.5, color: 'var(--text-3)', textAlign: 'center', padding: '10px 0' }}>
+              لا توجد سجلات تحتاج مراجعة لهذا الشهر
+            </p>
+          ) : reviewFlags.map(({ row, flags }) => (
+            <div key={row.id} style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px',
+              borderRadius: 7, background: 'var(--surface-2)', border: '1px solid var(--border)',
+            }}>
+              <ClipboardList style={{ width: 14, height: 14, color: '#f59e0b', flexShrink: 0 }} />
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)', minWidth: 130 }}>{row.employee?.name}</span>
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', flex: 1 }}>
+                {flags.map(f => (
+                  <span key={f.key} className={f.severity === 'high' ? 'badge-red' : f.severity === 'medium' ? 'badge-yellow' : 'badge-gray'}
+                    style={{ padding: '1px 7px', borderRadius: 999, fontSize: 10.5, fontWeight: 600 }}>
+                    {f.label}
+                  </span>
+                ))}
+              </div>
+              <button onClick={() => setReviewRow(row)} className="btn-secondary text-xs py-1 px-2.5" style={{ flexShrink: 0 }}>
+                مراجعة
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ── Filter bar ───────────────────────────────────────────────────────── */}
       <div className="card p-3 flex items-center gap-2 flex-wrap">
@@ -534,7 +671,7 @@ export default function PayrollPage() {
             getRowId={getRowId}
             columnDefs={cols}
             defaultColDef={defaultColDef}
-            context={{ openDetail }}
+            context={{ openDetail, openReview, openMonthlyStatement }}
             {...ENTERPRISE_GRID_PROPS}
             onCellEditingStopped={handleCellEdit}
             onCellDoubleClicked={onCellDoubleClicked}
@@ -569,6 +706,28 @@ export default function PayrollPage() {
           onClose={() => setModal(null)}
         />
       )}
+
+      {/* ── Phase 20.3/20.4/20.6/20.7: Payroll Breakdown Dialog ─────────────── */}
+      <PayrollBreakdownDialog
+        row={reviewRow}
+        month={month}
+        year={year}
+        open={!!reviewRow}
+        onClose={() => setReviewRow(null)}
+      />
+
+      {/* ── Phase 20.3: opened by the grid's new calendar icon — same
+          reused EmployeeMonthlyStatementDrawer as PayrollBreakdownDialog's
+          "الكشف الشهري الفعلي" button (Phase 20.1), for the row's employee
+          and this page's currently selected month/year. Read-only. ── */}
+      <EmployeeMonthlyStatementDrawer
+        employeeId={statementRow?.employeeId || statementRow?.employee?.id}
+        employeeName={statementRow?.employee?.name || statementRow?.employeeName}
+        month={month}
+        year={year}
+        open={!!statementRow}
+        onClose={() => setStatementRow(null)}
+      />
 
       <PrintPreviewModal
         isOpen={printOpen}
