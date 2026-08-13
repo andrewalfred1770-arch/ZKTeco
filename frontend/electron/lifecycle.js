@@ -47,9 +47,25 @@ app.on('ready', async () => {
   //    for the whole session. Local Mode (default) is byte-identical to the
   //    pre-EP-003 startup flow below. Server Mode skips spawning a backend
   //    entirely and points every downstream check at the configured remote.
+  console.log('[Startup] loading connection settings');
   const connectionSettings = readConnectionSettings();
-  state.connectionMode  = connectionSettings.mode === 'server' ? 'server' : 'local';
-  state.backendBaseUrl  = getEffectiveBackendBaseUrl(connectionSettings);
+  // Read-verify: a runtime mode read has, rarely, disagreed with the settings
+  // file on disk despite the file's content/mtime never having changed (root
+  // cause not yet isolated — suspected timing artifact around rapid
+  // relaunch, not a code path that ignores the file). The persisted file is
+  // the sole authoritative source (connectionSettings.js has no other input
+  // for `mode`), so re-reading it immediately and trusting the freshest
+  // result is a safe, deterministic guard either way: a genuine one-off race
+  // will not reproduce identically microseconds later, and if this ever
+  // fires it pinpoints the anomaly precisely instead of requiring manual
+  // file forensics after the fact.
+  const verifySettings = readConnectionSettings();
+  if (verifySettings.mode !== connectionSettings.mode) {
+    console.warn(`[Startup] connection mode mismatch on re-read: first=${connectionSettings.mode} second=${verifySettings.mode} — using second read`);
+  }
+  state.connectionMode  = verifySettings.mode === 'server' ? 'server' : 'local';
+  state.backendBaseUrl  = getEffectiveBackendBaseUrl(verifySettings);
+  console.log(`[Startup] resolved mode=${state.connectionMode}`);
   console.log(`[Electron] Connection mode: ${state.connectionMode} → ${state.backendBaseUrl}`);
 
   // 1. Splash — instant, functional checklist (real status, no fake progress)
@@ -111,11 +127,13 @@ console.log("AFTER createMainWindow");
   //    configured remote server is expected to already be running. The
   //    readiness poller below still confirms it's actually reachable.
   if (state.connectionMode === 'local') {
+    console.log('[Startup] backend starting');
     (async () => {
       await killStaleBackend(paths);
       startBackend(paths);
     })().catch(err => console.error('[Electron] backend init error:', err.message));
   } else {
+    console.log('[Startup] backend starting — Server Mode, using remote', state.backendBaseUrl);
     console.log('[Electron] Server Mode — skipping local backend spawn, connecting to', state.backendBaseUrl);
   }
 
@@ -139,6 +157,10 @@ console.log("AFTER createMainWindow");
       if (status.dbConnected && !backendNotified) {
         backendNotified = true;
         state.backendReady = true;
+        console.log('[Startup] health OK');
+        console.log('[Startup] database connected');
+        console.log('[Startup] server READY');
+        console.log('[Startup] socket READY'); // Socket.IO shares the same HTTP server/port as the REST API just proven reachable above — no separate probe needed.
         console.log(`[Electron] Backend ready in ${Date.now() - t0}ms`);
         notifyRenderer('backend-ready');
         // Dev mode: reload so the React app picks up live data once the
@@ -169,11 +191,22 @@ console.log("AFTER createMainWindow");
     if ((coreReady && isSplashStepDone(0)) || elapsed > HARD_TIMEOUT_MS) {
       if (elapsed > HARD_TIMEOUT_MS && !coreReady) {
         console.warn('[Electron] Startup hard-timeout reached — closing splash, services continue in background');
-        if (state.connectionMode === 'server' && !backendNotified) {
-          console.warn(`[Electron] Server Mode: never reached ${state.backendBaseUrl} — check Connection Settings`);
-          notifyRenderer('connection-unreachable');
+        if (!backendNotified) {
+          // The splash is cosmetic and must never block the window forever, but
+          // "splash closed" must not be mistaken by the renderer for "backend
+          // ready" — this is the one genuine failure signal Part 4 requires.
+          // Business-data pages (gated on 'backend-ready') keep waiting/showing
+          // a real retry state instead of firing requests that are known to fail.
+          console.warn(`[Startup] backend not ready after ${HARD_TIMEOUT_MS}ms — signalling renderer, continuing to poll in background`);
+          notifyRenderer('backend-unreachable');
+          if (state.connectionMode === 'server') {
+            console.warn(`[Electron] Server Mode: never reached ${state.backendBaseUrl} — check Connection Settings`);
+            notifyRenderer('connection-unreachable');
+          }
+          pollUntilBackendReady();
         }
       }
+      console.log('[Startup] releasing renderer bootstrap');
       notifyRenderer('system-ready');
       closeSplash();
       console.log(`[Electron] Total startup: ${Date.now() - t0}ms`);
@@ -181,6 +214,32 @@ console.log("AFTER createMainWindow");
     }
     setTimeout(pollReadiness, POLL_MS);
   };
+
+  // Runs only if the splash's hard timeout is hit before the backend answers.
+  // The splash/checklist UI is already gone at this point (see above); this
+  // just keeps checking /api/startup-status at a relaxed interval so a slow
+  // (not dead) backend still reaches every waiting renderer gate once it
+  // genuinely comes up, instead of leaving them stuck on the one-shot failure
+  // notified above forever.
+  const BACKGROUND_POLL_MS = 1000;
+  const pollUntilBackendReady = async () => {
+    if (backendNotified) return;
+    const status = await fetchStartupStatus(400, state.backendBaseUrl);
+    if (status?.dbConnected) {
+      backendNotified = true;
+      state.backendReady = true;
+      console.log('[Startup] health OK');
+      console.log('[Startup] database connected');
+      console.log('[Startup] server READY');
+      console.log('[Startup] socket READY');
+      console.log(`[Electron] Backend ready in ${Date.now() - t0}ms (after initial timeout)`);
+      notifyRenderer('backend-ready');
+      return;
+    }
+    setTimeout(pollUntilBackendReady, BACKGROUND_POLL_MS);
+  };
+
+  console.log('[Startup] waiting for health');
   pollReadiness();
 });
 

@@ -36,6 +36,18 @@ ipcMain.handle('connection:set-settings', (_e, patch) => writeConnectionSettings
 // to expose a single static `backendBaseUrl` string — mirrors the existing
 // static `backendPort` field so frontend/src/lib/api.js and socket.js don't
 // need to change their "read once at import time" pattern.
+// ─── Startup readiness (renderer bootstrap gate) ──────────────────────────────
+// lifecycle.js's pollReadiness() pushes a one-shot 'backend-ready'/'backend-
+// unreachable' message via notifyRenderer() the moment it knows — but that
+// push can fire before the renderer has even loaded/attached its listener
+// (a fast backend can be ready in a few hundred ms). This lets the renderer
+// ask "what's the CURRENT state" on mount, so it never misses a signal that
+// already happened. Pure state readback, no side effects.
+ipcMain.handle('system:get-ready-state', () => ({
+  ready: state.backendReady,
+  mode:  state.connectionMode,
+}));
+
 ipcMain.on('connection:get-effective-base-url-sync', (e) => {
   e.returnValue = state.backendBaseUrl || getEffectiveBackendBaseUrl();
 });

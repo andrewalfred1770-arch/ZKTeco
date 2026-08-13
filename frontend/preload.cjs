@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('electron', {
   // Send HTML to the native Windows printer dialog (bypasses window.open() which is blocked)
   printHTML:   (payload) => ipcRenderer.invoke('print:html', payload),
   onMessage:   (cb) => ipcRenderer.on('main:message', (_e, msg) => cb(msg)),
+  getReadyState: () => ipcRenderer.invoke('system:get-ready-state'),
   // Chromium trace capture — observational only, evidence collection for the
   // AG Grid blank-cell rendering investigation. Not wired to any UI; invoke
   // manually (e.g. from DevTools console: window.electron.startTrace()).

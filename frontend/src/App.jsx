@@ -12,6 +12,7 @@ import UpdateNotifications from './components/UpdateNotifications';
 import DatabaseSetupWizard from './components/DatabaseSetupWizard';
 import ConnectionWizard from './components/ConnectionWizard';
 import LoginScreen from './components/LoginScreen';
+import ServerReadyGate from './components/ServerReadyGate';
 
 import { isManager } from './lib/edition';
 import useAuthStore from './store/authStore';
@@ -264,7 +265,9 @@ function AppRoutes() {
       {!isManager && <DatabaseSetupWizard />}
 
       <ManagerGate>
-        <AppShellRoutes />
+        <ServerReadyGate>
+          <AppShellRoutes />
+        </ServerReadyGate>
       </ManagerGate>
     </>
   );
