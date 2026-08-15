@@ -57,13 +57,21 @@ const MYSQL_VERSION = '8.4.3';
 // GPG signature) — SHA256 here exists purely as this script's own stronger
 // tamper-detection pin for CI re-downloads, not as a claim that MySQL
 // published this exact hex string.
+// URLs point directly at cdn.mysql.com (MySQL's own CDN — confirmed by
+// following dev.mysql.com/get/...'s own 302 redirect there) rather than
+// through the dev.mysql.com/get/ download-tracking redirector. First real
+// CI run (GitHub-hosted macOS runner, 2026-08-15) got HTTP 403 from the
+// dev.mysql.com/get/ path — Akamai's bot-protection layer in front of it,
+// not a problem with this script's logic or the checksums themselves (both
+// verified independently, see above). The direct CDN path has no such
+// redirector in front of it.
 const TARGETS = {
   x64: {
-    url: `https://dev.mysql.com/get/Downloads/MySQL-8.4/mysql-${MYSQL_VERSION}-macos14-x86_64.tar.gz`,
+    url: `https://cdn.mysql.com/archives/mysql-8.4/mysql-${MYSQL_VERSION}-macos14-x86_64.tar.gz`,
     sha256: 'b690dfaad2108889390d40df388c16453e345f69a77784444687e8e308855af6',
   },
   arm64: {
-    url: `https://dev.mysql.com/get/Downloads/MySQL-8.4/mysql-${MYSQL_VERSION}-macos14-arm64.tar.gz`,
+    url: `https://cdn.mysql.com/archives/mysql-8.4/mysql-${MYSQL_VERSION}-macos14-arm64.tar.gz`,
     sha256: 'af1af43030ac66b73dc2d5dcf645a61cdf9e7cf5404cf04bdf8e194447b0f153',
   },
 };
@@ -73,10 +81,35 @@ const TARGETS = {
 // docs are all dropped).
 const KEEP_BIN = ['mysqld', 'mysql', 'mysqldump', 'mysqladmin'];
 
+// A browser-style User-Agent is sent as defense-in-depth against Akamai's
+// bot-protection layer (Node's native fetch sends none by default, and the
+// dev.mysql.com/get/ redirector 403'd exactly that on a first real CI run —
+// switching to the direct cdn.mysql.com URL above was the actual fix, this
+// header is just extra insurance). Up to 3 attempts with backoff to absorb
+// transient CDN hiccups — a persistent failure still surfaces as a real
+// thrown error, never silently skipped.
 async function downloadFile(url, destPath) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Download failed: HTTP ${res.status} for ${url}`);
-  await pipeline(res.body, createWriteStream(destPath));
+  const MAX_ATTEMPTS = 3;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, {
+        redirect: 'follow',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+          'Accept': '*/*',
+        },
+      });
+      if (!res.ok) throw new Error(`Download failed: HTTP ${res.status} for ${url}`);
+      await pipeline(res.body, createWriteStream(destPath));
+      return;
+    } catch (err) {
+      lastErr = err;
+      console.warn(`[fetch-mysql] download attempt ${attempt}/${MAX_ATTEMPTS} failed: ${err.message}`);
+      if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, attempt * 3000));
+    }
+  }
+  throw lastErr;
 }
 
 function sha256File(filePath) {
