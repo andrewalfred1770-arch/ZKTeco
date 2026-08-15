@@ -52,6 +52,36 @@ function writeMarker(patch) {
   return merged;
 }
 
+// Strips anything that could be a credential/secret out of diagnostic text
+// before it's ever passed to logInit() (firstRunLog.js does no redaction of
+// its own — callers are solely responsible, per its own header comment).
+// Covers: connection-string user:pass@ segments (any scheme, e.g.
+// mysql://user:pass@host), and password=/pwd=/--password=/PRIVATE KEY-style
+// key=value or CLI-flag patterns Prisma/mysql tooling commonly emit in
+// error output.
+function redactSecrets(text) {
+  if (!text) return text;
+  return String(text)
+    .replace(/(:\/\/[^:@/\s]+:)[^@\s]+(@)/gi, '$1***$2')
+    .replace(/(--password=|password\s*[:=]\s*["']?)[^\s"'&]+/gi, '$1***')
+    .replace(/-----BEGIN [^-]+PRIVATE KEY-----[\s\S]*?-----END [^-]+PRIVATE KEY-----/gi, '***REDACTED PRIVATE KEY***');
+}
+
+// Formats an execFileSync CatchError's diagnostic fields (message, captured
+// stderr/stdout, exit status/signal) into one redacted, single-purpose log
+// line — never the raw error object, so nothing unredacted can slip through
+// via console.log(err) or similar.
+function describeExecError(err) {
+  const parts = [redactSecrets(err.message || String(err))];
+  if (err.status !== undefined && err.status !== null) parts.push(`exitCode=${err.status}`);
+  if (err.signal) parts.push(`signal=${err.signal}`);
+  const stderr = err.stderr && err.stderr.length ? redactSecrets(err.stderr.toString()).trim() : '';
+  const stdout = err.stdout && err.stdout.length ? redactSecrets(err.stdout.toString()).trim() : '';
+  if (stderr) parts.push(`stderr="${stderr}"`);
+  if (stdout) parts.push(`stdout="${stdout}"`);
+  return parts.join(' | ');
+}
+
 /** Runs `prisma migrate deploy` in-process via Node (no npx/shell needed). */
 function runMigrateDeploy() {
   const prismaCli = require.resolve('prisma/build/index.js');
@@ -102,9 +132,14 @@ async function runMigrationsAndSeed() {
       writeMarker({ migrated: true });
       logInit('Database migrations applied.');
     } catch (err) {
-      // Never surface the raw stack/output (may echo connection details) —
-      // only a short, safe status line.
+      // The friendly status line stays first (unchanged) — the diagnostic
+      // line right after it is the actual failure detail (message/exit
+      // status/signal/stderr/stdout), passed through redactSecrets() first
+      // so credentials/DATABASE_URL passwords/private keys never reach the
+      // log, only the failure shape itself (needed to tell a missing-binary
+      // error apart from a real connection/timeout/schema error).
       logInit('Database migration failed — please check that MySQL is reachable and DATABASE_URL is correct. Will retry on next startup.');
+      logInit(`[DIAGNOSTIC] migrate deploy error: ${describeExecError(err)}`);
       return { ok: false, reason: 'migrate-failed' };
     }
   }
