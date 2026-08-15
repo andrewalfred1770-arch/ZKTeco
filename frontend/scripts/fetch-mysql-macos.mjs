@@ -159,6 +159,7 @@ async function provisionArch(arch, { url, sha256 }) {
   const destRoot = join(OUT_ROOT, arch);
   const destBin = join(destRoot, 'bin');
   const destShare = join(destRoot, 'share');
+  const destLib = join(destRoot, 'lib');
   if (existsSync(destRoot)) rmSync(destRoot, { recursive: true, force: true });
   mkdirSync(destBin, { recursive: true });
 
@@ -168,6 +169,22 @@ async function provisionArch(arch, { url, sha256 }) {
     copyFileSync(src, join(destBin, name));
     chmodSync(join(destBin, name), 0o755);
   }
+
+  // mysqld/mysql/mysqldump/mysqladmin are all linked against the tarball's
+  // own bundled libssl/libcrypto (and friends) via an @loader_path/../lib
+  // rpath, not the system OpenSSL — omitting lib/ (as this script did until
+  // now) leaves that rpath pointing at nothing, and dyld aborts the process
+  // before main() ever runs (confirmed on a real CI run: "Library not
+  // loaded: @loader_path/../lib/libssl.3.dylib", exit 134/SIGABRT, arm64).
+  // Copied wholesale (including lib/private/, which holds the auth/plugin
+  // libraries some of these binaries dlopen at runtime) — same
+  // copy-everything approach already used for share/ just below, since
+  // KEEP_BIN's per-file allowlist doesn't apply to a shared-library
+  // directory the kept binaries all depend on as a unit.
+  const srcLib = join(srcRoot, 'lib');
+  if (!existsSync(srcLib)) throw new Error(`Expected lib/ missing from tarball (${arch}) — mysqld cannot run without its bundled libssl/libcrypto`);
+  mkdirSync(destLib, { recursive: true });
+  execFileSync('cp', ['-R', srcLib + '/.', destLib]);
 
   // mysqld needs share/ for error messages + charset definitions at runtime.
   const srcShare = join(srcRoot, 'share');
