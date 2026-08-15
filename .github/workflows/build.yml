@@ -172,75 +172,113 @@ jobs:
         working-directory: frontend
         run: npx electron-builder --mac --config electron-builder.standalone.json --publish=never
 
-      - name: Inspect packaged app (edition identity, bundled resources, signing status)
+      - name: Inspect packaged app (edition identity, bundled resources, signing status — BOTH arches)
         working-directory: frontend
         run: |
           set -e
-          APP_DIR=$(find ../dist-electron-standalone -type d -name "*.app" | head -n1)
-          echo "App bundle: $APP_DIR"
+          # electron-builder produces TWO separate .app bundles for a
+          # multi-arch mac target (one per arch, each in its own output
+          # subfolder) — inspect BOTH, not just whichever `find` returns
+          # first, and confirm each one only bundles its OWN arch's MySQL
+          # binaries (not both, which would bloat every install with an
+          # unusable foreign-arch mysqld).
+          APP_DIRS=$(find ../dist-electron-standalone -type d -name "*.app")
+          echo "App bundles found:"; echo "$APP_DIRS"
+          [ -n "$APP_DIRS" ] || { echo "FAIL: no .app bundle found at all"; exit 1; }
+          COUNT=$(echo "$APP_DIRS" | grep -c .)
+          [ "$COUNT" -eq 2 ] || echo "NOTE: expected 2 .app bundles (x64 + arm64), found $COUNT"
 
-          echo "================ package.json name (edition detection) ================"
-          npx asar extract "$APP_DIR/Contents/Resources/app.asar" /tmp/asar-standalone
-          NAME=$(node -e "console.log(require('/tmp/asar-standalone/package.json').name)")
-          echo "Packaged name: $NAME"
-          if [ "$NAME" != "petshrow-erp-standalone" ]; then
-            echo "FAIL: packaged app.asar name is '$NAME', expected 'petshrow-erp-standalone'"; exit 1
-          fi
+          i=0
+          while IFS= read -r APP_DIR; do
+            i=$((i+1))
+            echo ""
+            echo "########## Inspecting bundle $i: $APP_DIR ##########"
+            ASAR_DIR="/tmp/asar-standalone-$i"
 
-          echo "================ backend/ present? ================"
-          test -d "$APP_DIR/Contents/Resources/backend" && echo "OK: backend/ bundled" || { echo "FAIL: backend/ missing"; exit 1; }
+            echo "================ package.json name (edition detection) ================"
+            npx asar extract "$APP_DIR/Contents/Resources/app.asar" "$ASAR_DIR"
+            NAME=$(node -e "console.log(require('$ASAR_DIR/package.json').name)")
+            echo "Packaged name: $NAME"
+            [ "$NAME" = "petshrow-erp-standalone" ] || { echo "FAIL: packaged app.asar name is '$NAME', expected 'petshrow-erp-standalone'"; exit 1; }
 
-          echo "================ managed MySQL binaries present? ================"
-          ls "$APP_DIR/Contents/Resources/mysql" || { echo "FAIL: no mysql/ resource dir"; exit 1; }
+            echo "================ backend/ present? ================"
+            test -d "$APP_DIR/Contents/Resources/backend" && echo "OK: backend/ bundled" || { echo "FAIL: backend/ missing"; exit 1; }
 
-          echo "================ minimum macOS version ================"
-          plutil -extract LSMinimumSystemVersion raw "$APP_DIR/Contents/Info.plist"
+            echo "================ managed MySQL binaries present (exactly this bundle's own arch) ================"
+            MYSQL_ARCHES=$(ls "$APP_DIR/Contents/Resources/mysql" 2>/dev/null || true)
+            echo "Bundled MySQL arch dir(s): $MYSQL_ARCHES"
+            [ -n "$MYSQL_ARCHES" ] || { echo "FAIL: no mysql/ resource dir"; exit 1; }
+            ARCH_DIR_COUNT=$(echo "$MYSQL_ARCHES" | grep -c .)
+            [ "$ARCH_DIR_COUNT" -eq 1 ] || { echo "FAIL: expected exactly 1 arch dir bundled per .app, found $ARCH_DIR_COUNT ($MYSQL_ARCHES)"; exit 1; }
+            for bin in mysqld mysql mysqldump mysqladmin; do
+              test -f "$APP_DIR/Contents/Resources/mysql/$MYSQL_ARCHES/bin/$bin" && echo "OK: $bin present" || { echo "FAIL: $bin missing"; exit 1; }
+            done
 
-          echo "================ Report signing status (never faked) ================"
-          echo "Signing: NOT VERIFIED — no Apple Developer certificate configured for this build"
-          echo "Notarization: NOT VERIFIED — no Apple credentials configured for this build"
-          codesign -dv "$APP_DIR" 2>&1 || echo "(codesign check above is informational only, expected to show 'not signed')"
+            echo "================ minimum macOS version ================"
+            MIN_OS=$(plutil -extract LSMinimumSystemVersion raw "$APP_DIR/Contents/Info.plist")
+            echo "$MIN_OS"
+            [ "$MIN_OS" = "14.0.0" ] && echo "OK: minimum macOS is 14.0.0 (matches the bundled MySQL 8.4.3 binaries' own macOS 14+ requirement)" || { echo "FAIL: minimum macOS is '$MIN_OS', expected 14.0.0"; exit 1; }
 
-          echo "================ package hygiene — forbidden content must NOT be present ================"
-          FORBIDDEN=0
-          for pattern in "_loadtest" "audit_" "*_scan.json" ".env" ".env.example"; do
-            if find "$APP_DIR/Contents/Resources" -iname "$pattern" 2>/dev/null | grep -q .; then
-              echo "FAIL: forbidden pattern '$pattern' found under Resources/"
-              find "$APP_DIR/Contents/Resources" -iname "$pattern"
+            echo "================ Report signing status (never faked) ================"
+            echo "Signing: NOT VERIFIED — no Apple Developer certificate configured for this build"
+            echo "Notarization: NOT VERIFIED — no Apple credentials configured for this build"
+            codesign -dv "$APP_DIR" 2>&1 || echo "(codesign check above is informational only, expected to show 'not signed')"
+
+            echo "================ package hygiene — forbidden content must NOT be present ================"
+            FORBIDDEN=0
+            for pattern in "_loadtest" "audit_" "*_scan.json" ".env" ".env.example"; do
+              if find "$APP_DIR/Contents/Resources" -iname "$pattern" 2>/dev/null | grep -q .; then
+                echo "FAIL: forbidden pattern '$pattern' found under Resources/"
+                find "$APP_DIR/Contents/Resources" -iname "$pattern"
+                FORBIDDEN=1
+              fi
+            done
+            if find "$APP_DIR/Contents/Resources/backend" -path "*/uploads/*" 2>/dev/null | grep -q .; then
+              echo "FAIL: backend/uploads/ content leaked into the package"
               FORBIDDEN=1
             fi
-          done
-          if find "$APP_DIR/Contents/Resources/backend" -path "*/uploads/*" 2>/dev/null | grep -q .; then
-            echo "FAIL: backend/uploads/ content leaked into the package"
-            FORBIDDEN=1
-          fi
-          if grep -rIl "DB_PASSWORD\|JWT_SECRET" /tmp/asar-standalone 2>/dev/null | grep -q .; then
-            echo "FAIL: possible secret material found inside app.asar"
-            FORBIDDEN=1
-          fi
-          if [ "$FORBIDDEN" != "0" ]; then
-            echo "FAIL: package hygiene check failed — see above"; exit 1
-          fi
-          echo "OK: no forbidden files, Windows-specific data, or secret material found in the package"
+            # A bare grep for "DB_PASSWORD"/"JWT_SECRET" as SUBSTRINGS matches
+            # the app's own legitimate source (env-var/object-key NAMES, e.g.
+            # mysqlManager.js's getConnectionEnv() or generateEnv.js's .env
+            # template) every single time — that's expected source code, not
+            # a leaked secret VALUE. The real check is that no actual .env
+            # file (which would hold real VALUES) is packaged. Confirmed as
+            # a false positive on the first real CI run (2026-08-15).
+            if find "$ASAR_DIR" -iname ".env" 2>/dev/null | grep -q .; then
+              echo "FAIL: an actual .env file (real secret values) was found inside app.asar"
+              find "$ASAR_DIR" -iname ".env"
+              FORBIDDEN=1
+            fi
+            [ "$FORBIDDEN" = "0" ] || { echo "FAIL: package hygiene check failed — see above"; exit 1; }
+            echo "OK: no forbidden files, Windows-specific data, or secret material found in the package"
 
-          echo "================ app metadata version / API_VERSION ================"
-          APP_VERSION=$(node -e "console.log(require('/tmp/asar-standalone/package.json').version)")
-          echo "Packaged version: $APP_VERSION"
-          [ "$APP_VERSION" = "1.1.1" ] && echo "OK: version is 1.1.1" || { echo "FAIL: version is '$APP_VERSION', expected 1.1.1"; exit 1; }
-          API_VERSION=$(node -e "console.log(require('/tmp/asar-standalone/backend/src/apiVersion.js').API_VERSION)" 2>/dev/null || echo "unreadable")
-          echo "Packaged backend API_VERSION: $API_VERSION"
-          [ "$API_VERSION" = "1" ] && echo "OK: API_VERSION is 1" || echo "NOTE: could not confirm API_VERSION from packaged backend (non-fatal, informational)"
+            echo "================ app metadata version / API_VERSION ================"
+            APP_VERSION=$(node -e "console.log(require('$ASAR_DIR/package.json').version)")
+            echo "Packaged version: $APP_VERSION"
+            [ "$APP_VERSION" = "1.1.1" ] && echo "OK: version is 1.1.1" || { echo "FAIL: version is '$APP_VERSION', expected 1.1.1"; exit 1; }
+            API_VERSION=$(node -e "console.log(require('$ASAR_DIR/backend/src/apiVersion.js').API_VERSION)" 2>/dev/null || echo "unreadable")
+            echo "Packaged backend API_VERSION: $API_VERSION"
+            [ "$API_VERSION" = "1" ] && echo "OK: API_VERSION is 1" || echo "NOTE: could not confirm API_VERSION from packaged backend (non-fatal, informational)"
+          done <<< "$APP_DIRS"
 
       - name: Direct runtime test of the bundled MySQL binary (native arch, real .app resources)
         working-directory: frontend
         timeout-minutes: 5
         run: |
           set -e
-          APP_DIR=$(find ../dist-electron-standalone -type d -name "*.app" | head -n1)
           NATIVE_ARCH=$(uname -m)
           if [ "$NATIVE_ARCH" = "arm64" ]; then MYSQL_ARCH_DIR="arm64"; else MYSQL_ARCH_DIR="x64"; fi
+          # Two .app bundles exist (one per arch) — the wrong one can't run
+          # natively on this runner at all (no Rosetta guarantee), so pick
+          # the bundle whose OWN Resources/mysql/<arch> matches uname -m,
+          # not just whichever `find` happens to return first.
+          APP_DIR=""
+          for d in $(find ../dist-electron-standalone -type d -name "*.app"); do
+            if [ -d "$d/Contents/Resources/mysql/$MYSQL_ARCH_DIR" ]; then APP_DIR="$d"; break; fi
+          done
+          [ -n "$APP_DIR" ] || { echo "FAIL: no .app bundle found containing mysql/$MYSQL_ARCH_DIR (native arch: $NATIVE_ARCH)"; exit 1; }
           MYSQL_BIN="$APP_DIR/Contents/Resources/mysql/$MYSQL_ARCH_DIR/bin"
-          echo "Testing bundled MySQL for native arch: $NATIVE_ARCH -> $MYSQL_ARCH_DIR"
+          echo "Testing bundled MySQL for native arch: $NATIVE_ARCH -> $MYSQL_ARCH_DIR (bundle: $APP_DIR)"
           test -x "$MYSQL_BIN/mysqld" || { echo "FAIL: mysqld not found/executable at $MYSQL_BIN"; exit 1; }
 
           DATADIR=$(mktemp -d)
@@ -292,10 +330,18 @@ jobs:
         timeout-minutes: 15
         run: |
           set -e
-          APP_DIR=$(find ../dist-electron-standalone -type d -name "*.app" | head -n1)
-          BIN=$(find "$APP_DIR/Contents/MacOS" -type f -maxdepth 1 | head -n1)
           NATIVE_ARCH=$(uname -m)
           if [ "$NATIVE_ARCH" = "arm64" ]; then MYSQL_ARCH_DIR="arm64"; else MYSQL_ARCH_DIR="x64"; fi
+          # Same reasoning as the direct-MySQL-binary-test step above: pick
+          # the .app bundle whose OWN bundled mysql/<arch> matches this
+          # runner's native arch — the other bundle cannot be launched here.
+          APP_DIR=""
+          for d in $(find ../dist-electron-standalone -type d -name "*.app"); do
+            if [ -d "$d/Contents/Resources/mysql/$MYSQL_ARCH_DIR" ]; then APP_DIR="$d"; break; fi
+          done
+          [ -n "$APP_DIR" ] || { echo "FAIL: no .app bundle found containing mysql/$MYSQL_ARCH_DIR (native arch: $NATIVE_ARCH)"; exit 1; }
+          echo "Using native-arch bundle: $APP_DIR"
+          BIN=$(find "$APP_DIR/Contents/MacOS" -type f -maxdepth 1 | head -n1)
           MYSQL_BIN="$APP_DIR/Contents/Resources/mysql/$MYSQL_ARCH_DIR/bin"
           DATA_ROOT="$HOME/Library/Application Support/PETSHROW ERP Standalone"
 
