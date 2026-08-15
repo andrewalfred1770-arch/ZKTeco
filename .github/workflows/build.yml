@@ -271,11 +271,18 @@ jobs:
           # Two .app bundles exist (one per arch) — the wrong one can't run
           # natively on this runner at all (no Rosetta guarantee), so pick
           # the bundle whose OWN Resources/mysql/<arch> matches uname -m,
-          # not just whichever `find` happens to return first.
+          # not just whichever `find` happens to return first. Product name
+          # has spaces ("PETSHROW ERP Standalone.app"), so this MUST be a
+          # newline-delimited `while read` loop, not `for d in $(find ...)`
+          # — the latter word-splits on the spaces in the path itself and
+          # silently never matches anything (confirmed on a real CI run,
+          # 2026-08-15: "no .app bundle found containing mysql/arm64" even
+          # though the bundle inspection step, which used `while read`,
+          # had already found and verified that exact bundle moments earlier).
           APP_DIR=""
-          for d in $(find ../dist-electron-standalone -type d -name "*.app" -not -path "*/Contents/*"); do
+          while IFS= read -r d; do
             if [ -d "$d/Contents/Resources/mysql/$MYSQL_ARCH_DIR" ]; then APP_DIR="$d"; break; fi
-          done
+          done < <(find ../dist-electron-standalone -type d -name "*.app" -not -path "*/Contents/*")
           [ -n "$APP_DIR" ] || { echo "FAIL: no .app bundle found containing mysql/$MYSQL_ARCH_DIR (native arch: $NATIVE_ARCH)"; exit 1; }
           MYSQL_BIN="$APP_DIR/Contents/Resources/mysql/$MYSQL_ARCH_DIR/bin"
           echo "Testing bundled MySQL for native arch: $NATIVE_ARCH -> $MYSQL_ARCH_DIR (bundle: $APP_DIR)"
@@ -332,13 +339,16 @@ jobs:
           set -e
           NATIVE_ARCH=$(uname -m)
           if [ "$NATIVE_ARCH" = "arm64" ]; then MYSQL_ARCH_DIR="arm64"; else MYSQL_ARCH_DIR="x64"; fi
-          # Same reasoning as the direct-MySQL-binary-test step above: pick
-          # the .app bundle whose OWN bundled mysql/<arch> matches this
-          # runner's native arch — the other bundle cannot be launched here.
+          # Same reasoning + same word-splitting fix as the direct-MySQL-
+          # binary-test step above: pick the .app bundle whose OWN bundled
+          # mysql/<arch> matches this runner's native arch, via a
+          # newline-delimited `while read` loop (NOT `for d in $(find ...)`,
+          # which word-splits on the spaces in "PETSHROW ERP Standalone.app"
+          # and never matches anything).
           APP_DIR=""
-          for d in $(find ../dist-electron-standalone -type d -name "*.app" -not -path "*/Contents/*"); do
+          while IFS= read -r d; do
             if [ -d "$d/Contents/Resources/mysql/$MYSQL_ARCH_DIR" ]; then APP_DIR="$d"; break; fi
-          done
+          done < <(find ../dist-electron-standalone -type d -name "*.app" -not -path "*/Contents/*")
           [ -n "$APP_DIR" ] || { echo "FAIL: no .app bundle found containing mysql/$MYSQL_ARCH_DIR (native arch: $NATIVE_ARCH)"; exit 1; }
           echo "Using native-arch bundle: $APP_DIR"
           BIN=$(find "$APP_DIR/Contents/MacOS" -type f -maxdepth 1 | head -n1)
