@@ -170,6 +170,19 @@ async function provisionArch(arch, { url, sha256 }) {
     chmodSync(join(destBin, name), 0o755);
   }
 
+  // Some of KEEP_BIN's own dependencies (confirmed on a real CI run: mysqld
+  // dyld-aborted on "Library not loaded: @loader_path/libprotobuf-lite...
+  // dylib") are linked via a bare @loader_path rpath — same directory as the
+  // binary itself — not @loader_path/../lib like libssl/libcrypto above.
+  // The tarball ships these few .dylib files sitting directly in bin/
+  // alongside mysqld/mysql/etc, not in lib/, so they must be copied there
+  // too, next to the binaries that expect to find them there.
+  for (const entry of readdirSync(join(srcRoot, 'bin'))) {
+    if (entry.endsWith('.dylib')) {
+      copyFileSync(join(srcRoot, 'bin', entry), join(destBin, entry));
+    }
+  }
+
   // mysqld/mysql/mysqldump/mysqladmin are all linked against the tarball's
   // own bundled libssl/libcrypto (and friends) via an @loader_path/../lib
   // rpath, not the system OpenSSL — omitting lib/ (as this script did until
