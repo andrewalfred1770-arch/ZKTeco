@@ -182,7 +182,7 @@ jobs:
           # first, and confirm each one only bundles its OWN arch's MySQL
           # binaries (not both, which would bloat every install with an
           # unusable foreign-arch mysqld).
-          APP_DIRS=$(find ../dist-electron-standalone -type d -name "*.app")
+          APP_DIRS=$(find ../dist-electron-standalone -type d -name "*.app" -not -path "*/Contents/*")
           echo "App bundles found:"; echo "$APP_DIRS"
           [ -n "$APP_DIRS" ] || { echo "FAIL: no .app bundle found at all"; exit 1; }
           COUNT=$(echo "$APP_DIRS" | grep -c .)
@@ -273,7 +273,7 @@ jobs:
           # the bundle whose OWN Resources/mysql/<arch> matches uname -m,
           # not just whichever `find` happens to return first.
           APP_DIR=""
-          for d in $(find ../dist-electron-standalone -type d -name "*.app"); do
+          for d in $(find ../dist-electron-standalone -type d -name "*.app" -not -path "*/Contents/*"); do
             if [ -d "$d/Contents/Resources/mysql/$MYSQL_ARCH_DIR" ]; then APP_DIR="$d"; break; fi
           done
           [ -n "$APP_DIR" ] || { echo "FAIL: no .app bundle found containing mysql/$MYSQL_ARCH_DIR (native arch: $NATIVE_ARCH)"; exit 1; }
@@ -336,7 +336,7 @@ jobs:
           # the .app bundle whose OWN bundled mysql/<arch> matches this
           # runner's native arch — the other bundle cannot be launched here.
           APP_DIR=""
-          for d in $(find ../dist-electron-standalone -type d -name "*.app"); do
+          for d in $(find ../dist-electron-standalone -type d -name "*.app" -not -path "*/Contents/*"); do
             if [ -d "$d/Contents/Resources/mysql/$MYSQL_ARCH_DIR" ]; then APP_DIR="$d"; break; fi
           done
           [ -n "$APP_DIR" ] || { echo "FAIL: no .app bundle found containing mysql/$MYSQL_ARCH_DIR (native arch: $NATIVE_ARCH)"; exit 1; }
