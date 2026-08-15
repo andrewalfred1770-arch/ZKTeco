@@ -214,6 +214,36 @@ jobs:
               test -f "$APP_DIR/Contents/Resources/mysql/$MYSQL_ARCHES/bin/$bin" && echo "OK: $bin present" || { echo "FAIL: $bin missing"; exit 1; }
             done
 
+            echo "================ MySQL dependency closure (otool -L, this bundle's own arch: $MYSQL_ARCHES) ================"
+            # otool -L is static Mach-O inspection, not execution — it works
+            # for the NON-native arch too, so both bundles get this check on
+            # a single runner even though actual mysqld execution (later
+            # step) can only run the native one. For every kept binary and
+            # every bundled lib, resolve each @loader_path/@rpath-relative
+            # dependency to the exact path dyld will look for it at, and
+            # fail loudly if that file isn't actually present in the
+            # package — this is the same resolution fetch-mysql-macos.mjs
+            # performs at provisioning time, re-checked here against the
+            # final packaged bundle so a stale cache or a partial copy can
+            # never silently ship.
+            MYSQL_ROOT="$APP_DIR/Contents/Resources/mysql/$MYSQL_ARCHES"
+            CLOSURE_FAIL=0
+            CHECK_FILES=$(find "$MYSQL_ROOT/bin" "$MYSQL_ROOT/lib" -type f 2>/dev/null)
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              DEPS=$(otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -E '^@(loader_path|rpath)')
+              while IFS= read -r dep; do
+                [ -n "$dep" ] || continue
+                REL=$(echo "$dep" | sed -E 's#^@(loader_path|rpath)#.#')
+                TARGET="$(cd "$(dirname "$f")" && cd "$(dirname "$REL")" 2>/dev/null && pwd)/$(basename "$REL")"
+                if [ ! -f "$TARGET" ]; then
+                  echo "FAIL: $f depends on '$dep' -> resolved to '$TARGET' which does not exist"
+                  CLOSURE_FAIL=1
+                fi
+              done <<< "$DEPS"
+            done <<< "$CHECK_FILES"
+            [ "$CLOSURE_FAIL" = "0" ] && echo "OK: full otool -L dependency closure resolves inside mysql/$MYSQL_ARCHES/ for bundle $i" || { echo "FAIL: MySQL dependency closure incomplete for bundle $i ($MYSQL_ARCHES)"; exit 1; }
+
             echo "================ minimum macOS version ================"
             MIN_OS=$(plutil -extract LSMinimumSystemVersion raw "$APP_DIR/Contents/Info.plist")
             echo "$MIN_OS"

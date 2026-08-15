@@ -118,6 +118,111 @@ function sha256File(filePath) {
   return hash.digest('hex');
 }
 
+// Recursively indexes every file under `root` by basename, so a dependency
+// dyld reports missing can be located anywhere in the extracted tarball
+// (not just the specific subdirectory a hand-written guess would check).
+// Last writer wins on a basename collision — fine here, since MySQL's own
+// tarball doesn't ship two different files with the same basename.
+function indexFilesByBasename(root) {
+  const index = new Map();
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) index.set(entry.name, full);
+    }
+  };
+  walk(root);
+  return index;
+}
+
+// Runs `otool -L` on a Mach-O binary/library and returns the dependency
+// paths it declares (excluding the file's own install-name id line and
+// absolute system paths, which are never bundled).
+function otoolDependencies(filePath) {
+  let output;
+  try {
+    output = execFileSync('otool', ['-L', filePath], { encoding: 'utf8' });
+  } catch (err) {
+    throw new Error(`otool -L failed on ${filePath}: ${err.message}`);
+  }
+  const lines = output.split('\n').slice(1); // first line is the file path itself
+  const deps = [];
+  for (const line of lines) {
+    const match = line.match(/^\s*(\S+)\s+\(compatibility version/);
+    if (!match) continue;
+    const dep = match[1];
+    // Apple/system libraries and frameworks are never bundled — only
+    // @loader_path/@rpath-relative references point at MySQL's own
+    // dependency tree and need resolving.
+    if (dep.startsWith('/usr/lib/') || dep.startsWith('/System/')) continue;
+    if (!dep.startsWith('@loader_path') && !dep.startsWith('@rpath')) continue;
+    deps.push(dep);
+  }
+  return deps;
+}
+
+// For a single `@loader_path/...`-relative dependency string declared by
+// `fromFile`, returns the exact absolute path dyld will look for it at.
+// `@rpath` is treated the same as `@loader_path` here — every rpath MySQL's
+// own binaries declare (checked via `otool -l`) is loader-relative
+// (`@loader_path` or `@loader_path/../lib`), so resolving `@rpath` the same
+// way matches dyld's actual behavior for this tarball without needing to
+// parse LC_RPATH commands separately.
+function resolveLoaderRelativePath(fromFile, dep) {
+  const relPart = dep.replace(/^@(loader_path|rpath)/, '.');
+  return join(dirname(fromFile), relPart);
+}
+
+function resolveDependencyClosure(arch, destRoot, srcRoot) {
+  const srcIndex = indexFilesByBasename(srcRoot);
+  const destBin = join(destRoot, 'bin');
+  const destLib = join(destRoot, 'lib');
+
+  const seedFiles = [
+    ...readdirSync(destBin).map(f => join(destBin, f)),
+    ...(existsSync(destLib) ? readdirSync(destLib, { recursive: true })
+      .map(f => join(destLib, f))
+      .filter(f => statSync(f).isFile())
+      : []),
+  ];
+
+  const queue = [...seedFiles];
+  const seen = new Set(queue);
+  let copiedCount = 0;
+
+  while (queue.length > 0) {
+    const file = queue.shift();
+    const deps = otoolDependencies(file);
+    for (const dep of deps) {
+      const resolvedPath = resolveLoaderRelativePath(file, dep);
+      if (existsSync(resolvedPath)) continue; // already satisfied
+
+      const basename = dep.split('/').pop();
+      const srcPath = srcIndex.get(basename);
+      if (!srcPath) {
+        throw new Error(
+          `[fetch-mysql] ${arch}: ${file} depends on '${dep}' (basename '${basename}'), ` +
+          `which does not exist anywhere in the extracted tarball. Cannot resolve this dependency.`
+        );
+      }
+
+      mkdirSync(dirname(resolvedPath), { recursive: true });
+      copyFileSync(srcPath, resolvedPath);
+      chmodSync(resolvedPath, 0o755);
+      copiedCount++;
+      console.log(`[fetch-mysql] ${arch}: resolved missing dependency '${basename}' -> ${resolvedPath}`);
+
+      if (!seen.has(resolvedPath)) {
+        seen.add(resolvedPath);
+        queue.push(resolvedPath);
+      }
+    }
+  }
+
+  console.log(`[fetch-mysql] ${arch}: dependency closure resolved (${copiedCount} additional file(s) copied beyond the wholesale bin/+lib/ copy)`);
+}
+
 async function provisionArch(arch, { url, sha256 }) {
   if (!sha256) {
     throw new Error(
@@ -170,19 +275,6 @@ async function provisionArch(arch, { url, sha256 }) {
     chmodSync(join(destBin, name), 0o755);
   }
 
-  // Some of KEEP_BIN's own dependencies (confirmed on a real CI run: mysqld
-  // dyld-aborted on "Library not loaded: @loader_path/libprotobuf-lite...
-  // dylib") are linked via a bare @loader_path rpath — same directory as the
-  // binary itself — not @loader_path/../lib like libssl/libcrypto above.
-  // The tarball ships these few .dylib files sitting directly in bin/
-  // alongside mysqld/mysql/etc, not in lib/, so they must be copied there
-  // too, next to the binaries that expect to find them there.
-  for (const entry of readdirSync(join(srcRoot, 'bin'))) {
-    if (entry.endsWith('.dylib')) {
-      copyFileSync(join(srcRoot, 'bin', entry), join(destBin, entry));
-    }
-  }
-
   // mysqld/mysql/mysqldump/mysqladmin are all linked against the tarball's
   // own bundled libssl/libcrypto (and friends) via an @loader_path/../lib
   // rpath, not the system OpenSSL — omitting lib/ (as this script did until
@@ -204,6 +296,25 @@ async function provisionArch(arch, { url, sha256 }) {
   if (existsSync(srcShare)) {
     mkdirSync(destShare, { recursive: true });
     execFileSync('cp', ['-R', srcShare + '/.', destShare]);
+  }
+
+  // The wholesale bin/ + lib/ copy above is not sufficient by itself: two
+  // real CI failures (arm64, 2026-08-15) each traced to a DIFFERENT dylib
+  // dyld couldn't find — first libssl/libcrypto via an @loader_path/../lib
+  // rpath, then libprotobuf-lite via a bare @loader_path rpath pointing at
+  // mysqld's OWN directory (bin/), even though the tarball actually ships
+  // that file elsewhere in its tree (not loose in bin/, so the previous
+  // hand-written "copy *.dylib out of bin/" patch never caught it). Guessing
+  // library names/locations one crash report at a time doesn't scale — this
+  // asks dyld's own resolution algorithm (via `otool -L`) what each bundled
+  // binary and library actually needs, and mirrors any missing dependency
+  // to the EXACT path dyld will look for it at, wherever in the extracted
+  // tarball that file happens to live. Runs to a fixed point, since a copied
+  // library can itself pull in further dependencies.
+  if (process.platform === 'darwin') {
+    resolveDependencyClosure(arch, destRoot, srcRoot);
+  } else {
+    console.warn(`[fetch-mysql] ${arch}: skipping otool-based dependency-closure resolution (not running on macOS) — this MUST be re-run on a macOS CI runner before the bundle is trusted.`);
   }
 
   rmSync(tmpDir, { recursive: true, force: true });
