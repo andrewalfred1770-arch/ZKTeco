@@ -367,6 +367,21 @@ jobs:
         timeout-minutes: 15
         run: |
           set -e
+          # The job-level env: DATABASE_URL (set further up in this workflow
+          # for the `prisma generate` step, pointing at a placeholder
+          # 127.0.0.1:3306 that nothing ever listens on) is inherited by
+          # every step's shell by default, including this one — and by any
+          # child process this step launches. The packaged Standalone app
+          # itself generates its OWN correct backend/.env DATABASE_URL
+          # (pointing at the managed mysqld this job's earlier step already
+          # proved works, on 127.0.0.1:33061), but dotenv.config() never
+          # overwrites a key that's already present in process.env, so the
+          # inherited CI placeholder silently wins and Prisma fails with
+          # P1001 against a port nothing is bound to. No real end-user
+          # install ever has an external DATABASE_URL set this way — this is
+          # purely a CI-harness artifact, so it's cleared here rather than
+          # anywhere in the app itself.
+          unset DATABASE_URL
           NATIVE_ARCH=$(uname -m)
           if [ "$NATIVE_ARCH" = "arm64" ]; then MYSQL_ARCH_DIR="arm64"; else MYSQL_ARCH_DIR="x64"; fi
           # Same reasoning + same word-splitting fix as the direct-MySQL-
