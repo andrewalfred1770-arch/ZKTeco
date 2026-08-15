@@ -140,13 +140,18 @@ async function provisionArch(arch, { url, sha256 }) {
   }
   console.log(`[fetch-mysql] ${arch}: checksum verified`);
 
-  // --force-local: without it, a Windows-style "C:\..." path gets parsed by
-  // tar as a "host:path" remote spec (the drive-letter colon looks like a
-  // remote-host separator) — this makes the exact same command work
-  // identically on macOS (where it's a no-op) and on Windows (where it's
-  // required), so this script's download/verify/extract logic can be
-  // exercised locally before ever reaching CI.
-  execFileSync('tar', ['--force-local', '-xzf', tarPath, '-C', tmpDir]);
+  // --force-local is a GNU-tar-only flag (needed on Windows/Git-Bash, where
+  // a "C:\..." path gets parsed as a "host:path" remote spec because of the
+  // drive-letter colon) — macOS ships BSD tar (libarchive), which has no
+  // such remote-tape concept and no --force-local flag at all: passing it
+  // there is a hard error ("Option --force-local is not supported"), not a
+  // no-op as originally assumed. Confirmed on a real CI run (GitHub-hosted
+  // macOS runner, 2026-08-15) — only add the flag on win32, where it's the
+  // one platform that actually needs it.
+  const tarArgs = process.platform === 'win32'
+    ? ['--force-local', '-xzf', tarPath, '-C', tmpDir]
+    : ['-xzf', tarPath, '-C', tmpDir];
+  execFileSync('tar', tarArgs);
   const extractedDir = readdirSync(tmpDir).find(f => f.startsWith('mysql-') && statSync(join(tmpDir, f)).isDirectory());
   if (!extractedDir) throw new Error(`Could not find extracted MySQL directory for ${arch}`);
   const srcRoot = join(tmpDir, extractedDir);
