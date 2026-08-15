@@ -5,8 +5,12 @@ import { join } from 'path';
 import { io as socketIOClient } from 'socket.io-client';
 import { IS_DEV, BUILD_MARKER, REQUIRED_API_VERSION } from './constants.js';
 import { state } from './state.js';
-import { fetchHealth } from './backend.js';
+import { fetchHealth, requestBackendShutdown, startBackend } from './backend.js';
 import { readConnectionSettings, writeConnectionSettings, getEffectiveBackendBaseUrl } from './connectionSettings.js';
+import { isStandalone } from './edition.js';
+import { createBackup, listBackups, restoreBackup } from './standaloneBackup.js';
+import { getConnectionEnv } from './mysqlManager.js';
+import { getPaths } from './paths.js';
 
 // ─── IPC handlers ─────────────────────────────────────────────────────────────
 ipcMain.on('app:minimize', () => state.mainWindow?.minimize());
@@ -50,6 +54,74 @@ ipcMain.handle('system:get-ready-state', () => ({
 
 ipcMain.on('connection:get-effective-base-url-sync', (e) => {
   e.returnValue = state.backendBaseUrl || getEffectiveBackendBaseUrl();
+});
+
+// ─── Mac Standalone — managed MySQL status + backup/restore ─────────────────
+// No-ops (returning a clear "not applicable" shape) on server/manager builds —
+// these channels only ever do real work when isStandalone, so a Server or
+// Manager renderer accidentally calling them can't trigger anything.
+ipcMain.handle('mysql:status', () => ({
+  applicable: isStandalone,
+  ready: isStandalone ? !!state.mysqlReady : null,
+}));
+
+ipcMain.handle('backup:list', () => {
+  if (!isStandalone) return [];
+  try { return listBackups(); } catch (err) { console.error('[Backup] list failed:', err.message); return []; }
+});
+
+ipcMain.handle('backup:create', async () => {
+  if (!isStandalone) return { ok: false, error: 'Not applicable to this edition' };
+  if (!state.mysqlCreds) return { ok: false, error: 'Managed database is not ready yet' };
+  try {
+    return await createBackup(state.mysqlCreds, { reason: 'manual' });
+  } catch (err) {
+    console.error('[Backup] manual backup failed:', err.message);
+    return { ok: false, error: err.message };
+  }
+});
+
+// Restore: stop the backend (blocks writes) → restore the archive (which
+// itself takes a pre-restore safety backup first, see standaloneBackup.js) →
+// restart the backend against the same managed instance → wait for it to
+// report healthy again. Never overwrites a healthy database blindly.
+ipcMain.handle('backup:restore', async (_e, { path: backupPath } = {}) => {
+  if (!isStandalone) return { ok: false, error: 'Not applicable to this edition' };
+  if (!state.mysqlCreds) return { ok: false, error: 'Managed database is not ready yet' };
+  if (!backupPath) return { ok: false, error: 'No backup file specified' };
+
+  console.log('[Restore] stopping backend before restore');
+  const p = state.backendProcess;
+  if (p && p.exitCode === null) {
+    await new Promise(resolve => {
+      const t = setTimeout(() => { try { p.kill('SIGKILL'); } catch {} resolve(); }, 5000);
+      p.once('exit', () => { clearTimeout(t); resolve(); });
+      if (!requestBackendShutdown()) { clearTimeout(t); try { p.kill('SIGKILL'); } catch {} resolve(); }
+    });
+  }
+
+  const result = await restoreBackup(state.mysqlCreds, backupPath);
+  if (!result.ok) return result;
+
+  // A restored dump may predate migrations applied since it was taken — the
+  // backend's own bootstrap (migrateAndSeed.js) only re-runs `prisma migrate
+  // deploy` when its persistent .initialized.json marker says `migrated:
+  // false`, so clear that flag here to force it to check again on the
+  // restart below (migrate deploy itself is idempotent/no-op if nothing's
+  // pending — this only ever adds work, never skips something needed).
+  try {
+    const markerPath = join(getPaths().configDir, '.initialized.json');
+    if (existsSync(markerPath)) {
+      const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
+      writeFileSync(markerPath, JSON.stringify({ ...marker, migrated: false }, null, 2), 'utf8');
+    }
+  } catch (err) {
+    console.warn('[Restore] could not reset migration marker (non-fatal):', err.message);
+  }
+
+  console.log('[Restore] restarting backend after restore');
+  startBackend(getPaths(), getConnectionEnv(state.mysqlCreds));
+  return result;
 });
 
 // ─── Session persistence (EP-011 Manager Edition auth) ───────────────────────

@@ -1,0 +1,92 @@
+{
+  "appId": "com.petshrow.erp.standalone",
+  "productName": "PETSHROW ERP Standalone",
+  "copyright": "© 2026 PETSHROW ERP",
+  "asar": true,
+  "asarUnpack": ["assets/**"],
+  "compression": "normal",
+
+  "extraMetadata": {
+    "name": "petshrow-erp-standalone"
+  },
+
+  "mac": {
+    "target": [
+      { "target": "dmg", "arch": ["x64", "arm64"] },
+      { "target": "zip", "arch": ["x64", "arm64"] }
+    ],
+    "icon": "assets/icon.png",
+    "category": "public.app-category.business",
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "minimumSystemVersion": "14.0.0",
+    "extraResources": [
+      {
+        "from": "../backend",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!backups/**",
+          "!uploads/**",
+          "!**/*.log",
+          "!.env",
+          "!.env.*",
+          "!.env.example",
+          "!node_modules/.cache/**",
+          "!node_modules/.prisma/client/**/query_engine-windows*",
+          "!node_modules/.prisma/client/**/libquery_engine-linux*",
+          "!node_modules/.prisma/client/**/libquery_engine-debian*",
+          "!node_modules/.bin/**",
+          "!**/*.md",
+          "!**/*.ts",
+          "!**/__tests__/**",
+          "!**/test/**",
+          "!**/tests/**",
+          "!_loadtest*",
+          "!**/_loadtest*",
+          "!audit_*.js",
+          "!**/audit_*.js",
+          "!inject_test_logs.js",
+          "!**/inject_test_logs.js",
+          "!*_scan.json",
+          "!**/*_scan.json"
+        ]
+      },
+      {
+        "from": "dist",
+        "to": "frontend/dist",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "resources/mysql/${arch}",
+        "to": "mysql/${arch}",
+        "filter": ["**/*"]
+      }
+    ]
+  },
+
+  "dmg": {
+    "artifactName": "${productName}-${version}-${arch}.${ext}"
+  },
+
+  "files": [
+    "electron.js",
+    "electron/**/*",
+    "preload.cjs",
+    "splashPreload.cjs",
+    "assets/**/*",
+    "!assets/*.psd",
+    "!**/*.map",
+    "!_ci_artifacts_final/**",
+    "!**/_ci_artifacts_final/**",
+    "!_loadtest*",
+    "!**/_loadtest*",
+    "!**/audit_*.js",
+    "!**/*_scan.json"
+  ],
+
+  "directories": {
+    "buildResources": "assets",
+    "output": "../dist-electron-standalone"
+  }
+}

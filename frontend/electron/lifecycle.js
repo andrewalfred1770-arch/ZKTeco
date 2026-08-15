@@ -10,6 +10,9 @@ import { createMainWindow } from './windows.js';
 import { buildDebugMenu, createTray } from './tray.js';
 import { initUpdater } from './updater.js';
 import { readConnectionSettings, getEffectiveBackendBaseUrl } from './connectionSettings.js';
+import { isStandalone } from './edition.js';
+import { ensureDataDir, startMysql, waitForReady as waitForMysqlReady, getConnectionEnv, requestMysqlShutdown } from './mysqlManager.js';
+import { createBackup, shouldRunScheduledBackup } from './standaloneBackup.js';
 
 // ─── Single instance lock ─────────────────────────────────────────────────────
 const gotInstanceLock = app.requestSingleInstanceLock();
@@ -48,23 +51,35 @@ app.on('ready', async () => {
   //    pre-EP-003 startup flow below. Server Mode skips spawning a backend
   //    entirely and points every downstream check at the configured remote.
   console.log('[Startup] loading connection settings');
-  const connectionSettings = readConnectionSettings();
-  // Read-verify: a runtime mode read has, rarely, disagreed with the settings
-  // file on disk despite the file's content/mtime never having changed (root
-  // cause not yet isolated — suspected timing artifact around rapid
-  // relaunch, not a code path that ignores the file). The persisted file is
-  // the sole authoritative source (connectionSettings.js has no other input
-  // for `mode`), so re-reading it immediately and trusting the freshest
-  // result is a safe, deterministic guard either way: a genuine one-off race
-  // will not reproduce identically microseconds later, and if this ever
-  // fires it pinpoints the anomaly precisely instead of requiring manual
-  // file forensics after the fact.
-  const verifySettings = readConnectionSettings();
-  if (verifySettings.mode !== connectionSettings.mode) {
-    console.warn(`[Startup] connection mode mismatch on re-read: first=${connectionSettings.mode} second=${verifySettings.mode} — using second read`);
+  // Root cause of the old two-read guard's occasional wrong answer: right
+  // after a prior instance's process handle closes (e.g. a rapid kill +
+  // relaunch), a read of connection-settings.json can transiently observe
+  // stale/incoherent OS-level file-cache state for one read and settle to
+  // the true on-disk content shortly after — reproduced live where the file
+  // said 'local' throughout, yet a same-tick reread once returned 'server'.
+  // Trusting "whichever read came last" (the old guard) is exactly wrong
+  // for this failure mode, since the bad value can just as easily land on
+  // the second read as the first. Server Mode with no backend spawned is
+  // the worst possible outcome (the app is unusable), so resolution here is
+  // deliberately asymmetric and local-biased: three independent reads, each
+  // separated by a short settling delay, and 'server' is only trusted if
+  // ALL three agree — any disagreement at all falls back to 'local', the
+  // safe default that always spawns a backend.
+  const reads = [readConnectionSettings()];
+  await new Promise((r) => setTimeout(r, 50));
+  reads.push(readConnectionSettings());
+  await new Promise((r) => setTimeout(r, 50));
+  reads.push(readConnectionSettings());
+
+  const modes = reads.map((r) => r.mode);
+  const unanimousServer = modes.every((m) => m === 'server');
+  if (!unanimousServer && modes.some((m) => m === 'server')) {
+    console.warn(`[Startup] connection mode disagreement across reads (${modes.join(', ')}) — forcing local (safe default)`);
   }
-  state.connectionMode  = verifySettings.mode === 'server' ? 'server' : 'local';
-  state.backendBaseUrl  = getEffectiveBackendBaseUrl(verifySettings);
+  const resolvedSettings = unanimousServer ? reads[reads.length - 1] : { ...reads[reads.length - 1], mode: 'local' };
+
+  state.connectionMode  = resolvedSettings.mode === 'server' ? 'server' : 'local';
+  state.backendBaseUrl  = getEffectiveBackendBaseUrl(resolvedSettings);
   console.log(`[Startup] resolved mode=${state.connectionMode}`);
   console.log(`[Electron] Connection mode: ${state.connectionMode} → ${state.backendBaseUrl}`);
 
@@ -126,7 +141,46 @@ console.log("AFTER createMainWindow");
   //    Server Mode (EP-003): Electron never spawns a backend here — the
   //    configured remote server is expected to already be running. The
   //    readiness poller below still confirms it's actually reachable.
-  if (state.connectionMode === 'local') {
+  if (state.connectionMode === 'local' && isStandalone) {
+    console.log('[Startup] Mac Standalone — starting managed local MySQL');
+    (async () => {
+      await killStaleBackend(paths);
+      let bootstrap;
+      try {
+        bootstrap = ensureDataDir();
+      } catch (err) {
+        console.error('[Electron] MySQL data directory initialization failed:', err.message);
+        notifyRenderer('mysql-init-failed', { error: err.message });
+        return; // do NOT proceed to spawn the backend against a DB that doesn't exist
+      }
+      state.mysqlCreds = bootstrap.creds;
+      startMysql(bootstrap);
+      const ready = await waitForMysqlReady();
+      if (!ready) {
+        console.error('[Electron] Managed MySQL did not become ready in time');
+        notifyRenderer('mysql-init-failed', { error: 'MySQL did not become ready' });
+        return;
+      }
+      console.log('[Electron] Managed MySQL ready — starting backend');
+      notifyRenderer('mysql-ready');
+      startBackend(paths, getConnectionEnv(bootstrap.creds));
+
+      // Scheduled full-database backup, checked once/hour in-process (same
+      // in-process-timer style as updater.js's own periodic checks) — never
+      // relies on an OS-level cron the app can't guarantee exists on a bare
+      // Mac.
+      setInterval(async () => {
+        try {
+          if (state.mysqlCreds && shouldRunScheduledBackup()) {
+            console.log('[Backup] running scheduled backup');
+            await createBackup(state.mysqlCreds, { reason: 'scheduled' });
+          }
+        } catch (err) {
+          console.error('[Backup] scheduled backup failed:', err.message);
+        }
+      }, 60 * 60 * 1000);
+    })().catch(err => console.error('[Electron] Standalone init error:', err.message));
+  } else if (state.connectionMode === 'local') {
     console.log('[Startup] backend starting');
     (async () => {
       await killStaleBackend(paths);
@@ -253,6 +307,33 @@ app.on('activate', () => {
 });
 
 let backendShutdownDone = false;
+let mysqlShutdownDone = false;
+
+// Standalone-only: stop the managed mysqld AFTER the backend has fully
+// exited (order matters — the backend must flush Prisma and close its pool
+// before the database underneath it goes away). No-op for server/manager
+// editions (mysqlShutdownDone just stays true-by-skip).
+async function shutdownMysqlIfStandalone() {
+  if (mysqlShutdownDone) return;
+  mysqlShutdownDone = true;
+  if (!isStandalone || !state.mysqlCreds || !state.mysqlProcess) return;
+  console.log('[Electron] Before-quit: requesting graceful MySQL shutdown');
+  const p = state.mysqlProcess;
+  await Promise.race([
+    requestMysqlShutdown(state.mysqlCreds),
+    new Promise(r => setTimeout(r, 8000)),
+  ]);
+  await new Promise(resolve => {
+    if (!p || p.exitCode !== null) return resolve();
+    const t = setTimeout(() => {
+      console.warn('[Electron] MySQL did not exit in time — force-killing');
+      try { if (!p.killed && p.exitCode === null) p.kill('SIGKILL'); } catch {}
+      resolve();
+    }, 4000);
+    p.once('exit', () => { clearTimeout(t); resolve(); });
+  });
+}
+
 app.on('before-quit', (e) => {
   app.isQuitting = true;
 
@@ -262,6 +343,8 @@ app.on('before-quit', (e) => {
   //  3. on child exit (or after a 4s ceiling) finish quitting; force-kill
   //     only as the last resort. If the pipe is already dead (backend crashed
   //     or mid-restart), skip the write entirely and just finish.
+  //  4. (Standalone only) once the backend is down, stop the managed mysqld
+  //     the same way — graceful first, force-kill as the last resort.
   const p = state.backendProcess;
   if (p && !backendShutdownDone && p.exitCode === null) {
     e.preventDefault();
@@ -271,7 +354,7 @@ app.on('before-quit', (e) => {
       if (backendShutdownDone) return;
       backendShutdownDone = true;
       state.backendProcess = null;
-      app.quit();
+      shutdownMysqlIfStandalone().finally(() => app.quit());
     };
 
     const killTimer = setTimeout(() => {
@@ -292,6 +375,10 @@ app.on('before-quit', (e) => {
       try { if (!p.killed && p.exitCode === null) p.kill('SIGKILL'); } catch {}
       finish();
     }
+  } else if (isStandalone && state.mysqlProcess && !mysqlShutdownDone) {
+    e.preventDefault();
+    console.log('[Electron] Before-quit: no live backend, stopping managed MySQL');
+    shutdownMysqlIfStandalone().finally(() => app.quit());
   } else {
     console.log('[Electron] Before-quit: no live backend to stop');
   }

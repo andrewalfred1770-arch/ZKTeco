@@ -7,8 +7,15 @@ node_modules/
 # ─── Build output ──────────────────────────────────────────────────────────────
 dist/
 dist-electron/
+dist-electron-standalone/
 build/
 release/
+
+# ─── Mac Standalone — MySQL binaries fetched at build time ─────────────────────
+# Populated by frontend/scripts/fetch-mysql-macos.mjs (downloaded fresh from
+# official MySQL infra on each CI run / local build, checksum + GPG verified —
+# see that script). ~100-200MB of platform binaries — must never be committed.
+frontend/resources/mysql/
 
 # Generated CommonJS main-process bundle for the Mojave/Electron 26 build
 # (produced by scripts/build-mojave-main.mjs; frontend/electron.js is the

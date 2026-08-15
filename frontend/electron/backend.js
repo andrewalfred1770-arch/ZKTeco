@@ -157,7 +157,13 @@ function migrateLegacyEnv({ envFile, legacyEnvFile, configDir }) {
 }
 
 // ─── Backend startup ──────────────────────────────────────────────────────────
-export function startBackend(paths) {
+// extraEnv (Mac Standalone only): DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME
+// for the managed local MySQL instance (see mysqlManager.js's
+// getConnectionEnv()). Merged in BEFORE the backend's own ensureEnvFile()
+// runs, so the very first .env it generates already points at the managed
+// instance — no separate write-then-restart cycle needed. Ignored entirely
+// once an .env already exists (ensureEnvFile is a no-op then, same as today).
+export function startBackend(paths, extraEnv = null) {
   if (state.backendReady) {
     console.log('[Electron] Backend already running — skipping launch');
     return;
@@ -174,6 +180,7 @@ export function startBackend(paths) {
 
   const env = {
     ...process.env,
+    ...(extraEnv || {}),
     NODE_ENV:     IS_DEV ? 'development' : 'production',
     PORT:         String(BACKEND_PORT),
     ELECTRON_APP: '1',
@@ -265,7 +272,7 @@ export function startBackend(paths) {
     if (configRestart && !app.isQuitting) {
       console.log('[Backend] Restarting after database configuration change');
       setTimeout(() => {
-        if (!app.isQuitting && !state.backendProcess) startBackend(paths);
+        if (!app.isQuitting && !state.backendProcess) startBackend(paths, extraEnv);
       }, 1000);
       return;
     }
@@ -274,7 +281,7 @@ export function startBackend(paths) {
     if (!app.isQuitting && c !== 0 && s !== 'SIGTERM') {
       console.log('[Backend] Crashed — restarting in 4s');
       setTimeout(() => {
-        if (!app.isQuitting && !state.backendProcess) startBackend(paths);
+        if (!app.isQuitting && !state.backendProcess) startBackend(paths, extraEnv);
       }, 4000);
     }
   });

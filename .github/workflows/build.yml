@@ -104,6 +104,377 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  build-macos-standalone:
+    name: Build macOS Standalone Edition (Local backend + managed MySQL)
+    runs-on: macos-latest
+
+    permissions:
+      contents: write
+
+    env:
+      # No Apple Developer credentials are configured for this edition —
+      # artifacts are intentionally UNSIGNED. Do not add CSC_LINK/notarize
+      # secrets here without also updating the "Report signing status" step
+      # below, which exists specifically so this is never silently claimed
+      # as verified.
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Cache Prisma engines
+        uses: actions/cache@v4
+        with:
+          path: backend/node_modules/.prisma
+          key: prisma-${{ runner.os }}-${{ hashFiles('backend/prisma/schema.prisma') }}
+
+      - name: Cache bundled MySQL binaries
+        uses: actions/cache@v4
+        with:
+          path: frontend/resources/mysql
+          key: mysql-macos-${{ hashFiles('frontend/scripts/fetch-mysql-macos.mjs') }}
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Generate Prisma Client
+        working-directory: backend
+        run: npx prisma generate
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Requires TARGETS.<arch>.sha256 in fetch-mysql-macos.mjs to be filled
+      # in from https://dev.mysql.com/downloads/mysql/ first — the script
+      # deliberately refuses to download an unpinned/unverified binary, so
+      # this step fails loudly (not silently) until that's done.
+      - name: Fetch + verify bundled MySQL binaries (x64 + arm64)
+        working-directory: frontend
+        run: npm run fetch:mysql:mac
+
+      - name: Build Frontend (Standalone edition)
+        working-directory: frontend
+        run: npm run build:standalone
+
+      - name: Build macOS Standalone DMG + ZIP (x64 + arm64)
+        working-directory: frontend
+        run: npx electron-builder --mac --config electron-builder.standalone.json --publish=never
+
+      - name: Inspect packaged app (edition identity, bundled resources, signing status)
+        working-directory: frontend
+        run: |
+          set -e
+          APP_DIR=$(find ../dist-electron-standalone -type d -name "*.app" | head -n1)
+          echo "App bundle: $APP_DIR"
+
+          echo "================ package.json name (edition detection) ================"
+          npx asar extract "$APP_DIR/Contents/Resources/app.asar" /tmp/asar-standalone
+          NAME=$(node -e "console.log(require('/tmp/asar-standalone/package.json').name)")
+          echo "Packaged name: $NAME"
+          if [ "$NAME" != "petshrow-erp-standalone" ]; then
+            echo "FAIL: packaged app.asar name is '$NAME', expected 'petshrow-erp-standalone'"; exit 1
+          fi
+
+          echo "================ backend/ present? ================"
+          test -d "$APP_DIR/Contents/Resources/backend" && echo "OK: backend/ bundled" || { echo "FAIL: backend/ missing"; exit 1; }
+
+          echo "================ managed MySQL binaries present? ================"
+          ls "$APP_DIR/Contents/Resources/mysql" || { echo "FAIL: no mysql/ resource dir"; exit 1; }
+
+          echo "================ minimum macOS version ================"
+          plutil -extract LSMinimumSystemVersion raw "$APP_DIR/Contents/Info.plist"
+
+          echo "================ Report signing status (never faked) ================"
+          echo "Signing: NOT VERIFIED — no Apple Developer certificate configured for this build"
+          echo "Notarization: NOT VERIFIED — no Apple credentials configured for this build"
+          codesign -dv "$APP_DIR" 2>&1 || echo "(codesign check above is informational only, expected to show 'not signed')"
+
+          echo "================ package hygiene — forbidden content must NOT be present ================"
+          FORBIDDEN=0
+          for pattern in "_loadtest" "audit_" "*_scan.json" ".env" ".env.example"; do
+            if find "$APP_DIR/Contents/Resources" -iname "$pattern" 2>/dev/null | grep -q .; then
+              echo "FAIL: forbidden pattern '$pattern' found under Resources/"
+              find "$APP_DIR/Contents/Resources" -iname "$pattern"
+              FORBIDDEN=1
+            fi
+          done
+          if find "$APP_DIR/Contents/Resources/backend" -path "*/uploads/*" 2>/dev/null | grep -q .; then
+            echo "FAIL: backend/uploads/ content leaked into the package"
+            FORBIDDEN=1
+          fi
+          if grep -rIl "DB_PASSWORD\|JWT_SECRET" /tmp/asar-standalone 2>/dev/null | grep -q .; then
+            echo "FAIL: possible secret material found inside app.asar"
+            FORBIDDEN=1
+          fi
+          if [ "$FORBIDDEN" != "0" ]; then
+            echo "FAIL: package hygiene check failed — see above"; exit 1
+          fi
+          echo "OK: no forbidden files, Windows-specific data, or secret material found in the package"
+
+          echo "================ app metadata version / API_VERSION ================"
+          APP_VERSION=$(node -e "console.log(require('/tmp/asar-standalone/package.json').version)")
+          echo "Packaged version: $APP_VERSION"
+          [ "$APP_VERSION" = "1.1.1" ] && echo "OK: version is 1.1.1" || { echo "FAIL: version is '$APP_VERSION', expected 1.1.1"; exit 1; }
+          API_VERSION=$(node -e "console.log(require('/tmp/asar-standalone/backend/src/apiVersion.js').API_VERSION)" 2>/dev/null || echo "unreadable")
+          echo "Packaged backend API_VERSION: $API_VERSION"
+          [ "$API_VERSION" = "1" ] && echo "OK: API_VERSION is 1" || echo "NOTE: could not confirm API_VERSION from packaged backend (non-fatal, informational)"
+
+      - name: Direct runtime test of the bundled MySQL binary (native arch, real .app resources)
+        working-directory: frontend
+        timeout-minutes: 5
+        run: |
+          set -e
+          APP_DIR=$(find ../dist-electron-standalone -type d -name "*.app" | head -n1)
+          NATIVE_ARCH=$(uname -m)
+          if [ "$NATIVE_ARCH" = "arm64" ]; then MYSQL_ARCH_DIR="arm64"; else MYSQL_ARCH_DIR="x64"; fi
+          MYSQL_BIN="$APP_DIR/Contents/Resources/mysql/$MYSQL_ARCH_DIR/bin"
+          echo "Testing bundled MySQL for native arch: $NATIVE_ARCH -> $MYSQL_ARCH_DIR"
+          test -x "$MYSQL_BIN/mysqld" || { echo "FAIL: mysqld not found/executable at $MYSQL_BIN"; exit 1; }
+
+          DATADIR=$(mktemp -d)
+          echo "================ mysqld --initialize-insecure ================"
+          "$MYSQL_BIN/mysqld" --initialize-insecure --datadir="$DATADIR" --basedir="$APP_DIR/Contents/Resources/mysql/$MYSQL_ARCH_DIR"
+          echo "OK: data directory initialized"
+
+          echo "================ mysqld start (loopback only, port 33061) ================"
+          "$MYSQL_BIN/mysqld" --datadir="$DATADIR" --socket="$DATADIR/mysql.sock" --port=33061 \
+            --bind-address=127.0.0.1 --pid-file="$DATADIR/mysqld.pid" --log-error="$DATADIR/mysqld.log" &
+          MYSQLD_TEST_PID=$!
+
+          READY=0
+          for i in $(seq 1 30); do
+            if "$MYSQL_BIN/mysqladmin" --host=127.0.0.1 --port=33061 ping >/dev/null 2>&1; then READY=1; break; fi
+            sleep 1
+          done
+          if [ "$READY" != "1" ]; then
+            echo "FAIL: mysqld did not become ready"; cat "$DATADIR/mysqld.log" || true; exit 1
+          fi
+          echo "OK: mysqld launched, mysqladmin ping succeeded"
+
+          echo "================ loopback-only binding check (no LAN exposure) ================"
+          BIND_CHECK=$(lsof -nP -iTCP:33061 -sTCP:LISTEN || true)
+          echo "$BIND_CHECK"
+          echo "$BIND_CHECK" | grep -q "127.0.0.1:33061" || { echo "FAIL: mysqld is not bound to 127.0.0.1"; exit 1; }
+          if echo "$BIND_CHECK" | grep -qE '\*:33061|0\.0\.0\.0:33061'; then
+            echo "FAIL: mysqld is listening on all interfaces — LAN exposure detected"; exit 1
+          fi
+          echo "OK: mysqld bound to loopback only — no LAN exposure"
+
+          echo "================ mysql client connect + write/read ================"
+          "$MYSQL_BIN/mysql" --host=127.0.0.1 --port=33061 -u root -e \
+            "CREATE DATABASE citest; CREATE TABLE citest.t(id INT); INSERT INTO citest.t VALUES (1),(2),(3);"
+          COUNT=$("$MYSQL_BIN/mysql" --host=127.0.0.1 --port=33061 -u root -N -e "SELECT COUNT(*) FROM citest.t;")
+          [ "$COUNT" = "3" ] && echo "OK: mysql client read back expected row count" || { echo "FAIL: unexpected row count $COUNT"; exit 1; }
+
+          echo "================ mysqldump ================"
+          "$MYSQL_BIN/mysqldump" --host=127.0.0.1 --port=33061 -u root citest > "$DATADIR/citest.sql"
+          grep -q "CREATE TABLE" "$DATADIR/citest.sql" && echo "OK: mysqldump produced valid SQL" || { echo "FAIL: mysqldump output looks wrong"; exit 1; }
+
+          echo "================ graceful shutdown ================"
+          "$MYSQL_BIN/mysqladmin" --host=127.0.0.1 --port=33061 -u root shutdown
+          wait "$MYSQLD_TEST_PID" 2>/dev/null || true
+          echo "OK: mysqld shut down cleanly (bundled $MYSQL_ARCH_DIR binary fully functional)"
+
+      - name: Standalone runtime validation (live packaged app — first run, persistence, local-only guarantee, crash recovery, backup)
+        working-directory: frontend
+        timeout-minutes: 15
+        run: |
+          set -e
+          APP_DIR=$(find ../dist-electron-standalone -type d -name "*.app" | head -n1)
+          BIN=$(find "$APP_DIR/Contents/MacOS" -type f -maxdepth 1 | head -n1)
+          NATIVE_ARCH=$(uname -m)
+          if [ "$NATIVE_ARCH" = "arm64" ]; then MYSQL_ARCH_DIR="arm64"; else MYSQL_ARCH_DIR="x64"; fi
+          MYSQL_BIN="$APP_DIR/Contents/Resources/mysql/$MYSQL_ARCH_DIR/bin"
+          DATA_ROOT="$HOME/Library/Application Support/PETSHROW ERP Standalone"
+
+          wait_for_health() {
+            local timeout=$1
+            local waited=0
+            while [ "$waited" -lt "$timeout" ]; do
+              if curl -sf http://127.0.0.1:5000/api/health >/dev/null 2>&1; then return 0; fi
+              sleep 2
+              waited=$((waited + 2))
+            done
+            return 1
+          }
+
+          echo "================ FIRST RUN — clean init ================"
+          echo "Launching: $BIN"
+          "$BIN" > /tmp/standalone-run1.log 2>&1 &
+          RUN1_PID=$!
+
+          if wait_for_health 150; then
+            echo "OK: backend reported healthy on first run"
+          else
+            echo "FAIL: backend never became healthy on first run"
+            echo "================ startup log ================"; cat /tmp/standalone-run1.log
+            exit 1
+          fi
+
+          echo "================ startup sequence markers ================"
+          for marker in "Mac Standalone" "Managed MySQL ready" "health OK" "database connected"; do
+            grep -q "$marker" /tmp/standalone-run1.log && echo "OK: found marker '$marker'" || { echo "FAIL: missing startup marker '$marker'"; cat /tmp/standalone-run1.log; exit 1; }
+          done
+
+          echo "================ data layout — outside the .app bundle ================"
+          test -d "$DATA_ROOT" || { echo "FAIL: $DATA_ROOT missing"; exit 1; }
+          for sub in database config logs backups exports temp; do
+            test -d "$DATA_ROOT/$sub" && echo "OK: $sub/ present" || { echo "FAIL: $sub/ missing"; exit 1; }
+          done
+          [ "$(ls -A "$DATA_ROOT/database/mysql" 2>/dev/null | wc -l)" -gt 0 ] && echo "OK: mysql datadir populated" || { echo "FAIL: mysql datadir empty"; exit 1; }
+          case "$DATA_ROOT" in
+            "$APP_DIR"*) echo "FAIL: data root is INSIDE the .app bundle"; exit 1 ;;
+            *) echo "OK: data root is outside the .app bundle" ;;
+          esac
+
+          echo "================ write test data + verify persistence (pre-restart) ================"
+          MARK="petshrow-ci-persistence-$(date +%s)"
+          curl -sf -X PUT http://127.0.0.1:5000/api/settings/company -H "Content-Type: application/json" -d "{\"company_name_ar\":\"$MARK\"}" > /dev/null
+          GOT=$(curl -sf http://127.0.0.1:5000/api/settings/company | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).company_name_ar||''))")
+          [ "$GOT" = "$MARK" ] && echo "OK: test value written and read back" || { echo "FAIL: value not persisted before restart (got '$GOT')"; exit 1; }
+
+          echo "================ graceful quit + orphan process check ================"
+          kill -TERM "$RUN1_PID" 2>/dev/null || true
+          for i in $(seq 1 20); do kill -0 "$RUN1_PID" 2>/dev/null || break; sleep 1; done
+          sleep 2
+          ORPHAN_MYSQL=$(pgrep -f "mysqld.*PETSHROW ERP Standalone" || true)
+          ORPHAN_BACKEND=$(pgrep -f "backend/src/index.js" || true)
+          if [ -n "$ORPHAN_MYSQL" ] || [ -n "$ORPHAN_BACKEND" ]; then
+            echo "FAIL: orphan process(es) remain after graceful quit: mysqld=[$ORPHAN_MYSQL] backend=[$ORPHAN_BACKEND]"; exit 1
+          fi
+          echo "OK: no orphan mysqld/backend processes after graceful quit"
+
+          echo "================ LOCAL-ONLY GUARANTEE — tamper connection-settings.json, relaunch ================"
+          mkdir -p "$DATA_ROOT/config"
+          cat > "$DATA_ROOT/config/connection-settings.json" <<'JSON'
+          {"mode":"server","serverUrl":"http://198.51.100.50:5000"}
+          JSON
+          echo "Tampered connection-settings.json to mode=server pointing at a bogus remote (198.51.100.50)"
+
+          "$BIN" > /tmp/standalone-run2.log 2>&1 &
+          RUN2_PID=$!
+
+          if wait_for_health 90; then
+            echo "OK: local backend started on 127.0.0.1:5000 despite tampered mode=server settings"
+          else
+            echo "FAIL: local backend did not start — Standalone may have tried to honor the tampered remote mode"
+            cat /tmp/standalone-run2.log; exit 1
+          fi
+          if grep -q "198.51.100.50" /tmp/standalone-run2.log; then
+            echo "FAIL: app referenced the bogus remote address — local-only guarantee violated"; exit 1
+          fi
+          echo "OK: no reference anywhere in the startup log to the tampered remote address"
+
+          GOT2=$(curl -sf http://127.0.0.1:5000/api/settings/company | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).company_name_ar||''))")
+          [ "$GOT2" = "$MARK" ] && echo "OK: data survived a full app restart — database persistence confirmed" || { echo "FAIL: persisted value lost across restart (got '$GOT2', expected '$MARK')"; exit 1; }
+
+          echo "================ CRASH RECOVERY — managed MySQL ================"
+          MYSQLD_PID=$(pgrep -f "mysqld.*PETSHROW ERP Standalone" | head -n1)
+          [ -n "$MYSQLD_PID" ] || { echo "FAIL: could not find live managed mysqld process"; exit 1; }
+          kill -9 "$MYSQLD_PID"
+          echo "Killed mysqld (pid $MYSQLD_PID) — waiting for automatic restart"
+          sleep 6
+          if wait_for_health 90; then echo "OK: recovered after mysqld crash"; else echo "FAIL: no recovery after mysqld crash"; exit 1; fi
+          NEW_MYSQLD_PID=$(pgrep -f "mysqld.*PETSHROW ERP Standalone" | head -n1)
+          [ -n "$NEW_MYSQLD_PID" ] && [ "$NEW_MYSQLD_PID" != "$MYSQLD_PID" ] && echo "OK: a new mysqld process is running (pid $NEW_MYSQLD_PID, was $MYSQLD_PID)" || { echo "FAIL: mysqld did not actually restart with a new pid"; exit 1; }
+
+          echo "================ CRASH RECOVERY — backend ================"
+          BACKEND_PID=$(pgrep -f "backend/src/index.js" | head -n1)
+          [ -n "$BACKEND_PID" ] || { echo "FAIL: could not find live backend process"; exit 1; }
+          kill -9 "$BACKEND_PID"
+          echo "Killed backend (pid $BACKEND_PID) — waiting for automatic restart"
+          sleep 5
+          if wait_for_health 90; then echo "OK: backend recovered after crash"; else echo "FAIL: backend did not restart after crash"; exit 1; fi
+
+          echo "================ BACKUP MECHANISM — mysqldump/restore against the LIVE managed instance ================"
+          CREDS_FILE="$DATA_ROOT/config/mysql-credentials.json"
+          test -f "$CREDS_FILE" || { echo "FAIL: mysql-credentials.json not found"; exit 1; }
+          DB_USER=$(node -e "console.log(require('$CREDS_FILE').user)")
+          DB_PASS=$(node -e "console.log(require('$CREDS_FILE').password)")
+          DB_NAME=$(node -e "console.log(require('$CREDS_FILE').database)")
+
+          "$MYSQL_BIN/mysqldump" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" --single-transaction "$DB_NAME" | gzip > /tmp/ci-backup.sql.gz
+          [ -s /tmp/ci-backup.sql.gz ] && echo "OK: backup archive created and non-empty" || { echo "FAIL: backup archive empty"; exit 1; }
+          gzip -t /tmp/ci-backup.sql.gz && echo "OK: backup archive is a valid gzip stream" || { echo "FAIL: corrupt gzip archive"; exit 1; }
+          zcat /tmp/ci-backup.sql.gz | grep -q "CREATE TABLE" && echo "OK: backup contains real schema (proves mechanism against the actual migrated DB)" || { echo "FAIL: backup missing expected SQL content"; exit 1; }
+
+          curl -sf -X PUT http://127.0.0.1:5000/api/settings/company -H "Content-Type: application/json" -d '{"company_name_ar":"corrupted-before-restore"}' > /dev/null
+          zcat /tmp/ci-backup.sql.gz | "$MYSQL_BIN/mysql" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" "$DB_NAME"
+          GOT3=$(curl -sf http://127.0.0.1:5000/api/settings/company | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).company_name_ar||''))")
+          [ "$GOT3" = "$MARK" ] && echo "OK: restore recovered the pre-mutation value ($MARK)" || { echo "FAIL: restore did not recover expected value (got '$GOT3', expected '$MARK')"; exit 1; }
+          echo "NOTE: this proves the backup/restore MECHANISM end-to-end against the live managed instance (same mysqldump/mysql binaries and credentials the app's Backups panel uses). The renderer's 'Backup Now'/'Restore' buttons themselves were not driven via automated GUI clicking."
+
+          echo "================ SYNTHETIC SCALE SMOKE TEST (small, NOT the 1,000,000+ row requirement) ================"
+          (
+            set -e
+            BRANCH_ID=$("$MYSQL_BIN/mysql" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" -N -e "SELECT id FROM branches LIMIT 1;" "$DB_NAME")
+            [ -n "$BRANCH_ID" ] || { echo "no seeded branch found — skipping"; exit 1; }
+            N=2000
+            echo "Bulk-inserting $N synthetic employees against branchId=$BRANCH_ID"
+            VALUES=""
+            for i in $(seq 1 "$N"); do
+              [ -n "$VALUES" ] && VALUES="$VALUES,"
+              VALUES="$VALUES('CI Scale Test $i','CI-SCALE-$i',$BRANCH_ID,NOW(),NOW())"
+            done
+            START=$(date +%s)
+            "$MYSQL_BIN/mysql" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" "$DB_NAME" -e \
+              "INSERT INTO employees (name, zkUserId, branchId, createdAt, updatedAt) VALUES $VALUES;"
+            INSERT_MS=$((($(date +%s) - START) * 1000))
+            START2=$(date +%s)
+            RESULT=$(curl -sf "http://127.0.0.1:5000/api/employees?limit=50" -o /dev/null -w "%{http_code}")
+            QUERY_MS=$((($(date +%s) - START2) * 1000))
+            echo "OK: inserted $N synthetic employees in ~${INSERT_MS}ms; /api/employees responded $RESULT in ~${QUERY_MS}ms afterward"
+            "$MYSQL_BIN/mysql" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" "$DB_NAME" -e "DELETE FROM employees WHERE zkUserId LIKE 'CI-SCALE-%';"
+            echo "Cleaned up synthetic rows"
+          ) || echo "SCALE SMOKE TEST: SKIPPED/FAILED (non-blocking, best-effort only) — 1,000,000+ rows: NOT TESTED regardless"
+          echo "1,000,000+ AttendanceLog rows: NOT TESTED (out of scope for this CI runner/budget)"
+          echo "Windows-vs-Mac payroll numeric parity: NOT TESTED (no live Windows Server 1.1.1 instance available to this CI job)"
+
+          echo "================ final quit + orphan check ================"
+          kill -TERM "$RUN2_PID" 2>/dev/null || true
+          for i in $(seq 1 20); do kill -0 "$RUN2_PID" 2>/dev/null || break; sleep 1; done
+          sleep 2
+          pkill -9 -f "mysqld.*PETSHROW ERP Standalone" 2>/dev/null || true
+          FINAL_ORPHAN_MYSQL=$(pgrep -f "mysqld.*PETSHROW ERP Standalone" || true)
+          FINAL_ORPHAN_BACKEND=$(pgrep -f "backend/src/index.js" || true)
+          if [ -n "$FINAL_ORPHAN_MYSQL" ] || [ -n "$FINAL_ORPHAN_BACKEND" ]; then
+            echo "FAIL: orphan process(es) remain at end of job: mysqld=[$FINAL_ORPHAN_MYSQL] backend=[$FINAL_ORPHAN_BACKEND]"; exit 1
+          fi
+          echo "OK: no orphan processes at end of job"
+          echo "================ ALL RUNTIME VALIDATION CHECKS PASSED ================"
+
+      - name: Upload Standalone artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: petshrow-macos-standalone
+          path: |
+            dist-electron-standalone/*.dmg
+            dist-electron-standalone/*.zip
+          if-no-files-found: error
+
+      - name: Upload Standalone artifacts to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+           dist-electron-standalone/*.dmg
+           dist-electron-standalone/*.zip
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build-macos-mojave:
     name: Build macOS Client (Mojave / Electron 26.6.10)
     runs-on: macos-15-intel

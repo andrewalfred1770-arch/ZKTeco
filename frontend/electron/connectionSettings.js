@@ -2,7 +2,7 @@ import { app } from 'electron';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { BACKEND_PORT } from './constants.js';
-import { isManager } from './edition.js';
+import { isManager, isStandalone } from './edition.js';
 
 // ─── Connection Layer settings (EP-003 Hybrid Client/Server) ─────────────────
 // mode:      'local'  — Electron spawns and owns a backend process on this
@@ -23,8 +23,11 @@ import { isManager } from './edition.js';
 // Manager defaults to 'server' so a first launch with no saved settings
 // still lands on the connect-to-a-server path instead of trying — and
 // failing — to spawn a backend that was never packaged).
+// Mac Standalone: ALWAYS 'local' — there is no server/remote mode for this
+// edition at all (see readConnectionSettings() below, which hard-pins it
+// even against a tampered/legacy settings file on disk).
 const DEFAULTS = {
-  mode: isManager ? 'server' : 'local',
+  mode: isStandalone ? 'local' : (isManager ? 'server' : 'local'),
   serverUrl: '',
 };
 
@@ -35,6 +38,12 @@ function settingsFile() {
 }
 
 export function readConnectionSettings() {
+  // Mac Standalone MUST NEVER run in anything but local mode — reject any
+  // persisted 'server' value outright, whether from a hand-edited file, a
+  // pre-Standalone install's leftover settings, or a future regression that
+  // reintroduces a mode toggle for this edition. No disk read below this
+  // point can override it.
+  if (isStandalone) return { ...DEFAULTS };
   try {
     const p = settingsFile();
     if (existsSync(p)) {
@@ -48,6 +57,15 @@ export function readConnectionSettings() {
 }
 
 export function writeConnectionSettings(patch) {
+  // Same rule as the read side: Standalone silently drops any attempt to
+  // persist a non-local mode or a serverUrl instead of writing it to disk —
+  // there is deliberately no remote-mode toggle for this edition to reach.
+  if (isStandalone) {
+    if (patch?.mode && patch.mode !== 'local') {
+      console.warn('[Connection] Standalone edition — ignoring attempt to set mode:', patch.mode);
+    }
+    return { ...DEFAULTS };
+  }
   const merged = { ...readConnectionSettings(), ...patch };
   try {
     writeFileSync(settingsFile(), JSON.stringify(merged, null, 2), 'utf8');

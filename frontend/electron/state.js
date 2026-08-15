@@ -20,4 +20,16 @@ export const state = {
   // restart despite a clean (code 0, SIGTERM) exit, which otherwise looks
   // identical to a real app-quit and is deliberately never auto-restarted.
   pendingConfigRestart: false,
+  // Mac Standalone — managed local MySQL (mysqlManager.js). Mirrors the
+  // backendProcess/backendReady shape above so lifecycle.js can treat both
+  // child processes with the same before-quit / crash-restart patterns.
+  mysqlProcess: null,
+  mysqlReady: false,
+  mysqlCrashCount: 0,
+  mysqlCrashWindowStart: 0,
+  // { user, password, database } — resolved once at startup by
+  // mysqlManager.ensureDataDir() and read by ipc.js's backup/restore
+  // handlers and lifecycle.js's shutdown/scheduled-backup logic. Never sent
+  // to the renderer.
+  mysqlCreds: null,
 };

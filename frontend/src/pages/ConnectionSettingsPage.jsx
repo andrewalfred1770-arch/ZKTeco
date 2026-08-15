@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import {
   Wifi, Server, HardDrive, Loader2, CheckCircle2, XCircle, Info,
-  Save, RotateCcw, PlugZap, Globe,
+  Save, RotateCcw, PlugZap, Globe, Lock, DatabaseBackup, Download,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../lib/api';
+import { isStandalone } from '../lib/edition';
 
 // ─── Connection Layer settings (EP-003 Hybrid Client/Server) ─────────────────
 // Electron-only page: the mode/serverUrl decide whether this desktop install
@@ -126,8 +127,129 @@ function BrowserConnectionView() {
   );
 }
 
+// ─── Mac Standalone — locked local-only panel + Backups ──────────────────────
+// Standalone can never switch to server/remote/LAN mode (see electron/
+// connectionSettings.js — enforced main-process-side regardless of what this
+// UI shows), so there is deliberately no mode toggle or serverUrl field here
+// at all — showing a disabled version of the Server-edition controls would
+// imply a choice that doesn't actually exist.
+function formatBytes(n) {
+  if (!n) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0, v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(1)} ${units[i]}`;
+}
+
+function StandaloneBackupsPanel() {
+  const [backups, setBackups] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = () => {
+    setLoading(true);
+    window.electron.backup.list()
+      .then(setBackups)
+      .catch(() => toast.error('فشل تحميل قائمة النسخ الاحتياطية'))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { refresh(); }, []);
+
+  const runBackup = async () => {
+    setBusy(true);
+    try {
+      const r = await window.electron.backup.create();
+      if (r.ok) { toast.success('تم إنشاء نسخة احتياطية جديدة'); refresh(); }
+      else toast.error(r.error || 'فشل إنشاء النسخة الاحتياطية');
+    } catch {
+      toast.error('فشل إنشاء النسخة الاحتياطية');
+    } finally { setBusy(false); }
+  };
+
+  const runRestore = async (path) => {
+    if (!window.confirm('استعادة هذه النسخة ستستبدل البيانات الحالية بالكامل (سيتم أخذ نسخة أمان تلقائياً أولاً). هل تريد المتابعة؟')) return;
+    setBusy(true);
+    try {
+      const r = await window.electron.backup.restore(path);
+      if (r.ok) toast.success('تمت الاستعادة بنجاح — يُنصح بإعادة تشغيل التطبيق');
+      else toast.error(r.error || 'فشلت عملية الاستعادة');
+      refresh();
+    } catch {
+      toast.error('فشلت عملية الاستعادة');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="card p-5 flex flex-col gap-3">
+      <h3 style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>
+        <DatabaseBackup style={{ width: 16, height: 16, color: '#34d399' }} />
+        النسخ الاحتياطي لقاعدة البيانات
+      </h3>
+      <p style={{ fontSize: 11.5, color: 'var(--text-3)' }}>
+        نسخة احتياطية كاملة يومية تلقائية، بالإضافة إلى إمكانية أخذ نسخة يدوية في أي وقت.
+      </p>
+      <button className="btn-primary text-xs justify-center" onClick={runBackup} disabled={busy}>
+        {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <DatabaseBackup className="w-3.5 h-3.5" />}
+        نسخة احتياطية الآن
+      </button>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4, maxHeight: 240, overflow: 'auto' }}>
+        {loading && <span style={{ fontSize: 12, color: 'var(--text-3)' }}>جاري التحميل...</span>}
+        {!loading && backups.length === 0 && <span style={{ fontSize: 12, color: 'var(--text-3)' }}>لا توجد نسخ احتياطية بعد</span>}
+        {backups.map((b) => (
+          <div key={b.path} style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface-2)',
+          }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ fontSize: 11.5, color: 'var(--text-1)' }}>{new Date(b.createdAt).toLocaleString('ar-EG')}</span>
+              <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{formatBytes(b.sizeBytes)}</span>
+            </div>
+            <button className="btn-secondary text-xs" onClick={() => runRestore(b.path)} disabled={busy}
+              style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Download style={{ width: 12, height: 12 }} /> استعادة
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StandaloneConnectionView() {
+  return (
+    <div className="flex flex-col gap-6" style={{ flex: 1, overflow: 'auto', minHeight: 0 }} dir="rtl">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">إعدادات الاتصال</h1>
+          <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>
+            PETSHROW ERP — إصدار Mac Standalone
+          </p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="card p-5 flex flex-col gap-3">
+          <h3 style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>
+            <Lock style={{ width: 16, height: 16, color: '#79C0FF' }} />
+            محلي بالكامل — يُدار تلقائياً
+          </h3>
+          <p style={{ fontSize: 12, color: 'var(--text-3)', lineHeight: 1.7 }}>
+            هذا الإصدار يشغّل الخادم وقاعدة البيانات على هذا الجهاز فقط، ولا يمكن توصيله بخادم آخر عبر الشبكة أو الإنترنت أو Tailscale.
+            لا حاجة لأي إعداد يدوي.
+          </p>
+        </div>
+        <StandaloneBackupsPanel />
+      </div>
+    </div>
+  );
+}
+
 export default function ConnectionSettingsPage() {
   const isElectron = !!window.electron?.isElectron;
+
+  if (isElectron && isStandalone) {
+    return <StandaloneConnectionView />;
+  }
 
   const [mode, setMode]           = useState('local');
   const [serverUrl, setServerUrl] = useState('');

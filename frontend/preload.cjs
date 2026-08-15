@@ -34,6 +34,18 @@ contextBridge.exposeInMainWorld('electron', {
     load:  () => ipcRenderer.invoke('session:load'),
     clear: () => ipcRenderer.invoke('session:clear'),
   },
+  // Mac Standalone — managed local MySQL status + full-database backup/restore.
+  // Handlers no-op (see ipc.js) on Server/Manager builds, so this is safe to
+  // expose unconditionally; ConnectionSettingsPage/BackupsPanel gate their UI
+  // on isStandalone rather than on this bridge's presence.
+  mysql: {
+    status: () => ipcRenderer.invoke('mysql:status'),
+  },
+  backup: {
+    list:    () => ipcRenderer.invoke('backup:list'),
+    create:  () => ipcRenderer.invoke('backup:create'),
+    restore: (path) => ipcRenderer.invoke('backup:restore', { path }),
+  },
   // Export an HTML document to PDF via Chromium's print engine (real Arabic shaping)
   exportPDF:   (payload) => ipcRenderer.invoke('pdf:export', payload),
   // Send HTML to the native Windows printer dialog (bypasses window.open() which is blocked)

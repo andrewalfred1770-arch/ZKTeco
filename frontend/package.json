@@ -1,6 +1,6 @@
 {
   "name": "petshrow-erp",
-  "version": "20.26.11",
+  "version": "1.1.1",
   "description": "PETSHROW ERP — نظام الموارد البشرية والرواتب",
   "author": "PETSHROW",
   "private": true,
@@ -10,6 +10,7 @@
   "dev": "vite",
   "build": "vite build",
   "build:manager": "vite build --mode manager",
+  "build:standalone": "cross-env VITE_EDITION=standalone vite build --mode standalone",
   "preview": "vite preview",
 
   "electron": ".\\node_modules\\electron\\dist\\electron.exe .",
@@ -18,14 +19,18 @@
 
   "electron:dev:manager": "concurrently --kill-others --names \"VITE,ELECTRON\" -c \"cyan,yellow\" \"vite --mode manager\" \"wait-on http://localhost:3002 && cross-env EDITION=manager .\\node_modules\\electron\\dist\\electron.exe .\"",
 
+  "electron:dev:standalone": "concurrently --kill-others --names \"VITE,ELECTRON\" -c \"cyan,yellow\" \"vite --mode standalone\" \"wait-on http://localhost:3002 && cross-env EDITION=standalone .\\node_modules\\electron\\dist\\electron.exe .\"",
+
   "electron:build": "npm run build && electron-builder --win --x64",
   "electron:build:dir": "npm run build && electron-builder --win --x64 --dir",
   "electron:build:mac": "npm run build && electron-builder --mac",
   "electron:build:mac:dir": "npm run build && electron-builder --mac --dir",
   "build:mojave-main": "node scripts/build-mojave-main.mjs",
-  "electron:build:mac:legacy": "npm run build:manager && npm run build:mojave-main && electron-builder --mac --config electron-builder.legacy-mac.json",
-  "electron:build:manager": "npm run build:manager && electron-builder --win --x64 --config electron-builder.manager.json",
-  "electron:build:manager:mac": "npm run build:manager && electron-builder --mac --config electron-builder.manager.json"
+  "electron:build:mac:legacy": "npm run build:mojave-main && npm run build:manager && electron-builder --mac --config electron-builder.legacy-mac.json",
+  "electron:build:manager": "npm run build:manager && electron-builder --mac --config electron-builder.manager.json",
+  "electron:build:manager:mac": "npm run build:manager && electron-builder --mac --config electron-builder.manager.json",
+  "fetch:mysql:mac": "node scripts/fetch-mysql-macos.mjs",
+  "electron:build:standalone:mac": "npm run fetch:mysql:mac && npm run build:standalone && electron-builder --mac --config electron-builder.standalone.json"
 },
 "dependencies": {
     "@fontsource/cairo": "^5.0.16",
@@ -110,7 +115,15 @@
             "!**/*.ts",
             "!**/__tests__/**",
             "!**/test/**",
-            "!**/tests/**"
+            "!**/tests/**",
+            "!_loadtest*",
+            "!**/_loadtest*",
+            "!audit_*.js",
+            "!**/audit_*.js",
+            "!inject_test_logs.js",
+            "!**/inject_test_logs.js",
+            "!*_scan.json",
+            "!**/*_scan.json"
           ]
         },
         {
@@ -164,7 +177,15 @@
             "!**/*.ts",
             "!**/__tests__/**",
             "!**/test/**",
-            "!**/tests/**"
+            "!**/tests/**",
+            "!_loadtest*",
+            "!**/_loadtest*",
+            "!audit_*.js",
+            "!**/audit_*.js",
+            "!inject_test_logs.js",
+            "!**/inject_test_logs.js",
+            "!*_scan.json",
+            "!**/*_scan.json"
           ]
         },
         {
