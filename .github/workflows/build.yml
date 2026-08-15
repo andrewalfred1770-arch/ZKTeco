@@ -228,10 +228,10 @@ jobs:
             # never silently ship.
             MYSQL_ROOT="$APP_DIR/Contents/Resources/mysql/$MYSQL_ARCHES"
             CLOSURE_FAIL=0
-            CHECK_FILES=$(find "$MYSQL_ROOT/bin" "$MYSQL_ROOT/lib" -type f 2>/dev/null)
+            CHECK_FILES=$(find "$MYSQL_ROOT/bin" "$MYSQL_ROOT/lib" -type f 2>/dev/null || true)
             while IFS= read -r f; do
               [ -n "$f" ] || continue
-              DEPS=$(otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -E '^@(loader_path|rpath)')
+              DEPS=$(otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -E '^@(loader_path|rpath)' || true)
               while IFS= read -r dep; do
                 [ -n "$dep" ] || continue
                 REL=$(echo "$dep" | sed -E 's#^@(loader_path|rpath)#.#')
