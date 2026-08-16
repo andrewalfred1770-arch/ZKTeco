@@ -746,10 +746,10 @@ jobs:
           "$MYSQL_BIN/mysqldump" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" --single-transaction --no-tablespaces "$DB_NAME" | gzip > /tmp/ci-backup.sql.gz
           [ -s /tmp/ci-backup.sql.gz ] && echo "OK: backup archive created and non-empty" || { echo "FAIL: backup archive empty"; exit 1; }
           gzip -t /tmp/ci-backup.sql.gz && echo "OK: backup archive is a valid gzip stream" || { echo "FAIL: corrupt gzip archive"; exit 1; }
-          zcat /tmp/ci-backup.sql.gz | grep -q "CREATE TABLE" && echo "OK: backup contains real schema (proves mechanism against the actual migrated DB)" || { echo "FAIL: backup missing expected SQL content"; exit 1; }
+          gzip -dc /tmp/ci-backup.sql.gz | grep -q "CREATE TABLE" && echo "OK: backup contains real schema (proves mechanism against the actual migrated DB)" || { echo "FAIL: backup missing expected SQL content"; exit 1; }
 
           curl -sf -X PUT http://127.0.0.1:33071/api/settings/company -H "Content-Type: application/json" -d '{"company_name_ar":"corrupted-before-restore"}' > /dev/null
-          zcat /tmp/ci-backup.sql.gz | "$MYSQL_BIN/mysql" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" "$DB_NAME"
+          gzip -dc /tmp/ci-backup.sql.gz | "$MYSQL_BIN/mysql" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" "$DB_NAME"
           GOT3=$(curl -sf http://127.0.0.1:33071/api/settings/company | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).company_name_ar||''))")
           [ "$GOT3" = "$MARK" ] && echo "OK: restore recovered the pre-mutation value ($MARK)" || { echo "FAIL: restore did not recover expected value (got '$GOT3', expected '$MARK')"; exit 1; }
           echo "NOTE: this proves the backup/restore MECHANISM end-to-end against the live managed instance (same mysqldump/mysql binaries and credentials the app's Backups panel uses). The renderer's 'Backup Now'/'Restore' buttons themselves were not driven via automated GUI clicking."
