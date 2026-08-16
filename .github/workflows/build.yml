@@ -749,10 +749,60 @@ jobs:
           gzip -dc /tmp/ci-backup.sql.gz | grep -q "CREATE TABLE" && echo "OK: backup contains real schema (proves mechanism against the actual migrated DB)" || { echo "FAIL: backup missing expected SQL content"; exit 1; }
 
           curl -sf -X PUT http://127.0.0.1:33071/api/settings/company -H "Content-Type: application/json" -d '{"company_name_ar":"corrupted-before-restore"}' > /dev/null
+
+          echo "================ RESTORE LIFECYCLE — mirrors the real backup:restore IPC handler ================"
+          # The real handler (frontend/electron/ipc.js) stops the backend
+          # BEFORE restoring (so no live process can serve a stale in-memory
+          # cache — see companySettingsStore.js's 60s TTL cache), then
+          # restarts it fresh afterward. A raw restore into a still-running
+          # backend never reproduces that — this block does the same
+          # stop -> restore -> clear-marker -> restart sequence the app
+          # itself performs, instead of relying on the cache TTL to expire.
+          echo "Gracefully stopping the backend before restore (same precondition backup:restore enforces)"
+          kill -TERM "$RUN2_PID" 2>/dev/null || true
+          for i in $(seq 1 20); do kill -0 "$RUN2_PID" 2>/dev/null || break; sleep 1; done
+          sleep 2
+
           gzip -dc /tmp/ci-backup.sql.gz | "$MYSQL_BIN/mysql" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" "$DB_NAME"
+          echo "OK: SQL restored into the managed instance"
+
+          # Mirrors ipc.js's backup:restore handler: force migrateAndSeed.js
+          # to re-check `prisma migrate deploy` on the next startup by
+          # clearing `migrated` in the same marker file the real restore
+          # flow clears — migrate deploy is idempotent, so this only ever
+          # adds work, never skips something needed.
+          MARKER_FILE="$DATA_ROOT/.initialized.json"
+          test -f "$MARKER_FILE" || { echo "FAIL: $MARKER_FILE not found — cannot mirror real restore's marker-clear step"; exit 1; }
+          node -e "
+            const fs = require('fs');
+            const p = '$MARKER_FILE';
+            const m = JSON.parse(fs.readFileSync(p, 'utf8'));
+            m.migrated = false;
+            fs.writeFileSync(p, JSON.stringify(m, null, 2));
+          "
+          echo "OK: cleared migrated flag in .initialized.json (mirrors real restore's marker-clear step)"
+
+          echo "Relaunching the packaged app — mirrors the real restore flow's backend restart"
+          "$BIN" > /tmp/standalone-run3.log 2>&1 &
+          RUN3_PID=$!
+
+          if wait_for_health 120; then
+            echo "OK: backend healthy after restore-lifecycle relaunch"
+          else
+            echo "FAIL: backend never became healthy after restore-lifecycle relaunch"
+            cat /tmp/standalone-run3.log; exit 1
+          fi
+
+          if grep -q "\[AssetSmokeTest\]" /tmp/standalone-run3.log; then
+            echo "FAIL: a bundled asset failed to load on the post-restore relaunch — see [AssetSmokeTest] lines above"
+            grep "\[AssetSmokeTest\]" /tmp/standalone-run3.log
+            exit 1
+          fi
+          echo "OK: no [AssetSmokeTest] failures in the post-restore relaunch log"
+
           GOT3=$(curl -sf http://127.0.0.1:33071/api/settings/company | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).company_name_ar||''))")
-          [ "$GOT3" = "$MARK" ] && echo "OK: restore recovered the pre-mutation value ($MARK)" || { echo "FAIL: restore did not recover expected value (got '$GOT3', expected '$MARK')"; exit 1; }
-          echo "NOTE: this proves the backup/restore MECHANISM end-to-end against the live managed instance (same mysqldump/mysql binaries and credentials the app's Backups panel uses). The renderer's 'Backup Now'/'Restore' buttons themselves were not driven via automated GUI clicking."
+          [ "$GOT3" = "$MARK" ] && echo "OK: restore recovered the pre-mutation value ($MARK) — verified via a fresh backend process, matching real Restore semantics" || { echo "FAIL: restore did not recover expected value (got '$GOT3', expected '$MARK')"; exit 1; }
+          echo "NOTE: this proves the backup/restore MECHANISM end-to-end against the live managed instance, including the same stop-restore-restart lifecycle the app's own 'backup:restore' IPC handler performs (same mysqldump/mysql binaries and credentials the app's Backups panel uses). The renderer's 'Backup Now'/'Restore' buttons themselves were not driven via automated GUI clicking."
 
           echo "================ SYNTHETIC SCALE SMOKE TEST (small, NOT the 1,000,000+ row requirement) ================"
           (
@@ -781,8 +831,8 @@ jobs:
           echo "Windows-vs-Mac payroll numeric parity: NOT TESTED (no live Windows Server 1.1.2 instance available to this CI job)"
 
           echo "================ final quit + orphan check ================"
-          kill -TERM "$RUN2_PID" 2>/dev/null || true
-          for i in $(seq 1 20); do kill -0 "$RUN2_PID" 2>/dev/null || break; sleep 1; done
+          kill -TERM "$RUN3_PID" 2>/dev/null || true
+          for i in $(seq 1 20); do kill -0 "$RUN3_PID" 2>/dev/null || break; sleep 1; done
           sleep 2
           pkill -9 -f "mysqld.*PETSHROW ERP Standalone" 2>/dev/null || true
           FINAL_ORPHAN_MYSQL=$(pgrep -f "mysqld.*PETSHROW ERP Standalone" || true)
