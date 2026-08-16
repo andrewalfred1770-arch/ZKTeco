@@ -127,6 +127,15 @@ export function initUpdater() {
   // in that case and emits 'error' below instead of installing it.
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
+  // ONE-RELEASE MIGRATION EXCEPTION — RESOLVED in 1.1.2. The 1.1.1 release
+  // reset the product version scheme from calendar versioning (20.26.11) to
+  // semver, which semver reads as a downgrade; allowDowngrade=true was
+  // switched on for that single migration release only, so existing
+  // 20.26.11 installs could still discover and pull 1.1.1 through
+  // electron-updater instead of being silently stranded. As planned in the
+  // 1.1.1-era TODO, this reverts to false here in the first release after
+  // 1.1.1 (the fleet is presumed off the calendar scheme by now) — do not
+  // re-enable without separate approval.
   autoUpdater.allowDowngrade = false;
   autoUpdater.disableWebInstaller = true;
   autoUpdater.logger = {

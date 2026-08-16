@@ -25,7 +25,7 @@ env:
 
 jobs:
   build-macos-modern:
-    name: Build macOS Client (Modern)
+    name: Build macOS Client (Modern — Manager edition, remote-server only)
     runs-on: macos-latest
 
     permissions:
@@ -47,31 +47,224 @@ jobs:
             backend/package-lock.json
             frontend/package-lock.json
 
-      - name: Cache Prisma engines
-        uses: actions/cache@v4
-        with:
-          path: backend/node_modules/.prisma
-          key: prisma-${{ runner.os }}-${{ hashFiles('backend/prisma/schema.prisma') }}
-
-      - name: Install backend dependencies
-        working-directory: backend
-        run: npm ci
-
-      - name: Generate Prisma Client
-        working-directory: backend
-        run: npx prisma generate
-
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
 
-      - name: Build Frontend
+      - name: Production asset check (pre-build)
         working-directory: frontend
-        run: npm run build
+        run: npm run assets:verify:source
 
-      - name: Build macOS DMG
+      # Manager edition — client-only, no backend/MySQL bundled. This is the
+      # "Mac Client" build: it must never share the Windows Server's
+      # embedded/full-backend electron-builder config (that config bundles
+      # ../backend and is meant for the Windows installer / the old,
+      # mislabeled Mac build this job used to produce). Backend deps are
+      # deliberately NOT installed and prisma generate is NOT run in this
+      # job — nothing here should be able to import Prisma or spawn a local
+      # backend even by accident.
+      - name: Build Frontend (Manager edition — client-only, server mode)
         working-directory: frontend
-        run: npx electron-builder --mac --publish=never
+        run: npm run build:manager
+
+      - name: Build macOS Client DMG + ZIP (x64 + arm64)
+        working-directory: frontend
+        run: npx electron-builder --mac --config electron-builder.manager.json --publish=never
+
+      - name: Production asset check (packaged)
+        working-directory: frontend
+        run: node scripts/assetSafety/verify-packaged.mjs mac-client-modern
+
+      - name: Inspect packaged app (edition identity, no backend/MySQL, server-mode default — BOTH arches)
+        working-directory: frontend
+        run: |
+          set -e
+          # A multi-arch mac target produces TWO separate .app bundles (one
+          # per arch) — inspect BOTH, not just whichever `find` returns
+          # first. Newline-delimited `while read` (not `for d in $(find ...)`)
+          # because the product name has spaces ("PETSHROW ERP Manager.app").
+          APP_DIRS=$(find ../dist-electron-manager -type d -name "*.app" -not -path "*/Contents/*")
+          echo "App bundles found:"; echo "$APP_DIRS"
+          [ -n "$APP_DIRS" ] || { echo "FAIL: no .app bundle found at all"; exit 1; }
+          COUNT=$(echo "$APP_DIRS" | grep -c .)
+          [ "$COUNT" -eq 2 ] || echo "NOTE: expected 2 .app bundles (x64 + arm64), found $COUNT"
+
+          i=0
+          while IFS= read -r APP_DIR; do
+            i=$((i+1))
+            echo ""
+            echo "########## Inspecting bundle $i: $APP_DIR ##########"
+            ASAR_DIR="/tmp/asar-client-modern-$i"
+
+            echo "================ package.json name (edition detection) ================"
+            npx asar extract "$APP_DIR/Contents/Resources/app.asar" "$ASAR_DIR"
+            NAME=$(node -e "console.log(require('$ASAR_DIR/package.json').name)")
+            echo "Packaged name: $NAME"
+            [ "$NAME" = "petshrow-erp-manager" ] || { echo "FAIL: packaged app.asar name is '$NAME', expected 'petshrow-erp-manager'"; exit 1; }
+
+            echo "================ backend/ must NOT be present (client-only) ================"
+            if [ -d "$APP_DIR/Contents/Resources/backend" ]; then
+              echo "FAIL: backend/ is bundled — this is supposed to be a client-only build"; exit 1
+            fi
+            echo "OK: no backend/ bundled"
+
+            echo "================ mysql/ must NOT be present (no local/managed MySQL) ================"
+            if [ -d "$APP_DIR/Contents/Resources/mysql" ]; then
+              echo "FAIL: mysql/ is bundled — this is supposed to be a client-only build"; exit 1
+            fi
+            echo "OK: no mysql/ bundled"
+
+            echo "================ app metadata version ================"
+            APP_VERSION=$(node -e "console.log(require('$ASAR_DIR/package.json').version)")
+            echo "Packaged version: $APP_VERSION"
+            [ "$APP_VERSION" = "1.1.2" ] && echo "OK: version is 1.1.2" || { echo "FAIL: version is '$APP_VERSION', expected 1.1.2"; exit 1; }
+          done <<< "$APP_DIRS"
+
+      - name: Runtime test — server-mode connection to a stub Windows Server, no local backend/MySQL ever spawned
+        working-directory: frontend
+        timeout-minutes: 5
+        run: |
+          set -e
+          NATIVE_ARCH=$(uname -m)
+          APP_DIR=""
+          while IFS= read -r d; do
+            # Pick the bundle matching this runner's native arch by checking
+            # the Mach-O binary itself (client bundles carry no per-arch
+            # resource dir to key off, unlike the Standalone job).
+            BIN=$(find "$d/Contents/MacOS" -type f -maxdepth 1 | head -n1)
+            if [ "$NATIVE_ARCH" = "arm64" ] && file "$BIN" | grep -q "arm64"; then APP_DIR="$d"; break; fi
+            if [ "$NATIVE_ARCH" != "arm64" ] && file "$BIN" | grep -q "x86_64"; then APP_DIR="$d"; break; fi
+          done < <(find ../dist-electron-manager -type d -name "*.app" -not -path "*/Contents/*")
+          [ -n "$APP_DIR" ] || { echo "FAIL: no .app bundle matches native arch $NATIVE_ARCH"; exit 1; }
+          BIN=$(find "$APP_DIR/Contents/MacOS" -type f -maxdepth 1 | head -n1)
+          echo "Using native-arch bundle: $APP_DIR"
+
+          echo "================ start a stub 'Windows Server v1.1.2' on 127.0.0.1 ================"
+          # Minimal HTTP stand-in for the authoritative Windows Server this
+          # client must talk to — proves the client's serverUrl config is
+          # actually used for API calls, without needing a real Windows box
+          # in this macOS CI job.
+          cat > /tmp/stub-server.mjs <<'JS'
+          import http from 'http';
+          import { writeFileSync } from 'fs';
+          let hits = [];
+          const server = http.createServer((req, res) => {
+            hits.push(req.method + ' ' + req.url);
+            res.setHeader('Content-Type', 'application/json');
+            if (req.url === '/api/health') {
+              res.end(JSON.stringify({ status: 'ok', db: 'connected', apiVersion: 1, authEnabled: false }));
+            } else if (req.url.startsWith('/api/employees')) {
+              res.end(JSON.stringify([]));
+            } else {
+              res.end(JSON.stringify({ ok: true, stub: true }));
+            }
+          });
+          server.listen(58631, '127.0.0.1', () => console.log('stub server listening on 58631'));
+          process.on('SIGTERM', () => { writeFileSync('/tmp/stub-hits.log', hits.join('\n')); process.exit(0); });
+          setInterval(() => writeFileSync('/tmp/stub-hits.log', hits.join('\n')), 1000);
+          JS
+          node /tmp/stub-server.mjs > /tmp/stub-server.log 2>&1 &
+          STUB_PID=$!
+          sleep 1
+
+          # Electron's default userData folder name (where
+          # connectionSettings.js's settingsFile() lives, via
+          # app.getPath('userData')) is derived from the packaged app's name,
+          # which can resolve to either the package.json "name"
+          # (petshrow-erp-manager) or "productName" (PETSHROW ERP Manager)
+          # depending on Electron version/platform behavior. Seed BOTH
+          # candidate folders so this test isn't silently broken by guessing
+          # wrong about which one Electron actually picked — a real user's
+          # single install only ever has the one Electron resolves to.
+          for NAME in "PETSHROW ERP Manager" "petshrow-erp-manager"; do
+            DATA_ROOT="$HOME/Library/Application Support/$NAME"
+            mkdir -p "$DATA_ROOT/config"
+            cat > "$DATA_ROOT/config/connection-settings.json" <<'JSON'
+          {"mode":"server","serverUrl":"http://127.0.0.1:58631"}
+          JSON
+          done
+          echo "Seeded connection-settings.json (both candidate userData folders): mode=server, serverUrl=http://127.0.0.1:58631"
+
+          echo "================ launch packaged Manager/Client app ================"
+          "$BIN" > /tmp/client-run.log 2>&1 &
+          APP_PID=$!
+          sleep 15
+
+          echo "================ never spawns a local backend or MySQL ================"
+          LOCAL_BACKEND=$(pgrep -f "backend/src/index.js" || true)
+          LOCAL_MYSQLD=$(pgrep -f "mysqld" || true)
+          if [ -n "$LOCAL_BACKEND" ] || [ -n "$LOCAL_MYSQLD" ]; then
+            echo "FAIL: client spawned a local process it must never spawn: backend=[$LOCAL_BACKEND] mysqld=[$LOCAL_MYSQLD]"
+            kill -TERM "$APP_PID" 2>/dev/null || true
+            exit 1
+          fi
+          echo "OK: no local backend/mysqld process running"
+
+          echo "================ nothing listening on the local backend port (5000) ================"
+          if lsof -nP -iTCP:5000 -sTCP:LISTEN 2>/dev/null | grep -q LISTEN; then
+            echo "FAIL: something is listening on 127.0.0.1:5000 — client must never run its own backend"; exit 1
+          fi
+          echo "OK: port 5000 is not bound — no local backend"
+
+          echo "================ client actually talked to the stub Windows Server ================"
+          kill -TERM "$STUB_PID" 2>/dev/null || true
+          sleep 2
+          if [ -s /tmp/stub-hits.log ] && grep -q "/api/health" /tmp/stub-hits.log; then
+            echo "OK: client called /api/health on the stub server (serverUrl config honored)"
+            cat /tmp/stub-hits.log
+          else
+            echo "FAIL: stub server never received /api/health — client did not connect to serverUrl"
+            echo "--- client log ---"; cat /tmp/client-run.log
+            exit 1
+          fi
+
+          kill -TERM "$APP_PID" 2>/dev/null || true
+          for i in $(seq 1 10); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 1; done
+          echo "================ RUNTIME TEST PASSED — server-mode only, no local backend/MySQL ================"
+
+      - name: Runtime test — unreachable server never falls back to local mode
+        working-directory: frontend
+        timeout-minutes: 3
+        run: |
+          set -e
+          NATIVE_ARCH=$(uname -m)
+          APP_DIR=""
+          while IFS= read -r d; do
+            BIN=$(find "$d/Contents/MacOS" -type f -maxdepth 1 | head -n1)
+            if [ "$NATIVE_ARCH" = "arm64" ] && file "$BIN" | grep -q "arm64"; then APP_DIR="$d"; break; fi
+            if [ "$NATIVE_ARCH" != "arm64" ] && file "$BIN" | grep -q "x86_64"; then APP_DIR="$d"; break; fi
+          done < <(find ../dist-electron-manager -type d -name "*.app" -not -path "*/Contents/*")
+          BIN=$(find "$APP_DIR/Contents/MacOS" -type f -maxdepth 1 | head -n1)
+
+          # Bogus, unreachable remote — nothing listens on this loopback port.
+          # See the previous step for why both candidate userData folder
+          # names are seeded.
+          for NAME in "PETSHROW ERP Manager" "petshrow-erp-manager"; do
+            DATA_ROOT="$HOME/Library/Application Support/$NAME"
+            mkdir -p "$DATA_ROOT/config"
+            cat > "$DATA_ROOT/config/connection-settings.json" <<'JSON'
+          {"mode":"server","serverUrl":"http://127.0.0.1:58699"}
+          JSON
+          done
+
+          "$BIN" > /tmp/client-run2.log 2>&1 &
+          APP_PID=$!
+          sleep 15
+
+          LOCAL_BACKEND=$(pgrep -f "backend/src/index.js" || true)
+          LOCAL_MYSQLD=$(pgrep -f "mysqld" || true)
+          if [ -n "$LOCAL_BACKEND" ] || [ -n "$LOCAL_MYSQLD" ]; then
+            echo "FAIL: client fell back to a local process when the remote server was unreachable: backend=[$LOCAL_BACKEND] mysqld=[$LOCAL_MYSQLD]"
+            kill -TERM "$APP_PID" 2>/dev/null || true
+            exit 1
+          fi
+          if lsof -nP -iTCP:5000 -sTCP:LISTEN 2>/dev/null | grep -q LISTEN; then
+            echo "FAIL: something is listening on 127.0.0.1:5000 with an unreachable remote — local fallback occurred"; exit 1
+          fi
+          echo "OK: unreachable remote server produced no local backend/MySQL fallback"
+
+          kill -TERM "$APP_PID" 2>/dev/null || true
+          for i in $(seq 1 10); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 1; done
 
       - name: Find Build Files
         run: |
@@ -87,19 +280,22 @@ jobs:
           echo "================ DIST DIRECTORIES ================"
           find . -type d -name "dist*"
 
-      - name: Upload Modern DMG artifact
+      - name: Upload Modern Client artifact
         uses: actions/upload-artifact@v4
         with:
-          name: petshrow-macos-modern-verify
-          path: dist-electron/*.dmg
+          name: petshrow-macos-client-modern
+          path: |
+            dist-electron-manager/*.dmg
+            dist-electron-manager/*.zip
           if-no-files-found: error
 
-      - name: Upload Modern DMG to GitHub Release
+      - name: Upload Modern Client artifact to GitHub Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: |
-           dist-electron/*.dmg
+           dist-electron-manager/*.dmg
+           dist-electron-manager/*.zip
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -155,6 +351,10 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
+
+      - name: Production asset check (pre-build)
+        working-directory: frontend
+        run: npm run assets:verify:source
 
       # Requires TARGETS.<arch>.sha256 in fetch-mysql-macos.mjs to be filled
       # in from https://dev.mysql.com/downloads/mysql/ first — the script
@@ -285,11 +485,15 @@ jobs:
             echo "================ app metadata version / API_VERSION ================"
             APP_VERSION=$(node -e "console.log(require('$ASAR_DIR/package.json').version)")
             echo "Packaged version: $APP_VERSION"
-            [ "$APP_VERSION" = "1.1.1" ] && echo "OK: version is 1.1.1" || { echo "FAIL: version is '$APP_VERSION', expected 1.1.1"; exit 1; }
+            [ "$APP_VERSION" = "1.1.2" ] && echo "OK: version is 1.1.2" || { echo "FAIL: version is '$APP_VERSION', expected 1.1.2"; exit 1; }
             API_VERSION=$(node -e "console.log(require('$ASAR_DIR/backend/src/apiVersion.js').API_VERSION)" 2>/dev/null || echo "unreadable")
             echo "Packaged backend API_VERSION: $API_VERSION"
             [ "$API_VERSION" = "1" ] && echo "OK: API_VERSION is 1" || echo "NOTE: could not confirm API_VERSION from packaged backend (non-fatal, informational)"
           done <<< "$APP_DIRS"
+
+      - name: Production asset check (packaged)
+        working-directory: frontend
+        run: node scripts/assetSafety/verify-packaged.mjs mac-standalone-modern
 
       - name: Direct runtime test of the bundled MySQL binary (native arch, real .app resources)
         working-directory: frontend
@@ -429,6 +633,14 @@ jobs:
             grep -q "$marker" /tmp/standalone-run1.log && echo "OK: found marker '$marker'" || { echo "FAIL: missing startup marker '$marker'"; cat /tmp/standalone-run1.log; exit 1; }
           done
 
+          echo "================ asset smoke test — no broken bundled resource on real first run ================"
+          if grep -q "\[AssetSmokeTest\]" /tmp/standalone-run1.log; then
+            echo "FAIL: a bundled asset failed to load on first run — see [AssetSmokeTest] lines above"
+            grep "\[AssetSmokeTest\]" /tmp/standalone-run1.log
+            exit 1
+          fi
+          echo "OK: no [AssetSmokeTest] failures in the first-run launch log"
+
           echo "================ data layout — outside the .app bundle ================"
           test -d "$DATA_ROOT" || { echo "FAIL: $DATA_ROOT missing"; exit 1; }
           for sub in database config logs backups exports temp; do
@@ -477,6 +689,13 @@ jobs:
             echo "FAIL: app referenced the bogus remote address — local-only guarantee violated"; exit 1
           fi
           echo "OK: no reference anywhere in the startup log to the tampered remote address"
+
+          if grep -q "\[AssetSmokeTest\]" /tmp/standalone-run2.log; then
+            echo "FAIL: a bundled asset failed to load on the tampered-relaunch run — see [AssetSmokeTest] lines above"
+            grep "\[AssetSmokeTest\]" /tmp/standalone-run2.log
+            exit 1
+          fi
+          echo "OK: no [AssetSmokeTest] failures in the second-run (relaunch) log"
 
           GOT2=$(curl -sf http://127.0.0.1:5000/api/settings/company | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).company_name_ar||''))")
           [ "$GOT2" = "$MARK" ] && echo "OK: data survived a full app restart — database persistence confirmed" || { echo "FAIL: persisted value lost across restart (got '$GOT2', expected '$MARK')"; exit 1; }
@@ -547,7 +766,7 @@ jobs:
             echo "Cleaned up synthetic rows"
           ) || echo "SCALE SMOKE TEST: SKIPPED/FAILED (non-blocking, best-effort only) — 1,000,000+ rows: NOT TESTED regardless"
           echo "1,000,000+ AttendanceLog rows: NOT TESTED (out of scope for this CI runner/budget)"
-          echo "Windows-vs-Mac payroll numeric parity: NOT TESTED (no live Windows Server 1.1.1 instance available to this CI job)"
+          echo "Windows-vs-Mac payroll numeric parity: NOT TESTED (no live Windows Server 1.1.2 instance available to this CI job)"
 
           echo "================ final quit + orphan check ================"
           kill -TERM "$RUN2_PID" 2>/dev/null || true
@@ -622,6 +841,10 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
+
+      - name: Production asset check (pre-build)
+        working-directory: frontend
+        run: npm run assets:verify:source
 
       - name: Build Frontend (Manager edition — client-only, server mode)
         working-directory: frontend
@@ -737,6 +960,10 @@ jobs:
             echo "OK: Electron Framework binary is x86_64"
           fi
 
+      - name: Production asset check (packaged)
+        working-directory: frontend
+        run: node scripts/assetSafety/verify-packaged.mjs mac-client-legacy
+
       - name: Launch packaged app and check for ERR_REQUIRE_ESM
         working-directory: frontend
         timeout-minutes: 5
@@ -762,6 +989,14 @@ jobs:
             exit 1
           else
             echo "OK: no ERR_REQUIRE_ESM in launch output"
+          fi
+
+          if grep -q "\[AssetSmokeTest\]" /tmp/app-launch.log; then
+            echo "FAIL: a bundled asset failed to load — see [AssetSmokeTest] lines above"
+            grep "\[AssetSmokeTest\]" /tmp/app-launch.log
+            exit 1
+          else
+            echo "OK: no [AssetSmokeTest] failures in launch output"
           fi
 
       - name: Upload Mojave DMG artifact

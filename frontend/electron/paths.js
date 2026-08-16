@@ -18,7 +18,15 @@ const STANDALONE_APP_NAME = 'PETSHROW ERP Standalone';
 // resources/ entirely — anything living inside resources/backend is not
 // survivable across either. This directory is outside both, so .env/logs/
 // backups/exports/uploads persist regardless of how the app was launched.
+// PETSHROW_TEST_APPDATA: isolated-test-environment override ONLY — points
+// the persistent config dir (.env, uploads, logs) at a throwaway directory
+// instead of the real %APPDATA%/PETSHROW ERP[ Standalone]/ so a test launch
+// can never read/write a real install's configuration or data. Unset in
+// every real deployment, so this is byte-identical to the previous
+// unconditional app.getPath('appData')-based resolution for every actual
+// user.
 export function getPersistentConfigDir() {
+  if (process.env.PETSHROW_TEST_APPDATA) return process.env.PETSHROW_TEST_APPDATA;
   return join(app.getPath('appData'), isStandalone ? STANDALONE_APP_NAME : APP_NAME);
 }
 

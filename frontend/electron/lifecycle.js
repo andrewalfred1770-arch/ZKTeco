@@ -194,11 +194,24 @@ console.log("AFTER createMainWindow");
   // 5. Readiness poller — drives the splash checklist AND the Progressive
   //    App Readiness events (UI / Backend / Realtime / Device). Polls
   //    /api/startup-status every 300ms; closes the splash once everything
-  //    that *can* be ready is ready, or after HARD_TIMEOUT_MS regardless —
+  //    that *can* be ready is ready, or after SPLASH_TIMEOUT_MS regardless —
   //    a slow/offline fingerprint device must never hold the splash open.
-  const HARD_TIMEOUT_MS = 6000;
+  //
+  //    SPLASH_TIMEOUT_MS is cosmetic only — it closes the splash window and
+  //    hands off to the renderer's own "connecting" spinner (ServerReadyGate),
+  //    it is NOT a failure signal. A slow-but-healthy backend/MySQL cold
+  //    start (observed: first launch after boot can legitimately take longer
+  //    than 6s for MySQL to accept connections) must never be reported to the
+  //    user as "تعذر الوصول إلى الخادم" just because the splash's own display
+  //    budget ran out. UNREACHABLE_TIMEOUT_MS is the real failure threshold —
+  //    only once startup has made no progress for this much longer does the
+  //    renderer get told the backend is unreachable, and pollUntilBackendReady
+  //    keeps polling forever afterward so a late-arriving backend still
+  //    resolves automatically with no manual retry.
+  const SPLASH_TIMEOUT_MS = 6000;
+  const UNREACHABLE_TIMEOUT_MS = 20000;
   const POLL_MS = 300;
-  let backendNotified = false, realtimeNotified = false, deviceNotified = false;
+  let backendNotified = false, realtimeNotified = false, deviceNotified = false, unreachableNotified = false;
 
   const pollReadiness = async () => {
     const elapsed = Date.now() - t0;
@@ -242,21 +255,14 @@ console.log("AFTER createMainWindow");
     const coreReady = isSplashStepDone(1) && isSplashStepDone(2) && isSplashStepDone(3);
     if (coreReady) markSplashStep(4, true);
 
-    if ((coreReady && isSplashStepDone(0)) || elapsed > HARD_TIMEOUT_MS) {
-      if (elapsed > HARD_TIMEOUT_MS && !coreReady) {
-        console.warn('[Electron] Startup hard-timeout reached — closing splash, services continue in background');
+    if ((coreReady && isSplashStepDone(0)) || elapsed > SPLASH_TIMEOUT_MS) {
+      if (elapsed > SPLASH_TIMEOUT_MS && !coreReady) {
+        console.warn('[Electron] Startup splash timeout reached — closing splash, backend still starting in background');
         if (!backendNotified) {
-          // The splash is cosmetic and must never block the window forever, but
-          // "splash closed" must not be mistaken by the renderer for "backend
-          // ready" — this is the one genuine failure signal Part 4 requires.
-          // Business-data pages (gated on 'backend-ready') keep waiting/showing
-          // a real retry state instead of firing requests that are known to fail.
-          console.warn(`[Startup] backend not ready after ${HARD_TIMEOUT_MS}ms — signalling renderer, continuing to poll in background`);
-          notifyRenderer('backend-unreachable');
-          if (state.connectionMode === 'server') {
-            console.warn(`[Electron] Server Mode: never reached ${state.backendBaseUrl} — check Connection Settings`);
-            notifyRenderer('connection-unreachable');
-          }
+          // Cosmetic close only — do NOT tell the renderer the backend is
+          // unreachable here. The renderer falls back to its own "connecting"
+          // spinner (ServerReadyGate) until either 'backend-ready' or the
+          // real failure signal below arrives from pollUntilBackendReady.
           pollUntilBackendReady();
         }
       }
@@ -269,12 +275,15 @@ console.log("AFTER createMainWindow");
     setTimeout(pollReadiness, POLL_MS);
   };
 
-  // Runs only if the splash's hard timeout is hit before the backend answers.
-  // The splash/checklist UI is already gone at this point (see above); this
-  // just keeps checking /api/startup-status at a relaxed interval so a slow
-  // (not dead) backend still reaches every waiting renderer gate once it
-  // genuinely comes up, instead of leaving them stuck on the one-shot failure
-  // notified above forever.
+  // Runs only if the splash's cosmetic timeout is hit before the backend
+  // answers. The splash/checklist UI is already gone at this point (see
+  // above); this keeps checking /api/startup-status at a relaxed interval so
+  // a slow (not dead) backend still reaches every waiting renderer gate once
+  // it genuinely comes up — with NO manual retry needed. Only once
+  // UNREACHABLE_TIMEOUT_MS has passed with still no dbConnected does it tell
+  // the renderer the backend is unreachable (once — via unreachableNotified),
+  // and even then polling continues forever afterward so a backend that
+  // finally comes up later still auto-resolves to 'backend-ready'.
   const BACKGROUND_POLL_MS = 1000;
   const pollUntilBackendReady = async () => {
     if (backendNotified) return;
@@ -290,6 +299,17 @@ console.log("AFTER createMainWindow");
       notifyRenderer('backend-ready');
       return;
     }
+
+    if (!unreachableNotified && Date.now() - t0 > UNREACHABLE_TIMEOUT_MS) {
+      unreachableNotified = true;
+      console.warn(`[Startup] backend not ready after ${UNREACHABLE_TIMEOUT_MS}ms — signalling renderer, continuing to poll in background`);
+      notifyRenderer('backend-unreachable');
+      if (state.connectionMode === 'server') {
+        console.warn(`[Electron] Server Mode: never reached ${state.backendBaseUrl} — check Connection Settings`);
+        notifyRenderer('connection-unreachable');
+      }
+    }
+
     setTimeout(pollUntilBackendReady, BACKGROUND_POLL_MS);
   };
 

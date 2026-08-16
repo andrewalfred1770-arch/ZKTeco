@@ -96,6 +96,50 @@ export async function createMainWindow(paths) {
     if (!app.isQuitting) setTimeout(() => mainWindow?.reload(), 2000);
   });
 
+  // ── Asset smoke-test signal (production-asset-safety gate) ───────────────
+  // did-fail-load only fires for FRAME-level navigation failures (the main
+  // document or an iframe) — kept for that, but it never fires for a broken
+  // subresource (a missing bundled JS/CSS/font/image referenced by an
+  // already-loaded page), which is the actual broken-asset case this gate
+  // exists to catch. -3 (ERR_ABORTED) is excluded — that's the code a
+  // routine cancelled/superseded in-page navigation reports, not a real
+  // resource failure.
+  //
+  // Diagnosed live (2026-08-16) via CDP against a deliberately-broken
+  // packaged JS bundle: the browser-generated "Failed to load resource"
+  // notice is NOT delivered through webContents' 'console-message' event
+  // (that only reliably carries JS-originated console.*() calls) — it
+  // surfaces through the CDP Log/Network domains instead, which Electron
+  // does not forward as a plain webContents event. session.webRequest.
+  // onErrorOccurred is the documented, reliable Electron API for this: it
+  // fires for ANY failed network-level request — main frame or subresource,
+  // JS/CSS/font/image/other — with the real net error code and URL,
+  // independent of console/log routing. Confirmed live: a missing bundled
+  // JS file produces exactly one onErrorOccurred call with
+  // error:'net::ERR_FILE_NOT_FOUND'.
+  mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (errorCode === -3) return;
+    console.error(`[AssetSmokeTest] did-fail-load: ${errorDescription} (${errorCode}) url=${validatedURL} mainFrame=${isMainFrame}`);
+  });
+  // Scoped to actual packaged-asset resource types ONLY — onErrorOccurred
+  // fires for every failed network-level request on this session, which
+  // also includes the app's own live xhr/fetch/webSocket calls (API health
+  // checks, Socket.IO) that are EXPECTED to fail transiently while the
+  // backend is still starting (see lifecycle.js's own readiness polling —
+  // that race is normal, not a broken asset). Confirmed live: an
+  // unscoped listener produced false-positive [AssetSmokeTest] lines for
+  // ERR_CONNECTION_REFUSED on /api/health and socket.io during a completely
+  // healthy startup. Restricting to the resource types an asset manifest
+  // entry could ever actually be (script/stylesheet/image/font/media) is
+  // what makes this a broken-ASSET signal instead of generic network noise.
+  const ASSET_RESOURCE_TYPES = new Set(['script', 'stylesheet', 'image', 'font', 'media']);
+  mainWindow.webContents.session.webRequest.onErrorOccurred((details) => {
+    if (details.error === 'net::ERR_ABORTED') return;
+    if (details.url.startsWith('devtools://')) return;
+    if (!ASSET_RESOURCE_TYPES.has(details.resourceType)) return;
+    console.error(`[AssetSmokeTest] request failed: ${details.error} url=${details.url} resourceType=${details.resourceType}`);
+  });
+
   // Passive evidence signal for the Flight Recorder — BrowserWindow focus
   // state is not observable from the renderer's own document.hasFocus() in
   // every case, so push it explicitly. Read-only forwarding, no behavior change.

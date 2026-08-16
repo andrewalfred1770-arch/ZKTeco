@@ -1,0 +1,17 @@
+{
+  "icon-ico": {
+    "path": "assets/icon.ico",
+    "sha256": "5eb4fc551cdc739d8dc77e6557464867693b30bcd35949250514ae470ddb0add",
+    "size": 6479
+  },
+  "icon-png": {
+    "path": "assets/icon.png",
+    "sha256": "638f188a19644ae7b6f14626f4232ff10fdc216a983108e3d368d407d36381a5",
+    "size": 234376
+  },
+  "tray-png": {
+    "path": "assets/tray.png",
+    "sha256": "b6ed6f39bb13a0a55433c684b4443de387bfa21d9f1c742072b240fdde941f08",
+    "size": 898
+  }
+}
