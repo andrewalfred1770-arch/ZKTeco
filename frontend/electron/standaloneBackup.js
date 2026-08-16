@@ -37,6 +37,17 @@ export async function createBackup(creds, { reason = 'manual' } = {}) {
     '--host=127.0.0.1', `--port=${MYSQL_PORT}`,
     `--user=${creds.user}`, `--password=${creds.password}`,
     '--single-transaction', '--routines', '--triggers', '--set-gtid-purged=OFF',
+    // mysqld 8.x's mysqldump tries to dump tablespace metadata by default,
+    // which requires the global PROCESS privilege — the managed app user
+    // intentionally only has GRANT ALL on its own database (mysqlManager.js),
+    // not a global grant, so that attempt fails with "Access denied; you
+    // need (at least one of) the PROCESS privilege(s)" before any table
+    // data is dumped (confirmed on a real CI run, 2026-08-15). This backup
+    // is a single-schema, single-tenant local dump — tablespace placement
+    // metadata (which physical .ibd file each table lives in) is irrelevant
+    // to restoring it, so --no-tablespaces (skip that section entirely) is
+    // the correct fix, not widening the app user's privileges.
+    '--no-tablespaces',
     creds.database,
   ], { maxBuffer: 1024 * 1024 * 1024 });
 

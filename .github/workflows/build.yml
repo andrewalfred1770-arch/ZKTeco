@@ -506,7 +506,13 @@ jobs:
           DB_PASS=$(node -e "console.log(require('$CREDS_FILE').password)")
           DB_NAME=$(node -e "console.log(require('$CREDS_FILE').database)")
 
-          "$MYSQL_BIN/mysqldump" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" --single-transaction "$DB_NAME" | gzip > /tmp/ci-backup.sql.gz
+          # --no-tablespaces: matches standaloneBackup.js's own mysqldump
+          # invocation (the actual mechanism this step exercises) — without
+          # it, mysqldump 8.x tries to dump tablespace metadata, which needs
+          # the global PROCESS privilege the app's scoped-per-database user
+          # intentionally doesn't have (confirmed on a real CI run,
+          # 2026-08-15: "Access denied; you need ... PROCESS privilege(s)").
+          "$MYSQL_BIN/mysqldump" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" --single-transaction --no-tablespaces "$DB_NAME" | gzip > /tmp/ci-backup.sql.gz
           [ -s /tmp/ci-backup.sql.gz ] && echo "OK: backup archive created and non-empty" || { echo "FAIL: backup archive empty"; exit 1; }
           gzip -t /tmp/ci-backup.sql.gz && echo "OK: backup archive is a valid gzip stream" || { echo "FAIL: corrupt gzip archive"; exit 1; }
           zcat /tmp/ci-backup.sql.gz | grep -q "CREATE TABLE" && echo "OK: backup contains real schema (proves mechanism against the actual migrated DB)" || { echo "FAIL: backup missing expected SQL content"; exit 1; }
