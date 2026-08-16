@@ -6,6 +6,15 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      edition:
+        description: 'Which editions to build (push/PR/release always build all — this only narrows a manual run)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - client-only
   release:
     types: [published]
 
@@ -302,6 +311,10 @@ jobs:
 
   build-macos-standalone:
     name: Build macOS Standalone Edition (Local backend + managed MySQL)
+    # Skipped only on a manual workflow_dispatch explicitly scoped to
+    # client-only (e.g. a Mac Client-only validation run) — push/PR/release
+    # triggers are untouched and always build every edition, unchanged.
+    if: github.event_name != 'workflow_dispatch' || inputs.edition != 'client-only'
     runs-on: macos-latest
 
     permissions:
