@@ -620,7 +620,7 @@ jobs:
             local timeout=$1
             local waited=0
             while [ "$waited" -lt "$timeout" ]; do
-              if curl -sf http://127.0.0.1:5000/api/health >/dev/null 2>&1; then return 0; fi
+              if curl -sf http://127.0.0.1:33071/api/health >/dev/null 2>&1; then return 0; fi
               sleep 2
               waited=$((waited + 2))
             done
@@ -666,8 +666,8 @@ jobs:
 
           echo "================ write test data + verify persistence (pre-restart) ================"
           MARK="petshrow-ci-persistence-$(date +%s)"
-          curl -sf -X PUT http://127.0.0.1:5000/api/settings/company -H "Content-Type: application/json" -d "{\"company_name_ar\":\"$MARK\"}" > /dev/null
-          GOT=$(curl -sf http://127.0.0.1:5000/api/settings/company | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).company_name_ar||''))")
+          curl -sf -X PUT http://127.0.0.1:33071/api/settings/company -H "Content-Type: application/json" -d "{\"company_name_ar\":\"$MARK\"}" > /dev/null
+          GOT=$(curl -sf http://127.0.0.1:33071/api/settings/company | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).company_name_ar||''))")
           [ "$GOT" = "$MARK" ] && echo "OK: test value written and read back" || { echo "FAIL: value not persisted before restart (got '$GOT')"; exit 1; }
 
           echo "================ graceful quit + orphan process check ================"
@@ -692,7 +692,7 @@ jobs:
           RUN2_PID=$!
 
           if wait_for_health 90; then
-            echo "OK: local backend started on 127.0.0.1:5000 despite tampered mode=server settings"
+            echo "OK: local backend started on 127.0.0.1:33071 despite tampered mode=server settings"
           else
             echo "FAIL: local backend did not start — Standalone may have tried to honor the tampered remote mode"
             cat /tmp/standalone-run2.log; exit 1
@@ -709,7 +709,7 @@ jobs:
           fi
           echo "OK: no [AssetSmokeTest] failures in the second-run (relaunch) log"
 
-          GOT2=$(curl -sf http://127.0.0.1:5000/api/settings/company | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).company_name_ar||''))")
+          GOT2=$(curl -sf http://127.0.0.1:33071/api/settings/company | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).company_name_ar||''))")
           [ "$GOT2" = "$MARK" ] && echo "OK: data survived a full app restart — database persistence confirmed" || { echo "FAIL: persisted value lost across restart (got '$GOT2', expected '$MARK')"; exit 1; }
 
           echo "================ CRASH RECOVERY — managed MySQL ================"
@@ -748,9 +748,9 @@ jobs:
           gzip -t /tmp/ci-backup.sql.gz && echo "OK: backup archive is a valid gzip stream" || { echo "FAIL: corrupt gzip archive"; exit 1; }
           zcat /tmp/ci-backup.sql.gz | grep -q "CREATE TABLE" && echo "OK: backup contains real schema (proves mechanism against the actual migrated DB)" || { echo "FAIL: backup missing expected SQL content"; exit 1; }
 
-          curl -sf -X PUT http://127.0.0.1:5000/api/settings/company -H "Content-Type: application/json" -d '{"company_name_ar":"corrupted-before-restore"}' > /dev/null
+          curl -sf -X PUT http://127.0.0.1:33071/api/settings/company -H "Content-Type: application/json" -d '{"company_name_ar":"corrupted-before-restore"}' > /dev/null
           zcat /tmp/ci-backup.sql.gz | "$MYSQL_BIN/mysql" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" "$DB_NAME"
-          GOT3=$(curl -sf http://127.0.0.1:5000/api/settings/company | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).company_name_ar||''))")
+          GOT3=$(curl -sf http://127.0.0.1:33071/api/settings/company | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).company_name_ar||''))")
           [ "$GOT3" = "$MARK" ] && echo "OK: restore recovered the pre-mutation value ($MARK)" || { echo "FAIL: restore did not recover expected value (got '$GOT3', expected '$MARK')"; exit 1; }
           echo "NOTE: this proves the backup/restore MECHANISM end-to-end against the live managed instance (same mysqldump/mysql binaries and credentials the app's Backups panel uses). The renderer's 'Backup Now'/'Restore' buttons themselves were not driven via automated GUI clicking."
 
@@ -771,7 +771,7 @@ jobs:
               "INSERT INTO employees (name, zkUserId, branchId, createdAt, updatedAt) VALUES $VALUES;"
             INSERT_MS=$((($(date +%s) - START) * 1000))
             START2=$(date +%s)
-            RESULT=$(curl -sf "http://127.0.0.1:5000/api/employees?limit=50" -o /dev/null -w "%{http_code}")
+            RESULT=$(curl -sf "http://127.0.0.1:33071/api/employees?limit=50" -o /dev/null -w "%{http_code}")
             QUERY_MS=$((($(date +%s) - START2) * 1000))
             echo "OK: inserted $N synthetic employees in ~${INSERT_MS}ms; /api/employees responded $RESULT in ~${QUERY_MS}ms afterward"
             "$MYSQL_BIN/mysql" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" "$DB_NAME" -e "DELETE FROM employees WHERE zkUserId LIKE 'CI-SCALE-%';"
