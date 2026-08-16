@@ -751,17 +751,31 @@ jobs:
           curl -sf -X PUT http://127.0.0.1:33071/api/settings/company -H "Content-Type: application/json" -d '{"company_name_ar":"corrupted-before-restore"}' > /dev/null
 
           echo "================ RESTORE LIFECYCLE — mirrors the real backup:restore IPC handler ================"
-          # The real handler (frontend/electron/ipc.js) stops the backend
-          # BEFORE restoring (so no live process can serve a stale in-memory
-          # cache — see companySettingsStore.js's 60s TTL cache), then
-          # restarts it fresh afterward. A raw restore into a still-running
-          # backend never reproduces that — this block does the same
-          # stop -> restore -> clear-marker -> restart sequence the app
-          # itself performs, instead of relying on the cache TTL to expire.
-          echo "Gracefully stopping the backend before restore (same precondition backup:restore enforces)"
-          kill -TERM "$RUN2_PID" 2>/dev/null || true
-          for i in $(seq 1 20); do kill -0 "$RUN2_PID" 2>/dev/null || break; sleep 1; done
-          sleep 2
+          # requestBackendShutdown() stops ONLY the backend child process —
+          # on Unix that's a SIGTERM, which backend/src/index.js handles via
+          # the exact same graceful shutdown() the Windows stdin-command
+          # path triggers. It never touches the Electron app process or the
+          # managed MySQL instance — both stay alive throughout a real
+          # restore (ipc.js's backup:restore handler explicitly calls
+          # startBackend() again afterward; it never quits the app). This
+          # block reproduces that precisely: stop ONLY the backend child by
+          # PID, confirm MySQL is still reachable, restore, clear the
+          # marker, then relaunch the backend the exact same way
+          # startBackend() does — the packaged binary invoked as a plain
+          # Node process via ELECTRON_RUN_AS_NODE with the same env
+          # (PORT/DOTENV_CONFIG_PATH/CONFIG_DIR/DB_*) — never the whole app.
+          BACKEND_PID=$(pgrep -f "backend/src/index.js" | head -n1)
+          [ -n "$BACKEND_PID" ] || { echo "FAIL: could not find live backend process before restore"; exit 1; }
+          kill -TERM "$BACKEND_PID"
+          for i in $(seq 1 20); do kill -0 "$BACKEND_PID" 2>/dev/null || break; sleep 1; done
+          if kill -0 "$BACKEND_PID" 2>/dev/null; then
+            echo "FAIL: backend child (pid $BACKEND_PID) did not exit gracefully within 20s"; exit 1
+          fi
+          echo "OK: backend child (pid $BACKEND_PID) stopped gracefully — Electron app and managed MySQL untouched"
+
+          "$MYSQL_BIN/mysqladmin" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" ping > /tmp/mysql-ping-during-restore.log 2>&1 \
+            && echo "OK: managed MySQL on 33061 remained reachable while the backend was stopped" \
+            || { echo "FAIL: managed MySQL on 33061 not reachable"; cat /tmp/mysql-ping-during-restore.log; exit 1; }
 
           gzip -dc /tmp/ci-backup.sql.gz | "$MYSQL_BIN/mysql" --host=127.0.0.1 --port=33061 --user="$DB_USER" --password="$DB_PASS" "$DB_NAME"
           echo "OK: SQL restored into the managed instance"
@@ -782,27 +796,34 @@ jobs:
           "
           echo "OK: cleared migrated flag in .initialized.json (mirrors real restore's marker-clear step)"
 
-          echo "Relaunching the packaged app — mirrors the real restore flow's backend restart"
-          "$BIN" > /tmp/standalone-run3.log 2>&1 &
-          RUN3_PID=$!
+          echo "Restarting ONLY the backend — same invocation startBackend() uses (packaged binary as plain Node via ELECTRON_RUN_AS_NODE), same env, same cwd"
+          (
+            cd "$APP_DIR/Contents/Resources/backend" &&
+            ELECTRON_RUN_AS_NODE=1 NODE_ENV=production PORT=33071 \
+            DOTENV_CONFIG_PATH="$DATA_ROOT/.env" CONFIG_DIR="$DATA_ROOT" \
+            DB_HOST=127.0.0.1 DB_PORT=33061 DB_USER="$DB_USER" DB_PASSWORD="$DB_PASS" DB_NAME="$DB_NAME" \
+            "$BIN" "$APP_DIR/Contents/Resources/backend/src/index.js" > /tmp/standalone-backend-restart.log 2>&1
+          ) &
 
           if wait_for_health 120; then
-            echo "OK: backend healthy after restore-lifecycle relaunch"
+            echo "OK: backend healthy after backend-only restart"
           else
-            echo "FAIL: backend never became healthy after restore-lifecycle relaunch"
-            cat /tmp/standalone-run3.log; exit 1
+            echo "FAIL: backend never became healthy after backend-only restart"
+            cat /tmp/standalone-backend-restart.log; exit 1
           fi
 
-          if grep -q "\[AssetSmokeTest\]" /tmp/standalone-run3.log; then
-            echo "FAIL: a bundled asset failed to load on the post-restore relaunch — see [AssetSmokeTest] lines above"
-            grep "\[AssetSmokeTest\]" /tmp/standalone-run3.log
-            exit 1
-          fi
-          echo "OK: no [AssetSmokeTest] failures in the post-restore relaunch log"
+          # The backend-only restart above is a plain Node process with no
+          # BrowserWindow — it can never emit [AssetSmokeTest] lines (that
+          # signal comes from windows.js's webContents listeners), so that
+          # check doesn't apply here; it was already exercised on both full
+          # app launches earlier in this job.
+          kill -0 "$RUN2_PID" 2>/dev/null \
+            && echo "OK: Electron app process (pid $RUN2_PID) stayed alive throughout the restore" \
+            || { echo "FAIL: Electron app process (pid $RUN2_PID) is no longer running — restore lifecycle should never touch it"; exit 1; }
 
           GOT3=$(curl -sf http://127.0.0.1:33071/api/settings/company | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).company_name_ar||''))")
           [ "$GOT3" = "$MARK" ] && echo "OK: restore recovered the pre-mutation value ($MARK) — verified via a fresh backend process, matching real Restore semantics" || { echo "FAIL: restore did not recover expected value (got '$GOT3', expected '$MARK')"; exit 1; }
-          echo "NOTE: this proves the backup/restore MECHANISM end-to-end against the live managed instance, including the same stop-restore-restart lifecycle the app's own 'backup:restore' IPC handler performs (same mysqldump/mysql binaries and credentials the app's Backups panel uses). The renderer's 'Backup Now'/'Restore' buttons themselves were not driven via automated GUI clicking."
+          echo "NOTE: this proves the backup/restore MECHANISM end-to-end against the live managed instance, including the same backend-only stop/restart lifecycle the app's own 'backup:restore' IPC handler performs — the Electron app process and managed MySQL instance were never stopped (same mysqldump/mysql binaries and credentials the app's Backups panel uses). The renderer's 'Backup Now'/'Restore' buttons themselves were not driven via automated GUI clicking."
 
           echo "================ SYNTHETIC SCALE SMOKE TEST (small, NOT the 1,000,000+ row requirement) ================"
           (
@@ -831,8 +852,8 @@ jobs:
           echo "Windows-vs-Mac payroll numeric parity: NOT TESTED (no live Windows Server 1.1.2 instance available to this CI job)"
 
           echo "================ final quit + orphan check ================"
-          kill -TERM "$RUN3_PID" 2>/dev/null || true
-          for i in $(seq 1 20); do kill -0 "$RUN3_PID" 2>/dev/null || break; sleep 1; done
+          kill -TERM "$RUN2_PID" 2>/dev/null || true
+          for i in $(seq 1 20); do kill -0 "$RUN2_PID" 2>/dev/null || break; sleep 1; done
           sleep 2
           pkill -9 -f "mysqld.*PETSHROW ERP Standalone" 2>/dev/null || true
           FINAL_ORPHAN_MYSQL=$(pgrep -f "mysqld.*PETSHROW ERP Standalone" || true)
