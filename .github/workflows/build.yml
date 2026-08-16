@@ -797,12 +797,21 @@ jobs:
           echo "OK: cleared migrated flag in .initialized.json (mirrors real restore's marker-clear step)"
 
           echo "Restarting ONLY the backend — same invocation startBackend() uses (packaged binary as plain Node via ELECTRON_RUN_AS_NODE), same env, same cwd"
+          # $APP_DIR and $BIN were resolved earlier relative to this step's
+          # own working-directory (frontend/) — the subshell below `cd`s
+          # into Contents/Resources/backend before invoking them, which
+          # would resolve those still-relative paths against the NEW cwd
+          # instead and fail with ENOENT. Absolute-ize both first so they
+          # remain valid regardless of the subshell's cwd.
+          APP_DIR_ABS="$(cd "$APP_DIR" && pwd)"
+          BIN_ABS="$APP_DIR_ABS/Contents/MacOS/$(basename "$BIN")"
+          test -x "$BIN_ABS" || { echo "FAIL: resolved backend binary not found/executable at $BIN_ABS"; exit 1; }
           (
-            cd "$APP_DIR/Contents/Resources/backend" &&
+            cd "$APP_DIR_ABS/Contents/Resources/backend" &&
             ELECTRON_RUN_AS_NODE=1 NODE_ENV=production PORT=33071 \
             DOTENV_CONFIG_PATH="$DATA_ROOT/.env" CONFIG_DIR="$DATA_ROOT" \
             DB_HOST=127.0.0.1 DB_PORT=33061 DB_USER="$DB_USER" DB_PASSWORD="$DB_PASS" DB_NAME="$DB_NAME" \
-            "$BIN" "$APP_DIR/Contents/Resources/backend/src/index.js" > /tmp/standalone-backend-restart.log 2>&1
+            "$BIN_ABS" "$APP_DIR_ABS/Contents/Resources/backend/src/index.js" > /tmp/standalone-backend-restart.log 2>&1
           ) &
 
           if wait_for_health 120; then
