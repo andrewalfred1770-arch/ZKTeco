@@ -6,6 +6,16 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      edition:
+        description: 'Edition to build (workflow_dispatch only — push/pull_request/release are unaffected and always build every job below)'
+        type: choice
+        default: all
+        options:
+          - all
+          - mac-standalone-modern
+          - mac-client-modern
+          - mac-client-legacy
   release:
     types: [published]
 
@@ -26,6 +36,7 @@ env:
 jobs:
   build-macos-modern:
     name: Build macOS Client (Modern — Manager edition, remote-server only)
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.edition == 'all' || github.event.inputs.edition == 'mac-client-modern'
     runs-on: macos-latest
 
     permissions:
@@ -302,6 +313,7 @@ jobs:
 
   build-macos-standalone:
     name: Build macOS Standalone Edition (Local backend + managed MySQL)
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.edition == 'all' || github.event.inputs.edition == 'mac-standalone-modern'
     runs-on: macos-latest
 
     permissions:
@@ -803,6 +815,7 @@ jobs:
 
   build-macos-mojave:
     name: Build macOS Client (Mojave / Electron 26.6.10)
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.edition == 'all' || github.event.inputs.edition == 'mac-client-legacy'
     runs-on: macos-15-intel
 
     permissions:

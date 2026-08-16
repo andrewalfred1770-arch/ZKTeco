@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
+import { isStandalone } from './edition.js';
 
 // EF-008 Phase 4: this file now lives in frontend/electron/, one level below
 // the original frontend/electron.js. FRONTEND_ROOT recovers the exact same
@@ -14,15 +15,24 @@ export const FRONTEND_ROOT = resolve(__thisFileDir, '..');
 // ─── Constants ────────────────────────────────────────────────────────────────
 export const IS_DEV       = !app.isPackaged;
 export const VITE_PORT    = 3002;
+// Cross-edition port isolation: Mac Standalone runs its own managed MySQL
+// on a non-default port (see mysqlManager.js MYSQL_PORT) specifically so it
+// can never collide with a Server-edition install on the same machine — the
+// backend HTTP port needs the same guarantee. Without this, a Standalone
+// launch defaults to the SAME port as a Windows Production (Server/Manager)
+// install, and killStaleBackend()'s taskkill-by-port fallback can then kill
+// the real production backend when it mistakes it for a stale process.
+// Server/Manager keep the original hardcoded 5000, unchanged.
+const DEFAULT_BACKEND_PORT = isStandalone ? 33071 : 5000;
 // PETSHROW_TEST_BACKEND_PORT: isolated-test-environment override ONLY — lets
-// a throwaway test launch bind a different port than a real install so it
-// can never collide with an already-running production backend on 5000.
-// Unset in every real deployment (installer/portable never set this env
-// var), so this is byte-identical to the previous hardcoded 5000 for every
-// actual user.
+// a throwaway test launch (any edition) bind a different port than a real
+// install so it can never collide with an already-running production
+// backend. Unset in every real deployment (installer/portable never set
+// this env var), so this is byte-identical to DEFAULT_BACKEND_PORT above
+// for every actual user.
 export const BACKEND_PORT = process.env.PETSHROW_TEST_BACKEND_PORT
   ? Number(process.env.PETSHROW_TEST_BACKEND_PORT)
-  : 5000;
+  : DEFAULT_BACKEND_PORT;
 export const APP_NAME     = 'PETSHROW ERP';
 // Temporary build marker — bump when re-packaging so Runtime Verification can
 // prove the EXE is loading THIS build and not a stale cached app.asar/dist.

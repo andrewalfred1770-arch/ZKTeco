@@ -8,11 +8,19 @@
  * seeders below upsert-by-key and only touch fields not already user-edited),
  * so the marker is a fast-path, not the only safety net.
  *
- * Only the three baseline/config seeders are ever run automatically:
- * seed-rules.js, seed-company-settings.js, seed-policy.js. prisma/seed.js
- * (fake demo employees + randomly generated attendance) is a developer/demo
- * tool only — it is intentionally NEVER invoked here, since auto-seeding
+ * Only the baseline/config seeders below are ever run automatically:
+ * seed-rules.js, seed-company-settings.js. prisma/seed.js (fake demo
+ * employees + randomly generated attendance) is a developer/demo tool
+ * only — it is intentionally NEVER invoked here, since auto-seeding
  * fictional employees into a real customer's database would be wrong.
+ *
+ * seed-policy.js is intentionally NOT invoked: migration
+ * 20260620100000_remove_policy_engine dropped the AttendancePolicy/
+ * PenaltyRule tables and their Prisma models entirely (superseded by the
+ * condition-rule engine — see the `rules` table), so seed-policy.js's
+ * `prisma.attendancePolicy.findFirst(...)` throws on every fresh database.
+ * The file is left in prisma/ only as history; do not re-add it here
+ * without first giving it a working replacement target.
  */
 const fs = require('fs');
 const path = require('path');
@@ -30,7 +38,6 @@ const MARKER_PATH = path.join(getConfigDir(), '.initialized.json');
 const BASELINE_SEEDERS = [
   path.join(BACKEND_ROOT, 'prisma', 'seed-rules.js'),
   path.join(BACKEND_ROOT, 'prisma', 'seed-company-settings.js'),
-  path.join(BACKEND_ROOT, 'prisma', 'seed-policy.js'),
 ];
 
 function readMarker() {
