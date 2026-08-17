@@ -185,14 +185,28 @@ jobs:
           # candidate folders so this test isn't silently broken by guessing
           # wrong about which one Electron actually picked — a real user's
           # single install only ever has the one Electron resolves to.
+          # serverUrl deliberately uses "localtest.me" (a public wildcard DNS
+          # record resolving to 127.0.0.1/::1 — see https://readme.localtest.me)
+          # instead of a literal 127.0.0.1/localhost. isSelfPointingHost() (the
+          # certified fix #13 guard) only ever compares the URL's hostname
+          # STRING against 'localhost'/'127.0.0.1'/'::1' and against the raw
+          # addresses returned by os.networkInterfaces() — it does no DNS
+          # resolution, so "localtest.me" never matches and the guard never
+          # fires. The actual HTTP client (same as production) still resolves
+          # this hostname via real DNS to loopback at connection time, so the
+          # round-trip to the stub below genuinely exercises Server Mode's
+          # real network path — this is not a bypass of the guard, it's a
+          # same-machine stand-in for what a real, non-self LAN hostname
+          # looks like to it. Production code (connectionSettings.js,
+          # isSelfPointingHost, isSelfPointingServerUrl) is untouched.
           for NAME in "PETSHROW ERP Manager" "petshrow-erp-manager"; do
             DATA_ROOT="$HOME/Library/Application Support/$NAME"
             mkdir -p "$DATA_ROOT/config"
             cat > "$DATA_ROOT/config/connection-settings.json" <<'JSON'
-          {"mode":"server","serverUrl":"http://127.0.0.1:58631"}
+          {"mode":"server","serverUrl":"http://localtest.me:58631"}
           JSON
           done
-          echo "Seeded connection-settings.json (both candidate userData folders): mode=server, serverUrl=http://127.0.0.1:58631"
+          echo "Seeded connection-settings.json (both candidate userData folders): mode=server, serverUrl=http://localtest.me:58631 (resolves to loopback via public DNS — see comment above)"
 
           echo "================ launch packaged Manager/Client app ================"
           "$BIN" > /tmp/client-run.log 2>&1 &
