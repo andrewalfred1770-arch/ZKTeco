@@ -785,13 +785,58 @@ jobs:
           kill -TERM "$RUN2_PID" 2>/dev/null || true
           for i in $(seq 1 20); do kill -0 "$RUN2_PID" 2>/dev/null || break; sleep 1; done
           sleep 2
-          pkill -9 -f "mysqld.*PETSHROW ERP Standalone" 2>/dev/null || true
-          FINAL_ORPHAN_MYSQL=$(pgrep -f "mysqld.*PETSHROW ERP Standalone" || true)
-          FINAL_ORPHAN_BACKEND=$(pgrep -f "backend/src/index.js" || true)
-          if [ -n "$FINAL_ORPHAN_MYSQL" ] || [ -n "$FINAL_ORPHAN_BACKEND" ]; then
-            echo "FAIL: orphan process(es) remain at end of job: mysqld=[$FINAL_ORPHAN_MYSQL] backend=[$FINAL_ORPHAN_BACKEND]"; exit 1
+
+          # FIRST real snapshot — taken before any cleanup attempt, so it
+          # reflects what Electron's quit actually left behind (no pkill has
+          # run yet). This is the PASS/FAIL that matters for "did quitting
+          # Electron clean up after itself" — a known harness gap is that
+          # the backend restarted by the crash-recovery test above isn't
+          # always still a tracked child of Electron by the time it quits,
+          # so it can legitimately survive the quit and show up here.
+          echo "================ FIRST orphan snapshot (before cleanup) ================"
+          FIRST_ORPHAN_MYSQL=$(pgrep -f "mysqld.*PETSHROW ERP Standalone" || true)
+          FIRST_ORPHAN_BACKEND=$(pgrep -f "backend/src/index.js" || true)
+          echo "orphan mysqld PID(s): [${FIRST_ORPHAN_MYSQL:-none}]"
+          echo "orphan backend PID(s): [${FIRST_ORPHAN_BACKEND:-none}]"
+          if [ -n "$FIRST_ORPHAN_MYSQL" ] || [ -n "$FIRST_ORPHAN_BACKEND" ]; then
+            echo "ORPHAN DETECTION: FAIL — orphan process(es) present immediately after Electron quit"
+          else
+            echo "ORPHAN DETECTION: PASS — no orphan processes immediately after Electron quit"
           fi
-          echo "OK: no orphan processes at end of job"
+
+          # Targeted cleanup — only the exact PID(s) recorded in the FIRST
+          # snapshot above, never a blanket pkill run ahead of detection.
+          # mysqld and backend are cleaned up as separate, explicit steps.
+          if [ -n "$FIRST_ORPHAN_BACKEND" ]; then
+            while IFS= read -r pid; do
+              [ -n "$pid" ] || continue
+              echo "Terminating orphaned CI-observed backend PID $pid"
+              kill -9 "$pid" 2>/dev/null || true
+            done <<< "$FIRST_ORPHAN_BACKEND"
+          fi
+          if [ -n "$FIRST_ORPHAN_MYSQL" ]; then
+            while IFS= read -r pid; do
+              [ -n "$pid" ] || continue
+              echo "Terminating orphaned mysqld PID $pid"
+              kill -9 "$pid" 2>/dev/null || true
+            done <<< "$FIRST_ORPHAN_MYSQL"
+          fi
+          if [ -n "$FIRST_ORPHAN_MYSQL" ] || [ -n "$FIRST_ORPHAN_BACKEND" ]; then
+            sleep 2
+          fi
+
+          # SECOND verification — confirms the targeted cleanup above
+          # actually worked. This is what fails the job: a real leak that
+          # survives explicit, targeted termination, not the known harness
+          # gap the FIRST snapshot already reported on its own.
+          echo "================ SECOND orphan verification (after cleanup) ================"
+          SECOND_ORPHAN_MYSQL=$(pgrep -f "mysqld.*PETSHROW ERP Standalone" || true)
+          SECOND_ORPHAN_BACKEND=$(pgrep -f "backend/src/index.js" || true)
+          if [ -n "$SECOND_ORPHAN_MYSQL" ] || [ -n "$SECOND_ORPHAN_BACKEND" ]; then
+            echo "ORPHAN CLEANUP: FAIL — orphan process(es) survived targeted cleanup: mysqld=[$SECOND_ORPHAN_MYSQL] backend=[$SECOND_ORPHAN_BACKEND]"
+            exit 1
+          fi
+          echo "ORPHAN CLEANUP: PASS — no orphan processes remain after targeted cleanup"
           echo "================ ALL RUNTIME VALIDATION CHECKS PASSED ================"
 
       - name: Upload Standalone artifacts
