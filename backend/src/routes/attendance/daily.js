@@ -8,6 +8,18 @@ const { buildAttendanceRow } = require('../../utils/attendanceRow');
 
 const prisma = getPrisma();
 
+// Perf Batch 1 (Fix #5): same trim as attendance/monthly.js's
+// MONTHLY_DETAIL_EMPLOYEE_SELECT — only the fields buildAttendanceRow()
+// actually reads off the employee row, instead of `include: true` hydrating
+// every column on Employee plus full Department/Branch/Shift rows on every
+// request to this endpoint (the default landing screen / most-polled route).
+const DAILY_EMPLOYEE_SELECT = {
+  id: true, name: true, code: true, isMonitored: true, monitorColor: true,
+  department: { select: { name: true } },
+  branch: { select: { name: true } },
+  shift: { select: { name: true } },
+};
+
 // Get daily attendance (for AG Grid)
 router.get('/daily', async (req, res) => {
   try {
@@ -24,12 +36,29 @@ router.get('/daily', async (req, res) => {
 
     const employees = await prisma.employee.findMany({
       where: empWhere,
-      include: { department: true, branch: true, shift: true },
+      select: DAILY_EMPLOYEE_SELECT,
     });
 
     const empIds = employees.map(e => e.id);
     const records = await prisma.attendanceDaily.findMany({
       where: { date: d, employeeId: { in: empIds } },
+      // Perf Batch 1 (Fix #5): same trim as attendance/monthly.js's explicit
+      // select — every field buildAttendanceRow()/mergeEffectivePenalty()/
+      // applyApprovedAdjustment() actually reads off an AttendanceDaily row
+      // on this response path, and nothing else (trims createdAt/updatedAt/
+      // conditionDeductionUnits/manualConditionUnits, none of which are read
+      // here, off the ORM row-hydration cost).
+      select: {
+        id: true, employeeId: true, date: true, checkIn: true, checkOut: true,
+        workedMinutes: true, lateMinutes: true, overtimeMinutes: true, overtimeHours: true,
+        earlyLeaveMinutes: true, isAbsent: true, isHoliday: true, isWeekend: true, status: true,
+        manualEdit: true, earlyCheckoutUnits: true, eveningOvertimeHours: true,
+        latePenaltyUnits: true, morningOvertimeHours: true, totalDeductionUnits: true,
+        manualEarlyPenaltyUnits: true, manualLatePenaltyUnits: true, manualPenaltyAt: true,
+        manualPenaltyBy: true, manualPenaltyByName: true, manualPenaltyReason: true,
+        manualOvertimeUnits: true, overtimeRulesUnits: true, absenceType: true,
+        penaltyDays: true, absenceReason: true, absenceSetBy: true, absenceSetAt: true,
+      },
     });
 
     const recordIds = records.map(r => r.id);

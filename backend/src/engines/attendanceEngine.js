@@ -78,6 +78,33 @@ async function processDateImpl(date, employeeId, opts = {}) {
     return null;
   }
 
+  // ── F-02: pre-hire eligibility gate ─────────────────────────────────────────
+  // Mirrors the existing employee-eligibility-window pattern (effectiveStopDate,
+  // enforced in payroll.js) at day-granularity: a date strictly before
+  // hireDate can never produce an absence, lateness, penalty, or payroll
+  // deduction. Reuses the exact same "non-working day" exclusion the
+  // weekend/holiday branch below already establishes — isHoliday:true plus a
+  // non-present/late/early_leave status keeps the day out of both
+  // payrollEngine.computePayroll's workDays/absentDays (filtered by
+  // status/isAbsent) and every isWeekend/isHoliday-based exclusion downstream
+  // (attendanceRow.js, movement.js) — so no new status enum value or engine
+  // branch is introduced. Manual edits still take precedence (checked
+  // above), matching the weekend/holiday short-circuit's own `&& !manual`
+  // guard below.
+  if (!manual && employee.hireDate) {
+    const hireDateStr = moment(employee.hireDate).format('YYYY-MM-DD');
+    if (dateStr < hireDateStr) {
+      logger.info(`[PRE-HIRE] employee=${employeeId} date=${dateStr} is before hireDate=${hireDateStr} — excluded from attendance/payroll`);
+      await upsertDaily(employeeId, dateStr, {
+        isHoliday: true,
+        status: 'holiday',
+        absenceType: null,
+        penaltyDays: null,
+      });
+      return;
+    }
+  }
+
   // ── Weekend / Holiday check ─────────────────────────────────────────────────
   const legacyRules = await getRules(employee.branchId, employee.departmentId, employee.id);
   const dayDate = new Date(dateStr);

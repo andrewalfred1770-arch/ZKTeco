@@ -937,7 +937,10 @@ export default function DevicesPage() {
     const onDeviceSynced = ({ deviceId, newLogs, duration }) => {
       setLiveStatus(s => ({ ...s, [deviceId]: 'online' }));
       if (newLogs > 0) toast.success(`مزامنة ناجحة — ${W(newLogs)} حركة جديدة (${fmtDuration(duration)})`);
-      loadAll();
+      // Perf: targeted /devices + /devices/stats refresh, not the full
+      // loadAll() (which also re-fetches static /branches and flashes the
+      // page loading state) — see refreshDevicesAndStats's own doc comment.
+      refreshDevicesAndStats();
     };
 
     const onOffline = ({ deviceId }) =>
@@ -1089,6 +1092,34 @@ export default function DevicesPage() {
   }, []);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  // ── Targeted refresh after a single device sync completes ────────────────
+  // device:synced only needs fresh /devices (rawLogCount/lastSync/
+  // lastSyncCount — the fields that change from a sync) and /devices/stats
+  // (KPI cards' online/offline/lastSync/recentSyncs counts). /branches is
+  // static reference data a device sync can never affect — loadAll()'s
+  // third parallel call is skipped entirely rather than re-fetched for
+  // nothing. Also skips loadAll()'s setLoading/setStatsLoad flags so this
+  // reads as a silent background refresh (same live-update feel as
+  // liveStatus) instead of flashing the page's loading state on every sync.
+  // Deliberately still uses GET /devices (not GET /devices/:id) — the
+  // single-device endpoint doesn't compute rawLogCount (that aggregation
+  // only exists on the list route), so swapping to it would silently drop
+  // that grid column's value on every synced device. Same setDevices/
+  // setStats setters as loadAll(); AG Grid's existing getRowId (Perf Fix #4)
+  // already makes this an efficient per-row diff, not a rebuild — this
+  // change only removes the two unnecessary network calls / flag toggles,
+  // it does not change how the grid itself reconciles the update.
+  const refreshDevicesAndStats = useCallback(async () => {
+    try {
+      const [d, s] = await Promise.all([
+        api.get('/devices'),
+        api.get('/devices/stats'),
+      ]);
+      setDevices(d.data);
+      setStats(s.data);
+    } catch { /* silent background refresh — next sync/poll retries; loadAll() already owns user-facing error toasting */ }
+  }, []);
 
   // ── Sync single device ────────────────────────────────────────────────────
   const handleSync = async (id) => {
@@ -1315,25 +1346,60 @@ export default function DevicesPage() {
   // never needs to change after mount.
   ], []);
 
+  // Perf Fix #7: rowClassRules (unlike a getRowClass function) is checked
+  // against the AG Grid `context` prop at evaluation time, exactly like the
+  // cellRenderers above — so it can read liveStatus without closing over it,
+  // and this object's identity never has to change again. `rowClassRules`,
+  // like `getRowClass`, is one of the row-level options AG Grid watches for
+  // identity changes (see EmployeeMovementPage.jsx's getRowStyle comment for
+  // the root-caused mechanism): giving it a NEW reference on every liveStatus
+  // update was what forced RowRenderer.redrawRows() to destroy/recreate
+  // EVERY currently-displayed row on every single device:syncing/synced/
+  // error event. `[]` deps keeps this the same object forever, so that
+  // automatic full-grid redraw never fires again.
+  const rowClassRules = useMemo(() => ({
+    'row-present':  params => !!params.data && (params.context.liveStatus[params.data.id] || params.data.status) === 'online',
+    'row-overtime': params => !!params.data && (params.context.liveStatus[params.data.id] || params.data.status) === 'syncing',
+    'row-absent':   params => !!params.data && (params.context.liveStatus[params.data.id] || params.data.status) === 'error',
+  }), []);
+
   // EP-014: single centralized repaint trigger for every live-state setter
   // above (setLiveStatus/setRealtimeStatus/setRealtimeDetail/setSyncing/
   // setPinging) — cells read the current context value directly, so a
   // targeted refreshCells() (not a columnDefs rebuild, not a rowData
   // replace) is all that's needed to reflect the change on screen.
+  const prevLiveStatusRef = useRef({});
   useEffect(() => {
     gridRef.current?.api?.refreshCells({ force: true });
+
+    // refreshCells() only repaints cell content — it does not re-evaluate
+    // rowClassRules (AG Grid only does that when a row is created or its
+    // underlying rowNode.data changes, neither of which happens here, since
+    // liveStatus lives outside rowData by design). A TARGETED redraw of only
+    // the row(s) whose liveStatus actually changed since the last tick (not
+    // api.redrawRows() with no filter, which would recreate every displayed
+    // row again) is what keeps the row-background color live without paying
+    // for a full-grid redraw on every event.
+    const prev = prevLiveStatusRef.current;
+    const changedIds = new Set();
+    for (const id of new Set([...Object.keys(prev), ...Object.keys(liveStatus)])) {
+      if (prev[id] !== liveStatus[id]) changedIds.add(id);
+    }
+    prevLiveStatusRef.current = liveStatus;
+    if (changedIds.size) {
+      const nodes = [...changedIds]
+        .map(id => gridRef.current?.api?.getRowNode(id))
+        .filter(Boolean);
+      if (nodes.length) gridRef.current.api.redrawRows({ rowNodes: nodes });
+    }
   }, [liveStatus, realtimeStatus, realtimeDetail, syncing, pinging]);
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
 
-  const getRowClass = useCallback(({ data }) => {
-    if (!data) return '';
-    const status = liveStatus[data.id] || data.status;
-    if (status === 'online')  return 'row-present';
-    if (status === 'syncing') return 'row-overtime';
-    if (status === 'error')   return 'row-absent';
-    return '';
-  }, [liveStatus]);
+  // Perf Fix #4: same stable-identity pattern as PayrollPage/AttendanceDailyPage/
+  // AttendanceMonthlyPage/RulesPage — `id` is each device's own primary key
+  // (already used as the lookup key for liveStatus/realtimeStatus above).
+  const getRowId = useCallback(p => String(p.data.id), []);
 
   const surface = 'var(--surface-2)';
   const border  = 'var(--border)';
@@ -1486,7 +1552,8 @@ export default function DevicesPage() {
             defaultColDef={defaultColDef}
             context={{ liveStatus, realtimeStatus, realtimeDetail, syncing, pinging }}
             {...ENTERPRISE_GRID_PROPS}
-            getRowClass={getRowClass}
+            getRowId={getRowId}
+            rowClassRules={rowClassRules}
             enableRtl={true}
             localeText={AG_GRID_LOCALE_AR}
             animateRows={false}

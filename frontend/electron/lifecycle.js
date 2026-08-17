@@ -9,7 +9,7 @@ import { createSplash, closeSplash, markSplashStep, isSplashStepDone, notifyRend
 import { createMainWindow } from './windows.js';
 import { buildDebugMenu, createTray } from './tray.js';
 import { initUpdater } from './updater.js';
-import { readConnectionSettings, getEffectiveBackendBaseUrl } from './connectionSettings.js';
+import { readConnectionSettings, getEffectiveBackendBaseUrl, isSelfPointingServerUrl } from './connectionSettings.js';
 import { isStandalone } from './edition.js';
 import { ensureDataDir, startMysql, waitForReady as waitForMysqlReady, getConnectionEnv, requestMysqlShutdown } from './mysqlManager.js';
 import { createBackup, shouldRunScheduledBackup } from './standaloneBackup.js';
@@ -77,6 +77,16 @@ app.on('ready', async () => {
     console.warn(`[Startup] connection mode disagreement across reads (${modes.join(', ')}) — forcing local (safe default)`);
   }
   const resolvedSettings = unanimousServer ? reads[reads.length - 1] : { ...reads[reads.length - 1], mode: 'local' };
+
+  // Self-pointing guard: Server Mode aimed at this same machine (localhost,
+  // 127.0.0.1/::1, or one of this machine's own interface IPs) can never
+  // work — this instance never spawns a backend in Server Mode, so it would
+  // just poll a URL nothing is listening on. Force local instead, which does
+  // spawn one. Must run before the spawn-skip decision below.
+  if (resolvedSettings.mode === 'server' && isSelfPointingServerUrl(resolvedSettings.serverUrl)) {
+    console.warn(`[Startup] Server Mode serverUrl (${resolvedSettings.serverUrl}) points at this machine — forcing local mode`);
+    resolvedSettings.mode = 'local';
+  }
 
   state.connectionMode  = resolvedSettings.mode === 'server' ? 'server' : 'local';
   state.backendBaseUrl  = getEffectiveBackendBaseUrl(resolvedSettings);

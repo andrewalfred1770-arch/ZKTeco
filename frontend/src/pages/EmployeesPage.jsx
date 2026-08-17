@@ -526,6 +526,12 @@ export default function EmployeesPage() {
   const getRowStyle = useCallback(({ data }) => data?.isMonitored
     ? { borderRight: `6px solid ${data.monitorColor || '#f59e0b'}` }
     : undefined, []);
+  // Perf Fix #4: same stable-identity pattern as PayrollPage/AttendanceDailyPage/
+  // AttendanceMonthlyPage/RulesPage — rowData (filteredEmployees) gets a new
+  // array reference on every search-box keystroke; without getRowId, AG Grid
+  // falls back to index-based row identity instead of diffing by each
+  // employee's own id.
+  const getRowId = useCallback(p => String(p.data.id), []);
 
   return (
     <div className="flex flex-col gap-3" style={{ flex: 1, minHeight: 0 }} dir="rtl">
@@ -607,6 +613,7 @@ export default function EmployeesPage() {
             loading={loading}
             getRowClass={getRowClass}
             getRowStyle={getRowStyle}
+            getRowId={getRowId}
           />
         </div>
       </div>

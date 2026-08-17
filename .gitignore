@@ -69,3 +69,12 @@ backend/.env
 backend/.initialized.json
 backend/backups/*
 backend/exports/*
+
+# ─── Customer runtime branding uploads (production-asset-safety) ───────────────
+# Company logo / login background / stamp / print header, uploaded at runtime
+# via settings-company.js — customer data, not a source asset. Every
+# electron-builder config already excludes this at packaging time
+# (extraResources filter: "!uploads/**"); this keeps it out of git too, so a
+# clone/CI checkout never ships someone's real uploaded branding by accident.
+backend/uploads/company/*
+!backend/uploads/company/.gitkeep

@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import os from 'os';
 import { BACKEND_PORT } from './constants.js';
 import { isManager, isStandalone } from './edition.js';
 
@@ -78,6 +79,42 @@ export function writeConnectionSettings(patch) {
 // Strips a trailing slash so "${base}/api/..." never ends up with "//api/...".
 function normalizeBaseUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '');
+}
+
+// ─── Self-pointing Server Mode guard ──────────────────────────────────────────
+// A Server-edition instance whose Server Mode serverUrl resolves back to a
+// network address of the SAME machine is never a valid configuration — it
+// means "connect to a remote backend" was pointed at nothing (this instance
+// never spawns one in Server Mode), which reliably dead-ends at the
+// unreachable-backend screen. localhost/127.0.0.1/::1 are always self;
+// anything else is only self if it's a genuine address of one of THIS
+// machine's own network interfaces — an arbitrary private/LAN IP that
+// happens to belong to a different machine (the real, healthy Server Mode
+// case) must never be treated as self-pointing.
+function isSelfPointingHost(hostname) {
+  if (!hostname) return false;
+  const h = hostname.toLowerCase();
+  if (h === 'localhost' || h === '127.0.0.1' || h === '::1') return true;
+  const nets = os.networkInterfaces();
+  for (const ifaceList of Object.values(nets)) {
+    for (const iface of ifaceList || []) {
+      if (iface.address && iface.address.toLowerCase() === h) return true;
+    }
+  }
+  return false;
+}
+
+export function isSelfPointingServerUrl(serverUrl) {
+  if (!serverUrl) return false;
+  let hostname;
+  try {
+    // URL#hostname keeps the brackets on an IPv6 literal (e.g. "[::1]") —
+    // strip them so it compares equal to os.networkInterfaces()' bare form.
+    hostname = new URL(serverUrl).hostname.replace(/^\[|\]$/g, '');
+  } catch {
+    return false;
+  }
+  return isSelfPointingHost(hostname);
 }
 
 /** Single source of truth for "where does the frontend talk to the backend". */

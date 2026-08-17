@@ -126,7 +126,7 @@ jobs:
             echo "================ app metadata version ================"
             APP_VERSION=$(node -e "console.log(require('$ASAR_DIR/package.json').version)")
             echo "Packaged version: $APP_VERSION"
-            [ "$APP_VERSION" = "1.1.2" ] && echo "OK: version is 1.1.2" || { echo "FAIL: version is '$APP_VERSION', expected 1.1.2"; exit 1; }
+            [ "$APP_VERSION" = "1.2.2" ] && echo "OK: version is 1.2.2" || { echo "FAIL: version is '$APP_VERSION', expected 1.2.2"; exit 1; }
           done <<< "$APP_DIRS"
 
       - name: Runtime test — server-mode connection to a stub Windows Server, no local backend/MySQL ever spawned

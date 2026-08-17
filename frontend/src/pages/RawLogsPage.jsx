@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-quartz.css';
@@ -59,6 +59,11 @@ export default function RawLogsPage() {
   ], []);
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
+  // Perf Fix #4: same stable-identity pattern as PayrollPage/AttendanceDailyPage/
+  // AttendanceMonthlyPage/RulesPage — `id` is the AttendanceLog row's own
+  // primary key (already displayed as the pinned "ID" column above), unique
+  // per raw punch record.
+  const getRowId = useCallback(p => String(p.data.id), []);
 
   const load = async () => {
     setLoading(true);
@@ -128,6 +133,7 @@ export default function RawLogsPage() {
             paginationPageSize={100}
             paginationPageSizeSelector={[50, 100, 200, 500]}
             loading={loading}
+            getRowId={getRowId}
           />
         </div>
       </div>

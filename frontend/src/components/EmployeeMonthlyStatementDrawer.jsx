@@ -237,6 +237,11 @@ export default function EmployeeMonthlyStatementDrawer({ employeeId, employeeNam
       meta={{
         period: `${MONTHS_AR[(month || 1) - 1]} ${year}`,
         subtitle: employeeCode ? `كود الموظف: ${employeeCode}` : '',
+        // Vertical-only print compaction (header/meta/KPI box heights + rhythm
+        // + top/bottom page margin) — scoped to this single-employee monthly
+        // statement only, see reportTemplate.js's `compact` const. No other
+        // report passes this flag, so their print output is unaffected.
+        compactVertical: true,
       }}
       orientation="portrait"
     />

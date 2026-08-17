@@ -121,8 +121,22 @@ async function recalcScope({ from, to, branchId, departmentId, employeeId, emplo
       protectedTargets.map(t => `emp=${t.employeeId} ${t.month}/${t.year} (${t.status})`).join(', '));
   }
 
+  // Perf Batch 2: same preload pattern calculateMonthlyPayroll() uses — one
+  // bounded batch (rules once for the whole employee set, then 4 queries per
+  // DISTINCT month touched by `allowed`, never per employee) ahead of the
+  // loop below, instead of this loop's original per-employee/per-month
+  // query repeats. `employees` (fetched once above, full rows) already
+  // covers every employeeId in `allowed`. The loop itself is untouched:
+  // still strictly sequential, still one calculatePayroll() call at a time
+  // in the same order, still individually lock-guarded — only the data each
+  // call is handed changes, not when or how many run.
+  const preloadMap = await payrollEngine.buildPayrollPreloadMap(allowed, employees);
+
   for (const { employeeId, month, year } of allowed) {
-    try { await payrollEngine.calculatePayroll(employeeId, month, year); }
+    try {
+      const preload = preloadMap.get(`${employeeId}|${month}|${year}`);
+      await payrollEngine.calculatePayroll(employeeId, month, year, { preload });
+    }
     catch (err) { logger.error(`recalc payroll emp ${employeeId} ${month}/${year}: ${err.message}`); }
   }
 

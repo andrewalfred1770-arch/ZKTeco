@@ -4,7 +4,7 @@ const { getPrisma } = require('../utils/prisma');
 const { authenticate, authorize } = require('../middleware/auth');
 const { calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, withPayrollKeyLock, calculatePayrollImpl, filterProtectedPayrollTargets } = require('../engines/payrollEngine');
 const { mergeEffectivePenalty } = require('../engines/attendanceEngine');
-const { getRules } = require('../engines/rulesEngine');
+const { getRules, getRulesBatch } = require('../engines/rulesEngine');
 const { writeAudit } = require('../utils/manualEditAudit');
 const { monthRange } = require('../utils/monthRange');
 const { MONTHS_AR } = require('../utils/constants');
@@ -136,24 +136,32 @@ router.get('/', async (req, res) => {
     // (id/employeeId/month/year/status/notes/timestamps/employee) still come
     // from the stored row; every computed field is overlaid fresh, live, per
     // request — no value is ever persisted or cached here.
-    // Phase 24.1: batch-preload the 4 per-employee queries computePayroll()
+    // Phase 24.1: batch-preload the per-employee queries computePayroll()
     // would otherwise issue individually (employee, attendanceDaily,
-    // attendanceAdjustment, existing payroll row) into 4 total queries, then
-    // fan out through a bounded concurrency limiter instead of an unbounded
-    // Promise.all. Data handed to computePayroll() is identical row-for-row
-    // to what its own per-employee queries would have returned — same
-    // filters, same date range, same fields — so this is a data-access
+    // attendanceAdjustment, existing payroll row) into a handful of total
+    // queries, then fan out through a bounded concurrency limiter instead of
+    // an unbounded Promise.all. Data handed to computePayroll() is identical
+    // row-for-row to what its own per-employee queries would have returned —
+    // same filters, same date range, same fields — so this is a data-access
     // change only; the formula path inside computePayroll() is untouched.
+    //
+    // Perf Batch 1: `rules` (rulesEngine.getRules) and `advances`
+    // (prisma.advance.findMany) were the two per-employee queries this
+    // preload never covered — computePayroll() kept calling them once per
+    // employee even when handed a preload, undoing part of the pool-pressure
+    // fix above at scale. Both are now batched the same way: one query (well,
+    // one query for advances, one for rules) for the whole page instead of N.
     const empIds = eligiblePayrolls.map(p => p.employeeId);
     const { startDate: mStart, endDate: mEnd } = monthRange(y, m);
-    const [preloadEmployees, preloadRecords, preloadAdjustments, preloadExistingPayrolls] = empIds.length
+    const [preloadEmployees, preloadRecords, preloadAdjustments, preloadExistingPayrolls, preloadAdvances] = empIds.length
       ? await Promise.all([
           payrollLimit(() => prisma.employee.findMany({ where: { id: { in: empIds } } })),
           payrollLimit(() => prisma.attendanceDaily.findMany({ where: { employeeId: { in: empIds }, date: { gte: mStart, lte: mEnd } } })),
           payrollLimit(() => prisma.attendanceAdjustment.findMany({ where: { employeeId: { in: empIds }, date: { gte: mStart, lte: mEnd }, approvalStatus: 'approved' } })),
           payrollLimit(() => prisma.payroll.findMany({ where: { employeeId: { in: empIds }, month: m, year: y }, select: { employeeId: true, bonus: true, manualDeductionAdjustment: true } })),
+          payrollLimit(() => prisma.advance.findMany({ where: { employeeId: { in: empIds }, month: m, year: y } })),
         ])
-      : [[], [], [], []];
+      : [[], [], [], [], []];
 
     const employeeById = new Map(preloadEmployees.map(e => [e.id, e]));
     const groupByEmployeeId = (rows) => {
@@ -167,6 +175,15 @@ router.get('/', async (req, res) => {
     const recordsByEmployee = groupByEmployeeId(preloadRecords);
     const adjustmentsByEmployee = groupByEmployeeId(preloadAdjustments);
     const existingPayrollByEmployee = new Map(preloadExistingPayrolls.map(p => [p.employeeId, p]));
+    const advancesByEmployee = groupByEmployeeId(preloadAdvances);
+
+    // Rules batching needs each employee's branchId/departmentId — depends on
+    // preloadEmployees above, so it runs after that Promise.all rather than
+    // inside it; still exactly ONE attendanceRule query for the whole page
+    // instead of one per employee.
+    const rulesByEmployee = preloadEmployees.length
+      ? await payrollLimit(() => getRulesBatch(preloadEmployees))
+      : new Map();
 
     const fresh = await Promise.all(eligiblePayrolls.map(p => payrollLimit(() => computePayroll(p.employeeId, p.month, p.year, {
       preload: {
@@ -174,6 +191,8 @@ router.get('/', async (req, res) => {
         rawRecords: recordsByEmployee.get(p.employeeId) || [],
         monthAdjustments: adjustmentsByEmployee.get(p.employeeId) || [],
         existingPayroll: existingPayrollByEmployee.get(p.employeeId) || null,
+        rules: rulesByEmployee.get(p.employeeId),
+        advancesList: advancesByEmployee.get(p.employeeId) || [],
       },
     }))));
     const result = eligiblePayrolls.map((p, i) => {
@@ -697,19 +716,25 @@ router.get('/final-sheet/bulk', async (req, res) => {
       select: { id: true },
     });
 
-    // Fetch all in parallel
-    const sheets = await Promise.allSettled(
-      employees.map(e =>
-        prisma.payroll.findUnique({
-          where: { employeeId_month_year: { employeeId: e.id, month: m, year: y } },
-          select: { id: true },
+    // Perf Batch 1 (Fix #6): one batched payroll.findMany() for the whole
+    // page instead of one payroll.findUnique() per employee — same pattern
+    // established by GET / and computePayroll()'s preload (Fix #1/#2). The
+    // `employeeId_month_year` field is a unique constraint, so findMany with
+    // employeeId `in:` returns at most one row per employeeId — identical
+    // existence semantics to the per-employee findUnique it replaces, just
+    // batched. `employees` (and therefore `ids`'s order) is untouched.
+    const empIds = employees.map(e => e.id);
+    const existingPayrolls = empIds.length
+      ? await prisma.payroll.findMany({
+          where: { employeeId: { in: empIds }, month: m, year: y },
+          select: { employeeId: true },
         })
-      )
-    );
+      : [];
+    const employeeIdsWithPayroll = new Set(existingPayrolls.map(p => p.employeeId));
 
-    const ids = sheets
-      .map((s, i) => s.status === 'fulfilled' && s.value ? employees[i].id : null)
-      .filter(Boolean);
+    const ids = employees
+      .filter(e => employeeIdsWithPayroll.has(e.id))
+      .map(e => e.id);
 
     res.json({ ids, month: m, year: y, count: ids.length });
   } catch (err) { res.status(500).json({ error: err.message }); }

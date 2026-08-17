@@ -3,6 +3,7 @@ const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
 const { applyApprovedAdjustment } = require('../engines/payrollEngine');
 const { mergeEffectivePenalty } = require('../engines/attendanceEngine');
+const { buildAttendanceRow } = require('../utils/attendanceRow');
 const { authenticate } = require('../middleware/auth');
 
 const prisma = getPrisma();
@@ -20,14 +21,15 @@ router.get('/', async (req, res) => {
     if (branchId) empWhere.branchId = parseInt(branchId);
 
     // Core counts
-    const [totalEmployees, devices, todayRecords] = await Promise.all([
-      prisma.employee.count({ where: empWhere }),
+    const [employees, devices, todayRecords] = await Promise.all([
+      prisma.employee.findMany({ where: empWhere, select: { id: true } }),
       prisma.device.findMany({ where: { isArchived: false, ...(branchId ? { branchId: parseInt(branchId) } : {}) } }),
       prisma.attendanceDaily.findMany({
         where: { date: today, employee: empWhere },
         include: { employee: { select: { name: true } } },
       }),
     ]);
+    const totalEmployees = employees.length;
 
     // Effective late-penalty units — Policy Engine canonical units, post
     // approved-adjustment overlay and manual-override layer. This is the
@@ -42,10 +44,21 @@ router.get('/', async (req, res) => {
     const effTodayRecords = todayRecords.map(r =>
       mergeEffectivePenalty(applyApprovedAdjustment(r, todayAdjByDailyId.get(r.id))));
 
+    // Absence count must use the same "no materialized row yet ⇒ absent"
+    // definition as GET /attendance/daily (buildAttendanceRow), not just
+    // isAbsent on existing rows — otherwise an employee whose row for today
+    // hasn't been generated yet shows as غائب on the roster/alerts table but
+    // is silently excluded from this KPI. Reusing buildAttendanceRow (pure,
+    // no DB) keeps this in one place instead of re-deriving the rule here.
+    const dateStr = moment(today).format('YYYY-MM-DD');
+    const effByEmployeeId = new Map(effTodayRecords.map(r => [r.employeeId, r]));
+    const absent = employees.filter(emp =>
+      buildAttendanceRow({ employee: emp, merged: effByEmployeeId.get(emp.id) || null, dateStr }).isAbsent
+    ).length;
+
     const present  = todayRecords.filter(r =>
       ['present', 'late', 'early_leave'].includes(r.status)
     ).length;
-    const absent   = todayRecords.filter(r => r.isAbsent).length;
     const late     = effTodayRecords.filter(r => (r.effectiveLatePenalty || 0) > 0).length;
     const overtime = effTodayRecords.filter(r => (r.effectiveOvertimeUnits || 0) > 0).length;
     const onTime   = effTodayRecords.filter(r => r.status === 'present' && (r.effectiveLatePenalty || 0) === 0).length;

@@ -91,6 +91,57 @@ async function getRules(branchId, departmentId, employeeId) {
   return rules;
 }
 
+// ─── Batched rules lookup (Perf Batch 1) ────────────────────────────────────
+// Same precedence and output as calling getRules(employee.branchId,
+// employee.departmentId, employee.id) once per employee, but issues ONE
+// attendanceRule query (+ one cached ruleStore lookup) for the whole batch
+// instead of one attendanceRule query per employee — the N+1 that Phase
+// 24.1's preload mechanism never covered (payrollEngine.computePayroll still
+// called getRules() per employee even when handed a preload). Returns a
+// Map<employeeId, rulesObject>; each entry is byte-for-byte identical to what
+// getRules() would have returned for that employee, including precedence
+// order (branch → department → employee, each applied in ascending row-id
+// order, exactly mirroring getRules()'s three sequential filter/apply loops).
+async function getRulesBatch(employees) {
+  const branchIds = [...new Set(employees.map(e => e.branchId).filter(v => v != null))];
+  const departmentIds = [...new Set(employees.map(e => e.departmentId).filter(v => v != null))];
+  const employeeIds = employees.map(e => e.id);
+
+  const rows = await prisma.attendanceRule.findMany({
+    where: {
+      OR: [
+        { branchId: null, departmentId: null, employeeId: null },
+        ...(branchIds.length ? [{ branchId: { in: branchIds }, departmentId: null, employeeId: null }] : []),
+        ...(departmentIds.length ? [{ departmentId: { in: departmentIds }, employeeId: null }] : []),
+        ...(employeeIds.length ? [{ employeeId: { in: employeeIds } }] : []),
+      ],
+    },
+    orderBy: { id: 'asc' },
+  });
+
+  const dynamic = await ruleStore.getRuleMap().catch(() => ({}));
+  const baseRules = { ...DEFAULT_RULES, ...dynamic };
+
+  // Same three precedence tiers getRules() applies, pre-split once for the
+  // whole batch instead of per employee — legacy global rows (no
+  // branch/department/employee) are fetched (for query-shape parity with
+  // getRules()) but, just like getRules(), never applied: the Dynamic Rules
+  // table is the global source of truth.
+  const branchRows = rows.filter(r => r.branchId != null && r.departmentId == null && r.employeeId == null);
+  const deptRows   = rows.filter(r => r.departmentId != null && r.employeeId == null);
+  const empRows    = rows.filter(r => r.employeeId != null);
+
+  const result = new Map();
+  for (const emp of employees) {
+    const rules = { ...baseRules };
+    for (const row of branchRows) if (row.branchId === emp.branchId) rules[row.ruleKey] = row.ruleValue;
+    for (const row of deptRows) if (row.departmentId === emp.departmentId) rules[row.ruleKey] = row.ruleValue;
+    for (const row of empRows) if (row.employeeId === emp.id) rules[row.ruleKey] = row.ruleValue;
+    result.set(emp.id, rules);
+  }
+  return result;
+}
+
 function parseTime(timeStr) {
   const [h, m] = timeStr.split(':').map(Number);
   return h * 60 + m;
@@ -127,4 +178,4 @@ async function isHoliday(date, branchId) {
   return !!holiday;
 }
 
-module.exports = { getRules, parseTime, calcOvertimeHours, isWeekend, isHoliday };
+module.exports = { getRules, getRulesBatch, parseTime, calcOvertimeHours, isWeekend, isHoliday };

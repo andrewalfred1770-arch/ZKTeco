@@ -1,5 +1,6 @@
 import { spawn, execSync } from 'child_process';
-import { existsSync, mkdirSync, copyFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import net from 'net';
 import http from 'http';
 import { app } from 'electron';
@@ -36,6 +37,79 @@ function readExpectedAuthEnabled(envFile) {
   }
 }
 
+// ─── Backend-owner PID marker (edition-scoped identity) ──────────────────────
+// Cross-edition port isolation gap: two DIFFERENT editions/instances can end
+// up with a process listening on the SAME port (e.g. a test launch with
+// PETSHROW_TEST_BACKEND_PORT misconfigured back to a production port).
+// Neither the port number nor AUTH_ENABLED proves the listening process is
+// actually THIS edition's own previous instance — both can coincidentally
+// match a completely unrelated process. This marker is the positive-identity
+// signal: written by THIS edition into ITS OWN persistent config dir
+// (already edition-scoped — see paths.js getPersistentConfigDir, a
+// different folder per edition) every time it spawns a backend. Only a PID
+// recorded in the CALLING edition's own marker file is ever eligible to be
+// killed as "stale" — a foreign edition's process, which could never have
+// written into this edition's config dir, can never match.
+function ownerMarkerFile(configDir) {
+  return configDir ? join(configDir, '.backend-owner.json') : null;
+}
+
+function writeBackendOwnerMarker(configDir, pid) {
+  const file = ownerMarkerFile(configDir);
+  if (!file) return; // dev mode has no persistent configDir — see readBackendOwnerPid
+  try {
+    writeFileSync(file, JSON.stringify({ pid, startedAt: new Date().toISOString() }), 'utf8');
+  } catch (err) {
+    console.warn('[Electron] Failed to write backend-owner marker:', err.message);
+  }
+}
+
+// Returns a positive integer PID this edition itself previously spawned, or
+// null if there is nothing to trust (missing/unreadable/corrupt marker, or
+// no persistent configDir at all — dev mode). null is the "cannot verify"
+// state; callers must treat null as "do not kill", never as "safe to kill".
+function readBackendOwnerPid(configDir) {
+  const file = ownerMarkerFile(configDir);
+  if (!file || !existsSync(file)) return null;
+  try {
+    const pid = Number(JSON.parse(readFileSync(file, 'utf8'))?.pid);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+// Returns the PID(s) actually LISTENING on `port` right now, cross-platform.
+// Never throws — an empty array means "couldn't determine" and callers must
+// not kill on that basis.
+function listListeningPids(port) {
+  try {
+    if (process.platform === 'win32') {
+      // findstr /C:":5000 " (trailing space) is a literal match — a bare
+      // `:5000` is a substring match that also hits :50000–:50009.
+      const out = execSync(
+        `netstat -aon | findstr LISTENING | findstr /C:":${port} "`,
+        { shell: 'cmd.exe', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000 }
+      ).toString();
+      return [...out.matchAll(/\s(\d+)\s*$/gm)].map(m => Number(m[1])).filter(Number.isInteger);
+    }
+    // macOS/Linux (EP-004): lsof gives the PID(s) directly, no parsing needed.
+    return execSync(`lsof -ti tcp:${port} -sTCP:LISTEN`, {
+      stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000,
+    }).toString().trim().split('\n').filter(Boolean).map(Number).filter(Number.isInteger);
+  } catch {
+    return [];
+  }
+}
+
+function killPid(pid) {
+  if (process.platform === 'win32') {
+    try { execSync(`taskkill /PID ${pid} /F`, { shell: 'cmd.exe', stdio: 'ignore', timeout: 2000 }); } catch {}
+  } else {
+    try { process.kill(pid, 'SIGKILL'); } catch {}
+  }
+}
+
 // ─── Kill stale backend on this port ─────────────────────────────────────────
 // `paths` is optional (callers that can't supply it yet keep the old
 // trusting behavior) — when given, an already-answering backend is only
@@ -44,7 +118,8 @@ function readExpectedAuthEnabled(envFile) {
 // .env edit still answers health checks fine but is running with a frozen,
 // now-stale env — adopting it silently would mean the edit never takes
 // effect until someone manually kills that process. Mismatch → fall through
-// and replace it with a freshly-spawned backend instead.
+// and replace it with a freshly-spawned backend instead — but ONLY once
+// positive PID-ownership (below) confirms it's safe to do so.
 export async function killStaleBackend(paths) {
   const inUse = await isPortListening(BACKEND_PORT);
   if (!inUse) return;
@@ -62,41 +137,29 @@ export async function killStaleBackend(paths) {
         state.backendReady = true;
         return;
       }
-      console.log(`[Electron] Backend on port ${BACKEND_PORT} is running with a stale AUTH_ENABLED (${actualAuth}, expected ${expectedAuth}) — replacing it with a freshly-configured process`);
+      console.log(`[Electron] Backend on port ${BACKEND_PORT} is running with a stale AUTH_ENABLED (${actualAuth}, expected ${expectedAuth}) — verifying ownership before replacing it`);
     }
   } catch {}
 
-  // Port in use but not our backend — try to free it.
-  // findstr /C:":5000 " (with the trailing space) is a literal match — the
-  // old bare `:5000` was a substring match that also hit :50000–:50009 and
-  // could taskkill completely unrelated processes. LISTENING filter keeps
-  // ephemeral client connections out of the kill list.
-  if (process.platform === 'win32') {
-    try {
-      execSync(
-        `for /f "tokens=5" %a in ('netstat -aon ^| findstr LISTENING ^| findstr /C:":${BACKEND_PORT} "') do taskkill /PID %a /F`,
-        { shell: 'cmd.exe', stdio: 'ignore', timeout: 2000 }
-      );
-      await new Promise(r => setTimeout(r, 1000));
-      console.log('[Electron] Freed stale port');
-    } catch {}
-  } else {
-    // macOS/Linux (EP-004): no netstat/taskkill equivalent — use lsof to find
-    // the PID(s) actually LISTENING on the port, then SIGKILL each directly
-    // via Node (no extra shell interpolation needed, unlike the Windows path).
-    try {
-      const pids = execSync(`lsof -ti tcp:${BACKEND_PORT} -sTCP:LISTEN`, {
-        stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000,
-      }).toString().trim().split('\n').filter(Boolean);
-      for (const pid of pids) {
-        try { process.kill(Number(pid), 'SIGKILL'); } catch {}
-      }
-      if (pids.length) {
-        await new Promise(r => setTimeout(r, 1000));
-        console.log('[Electron] Freed stale port');
-      }
-    } catch {}
+  // Port in use but not adopted above — before touching it, require positive
+  // proof this is OUR OWN previous instance, never just "something is on the
+  // port". A healthy, differently-owned process (a different edition/test
+  // launch that happens to share this port) is left completely alone.
+  const ownerPid = readBackendOwnerPid(paths?.configDir);
+  if (ownerPid === null) {
+    console.warn(`[Electron] Port ${BACKEND_PORT} is occupied by an unverified process — no owned-PID record for this edition, refusing to kill it`);
+    return;
   }
+  const listeningPids = listListeningPids(BACKEND_PORT);
+  if (!listeningPids.includes(ownerPid)) {
+    console.warn(`[Electron] Port ${BACKEND_PORT} is occupied by PID(s) [${listeningPids.join(', ')}], none matching this edition's own recorded PID ${ownerPid} — refusing to kill (likely a different edition/instance)`);
+    return;
+  }
+
+  console.log(`[Electron] Verified PID ${ownerPid} on port ${BACKEND_PORT} as this edition's own stale process — freeing it`);
+  killPid(ownerPid);
+  await new Promise(r => setTimeout(r, 1000));
+  console.log('[Electron] Freed stale port');
 }
 
 // ─── Startup status poll — backend's /api/startup-status ─────────────────────
@@ -215,6 +278,7 @@ export function startBackend(paths, extraEnv = null) {
     detached:    false,
   });
   state.backendProcess = proc;
+  writeBackendOwnerMarker(configDir, proc.pid);
 
   // Pipe-error guards on EVERY child stream: after the child exits (crash,
   // restart, kill), buffered writes/reads surface as async 'error' events.

@@ -282,6 +282,11 @@ export default function EmployeeMovementPage() {
     pendingTimersRef.current.forEach(clearTimeout);
     pendingTimersRef.current.clear();
   }, []);
+  // Perf Fix #3: holds the pending debounce timer for applyUpdate's
+  // background money-summary refresh (see applyUpdate below) — a dedicated
+  // ref (not just pendingTimersRef membership) so each new edit can cancel
+  // the previous edit's still-pending timer instead of letting both fire.
+  const moneyRefreshDebounceRef = useRef(null);
 
   // Single guarded entry point for every deferred/delayed grid touch in this
   // component — refreshCells() must never run against a destroyed grid, a
@@ -756,21 +761,35 @@ export default function EmployeeMovementPage() {
     // 3. EF-004.1: otAmount/effectiveNetEffect need the backend's per-day
     // overtime-multiplier logic — fetch the authoritative summary in the
     // background (never blocks the grid) and merge in just those two fields.
-    // moneyRefreshTokenRef discards a response if a newer edit has already
-    // superseded it, so rapid successive edits can't flash back to a stale value.
-    const myToken = ++moneyRefreshTokenRef.current;
-    api.get('/attendance/movement', {
-      params: {
-        employeeId: empId || undefined, month,
-        branchId: branchId || undefined, departmentId: departmentId || undefined,
-      },
-    }).then(({ data: raw }) => {
-      if (!raw?.summary || myToken !== moneyRefreshTokenRef.current) return;
-      setData(prev => prev ? {
-        ...prev,
-        summary: { ...prev.summary, otAmount: raw.summary.otAmount, effectiveNetEffect: raw.summary.effectiveNetEffect },
-      } : prev);
-    }).catch(() => {}); // best-effort — the carried-forward value stays displayed on failure
+    // Perf Fix #3: this GET used to fire once per edited row — a single cell
+    // edit fired one, but a 25-row bulk-apply fired 25 concurrent full-dataset
+    // requests just to refresh two summary numbers. Debounced ~200ms so a
+    // burst of edits (this row, or every row applyUpdate is called for during
+    // a bulk-apply) settles into ONE authoritative reload after the last edit
+    // in the burst, instead of N. moneyRefreshTokenRef still discards a
+    // response if a newer edit has superseded it by the time it lands —
+    // unchanged staleness protection, just now guarding one request instead
+    // of many.
+    if (moneyRefreshDebounceRef.current) clearTimeout(moneyRefreshDebounceRef.current);
+    const timerId = setTimeout(() => {
+      pendingTimersRef.current.delete(timerId);
+      moneyRefreshDebounceRef.current = null;
+      const myToken = ++moneyRefreshTokenRef.current;
+      api.get('/attendance/movement', {
+        params: {
+          employeeId: empId || undefined, month,
+          branchId: branchId || undefined, departmentId: departmentId || undefined,
+        },
+      }).then(({ data: raw }) => {
+        if (!raw?.summary || myToken !== moneyRefreshTokenRef.current) return;
+        setData(prev => prev ? {
+          ...prev,
+          summary: { ...prev.summary, otAmount: raw.summary.otAmount, effectiveNetEffect: raw.summary.effectiveNetEffect },
+        } : prev);
+      }).catch(() => {}); // best-effort — the carried-forward value stays displayed on failure
+    }, 200);
+    moneyRefreshDebounceRef.current = timerId;
+    pendingTimersRef.current.add(timerId);
   }, [empId, month, branchId, departmentId]);
 
   // Revert a single field's displayed value after a validation or save

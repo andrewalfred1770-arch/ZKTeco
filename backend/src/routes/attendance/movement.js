@@ -3,7 +3,8 @@ const { getPrisma } = require('../../utils/prisma');
 const moment = require('moment');
 const { mergeEffectivePenalty } = require('../../engines/attendanceEngine');
 const { applyApprovedAdjustment, selectOvertimeMultiplier, computeRates } = require('../../engines/payrollEngine');
-const { getRules } = require('../../engines/rulesEngine');
+const { getRulesBatch } = require('../../engines/rulesEngine');
+const { buildAttendanceRow } = require('../../utils/attendanceRow');
 
 const prisma = getPrisma();
 
@@ -32,6 +33,15 @@ function buildMovementDays(employee, recMap, yearStr, monthStr, totalDays) {
     const dateStr = `${yearStr}-${monthStr}-${String(d).padStart(2,'0')}`;
     const rec = recMap.get(dateStr);
     const dayDate = new Date(`${dateStr}T12:00:00`);
+
+    // F-01 fix: status/isWeekend/isHoliday/isAbsent must come from the same
+    // canonical row-shaper daily.js/dashboard.js use, not a second hand-rolled
+    // rule. The old inline `rec?.isAbsent || (!rec && !rec?.isWeekend)`
+    // collapsed to "always absent when no row exists" (rec?.isWeekend is
+    // always undefined when rec is null), with zero weekend/holiday
+    // awareness — buildAttendanceRow already handles the missing-row case
+    // correctly (relative to weekend/holiday flags on the existing row).
+    const canonical = buildAttendanceRow({ employee, merged: rec, dateStr });
 
     const morningOT   = rec?.morningOvertimeHours || 0;
     const eveningOT   = rec?.eveningOvertimeHours || 0;
@@ -91,10 +101,10 @@ function buildMovementDays(employee, recMap, yearStr, monthStr, totalDays) {
       // EF-015: additive — tooltip "Modified By / Modified At" needs these.
       manualPenaltyByName: rec?.manualPenaltyByName ?? null,
       manualPenaltyAt:     rec?.manualPenaltyAt     ?? null,
-      status:   rec?.status   || 'absent',
-      isWeekend: rec?.isWeekend || false,
-      isHoliday: rec?.isHoliday || false,
-      isAbsent:  rec?.isAbsent  || (!rec && !rec?.isWeekend),
+      status:    canonical.status,
+      isWeekend: canonical.isWeekend,
+      isHoliday: canonical.isHoliday,
+      isAbsent:  canonical.isAbsent,
       hasData:   !!rec,
       absenceType:   rec?.absenceType   || null,
       penaltyDays:   rec?.penaltyDays   ?? null,
@@ -263,8 +273,16 @@ router.get('/movement', async (req, res) => {
     const employeeSummaries = [];
     let singleEmployeeMeta = null;
 
+    // Perf Batch 1: one attendanceRule query for every employee in this
+    // report instead of one per employee (was the N+1 hit by full-company
+    // "all employees" mode). getRulesBatch() returns byte-for-byte the same
+    // per-employee rules object getRules(employee.branchId,
+    // employee.departmentId, employee.id) would have, just resolved for the
+    // whole batch up front.
+    const rulesByEmployee = await getRulesBatch(employees);
+
     for (const employee of employees) {
-      const rules = await getRules(employee.branchId, employee.departmentId, employee.id);
+      const rules = rulesByEmployee.get(employee.id);
       const monthDays = parseFloat(rules.month_days || 30);
       const workHoursPerDay = parseFloat(rules.work_hours_per_day || 8);
       // EF-008 Finding #4: read the same rule keys payrollEngine.js's computePayroll

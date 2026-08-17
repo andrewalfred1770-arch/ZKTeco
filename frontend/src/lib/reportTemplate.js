@@ -227,6 +227,17 @@ export function buildReportHTML(o = {}) {
   const pageSizeKeyword  = PAPER_SIZE_KEYWORDS[paperSize] || PAPER_SIZE_KEYWORDS.A4;
   const marginPreset     = MARGIN_PRESETS[margins] || MARGIN_PRESETS.normal;
   const scale             = Math.max(0.5, Math.min(1.5, (Number(scalePercent) || 100) / 100));
+  // Vertical-only compaction for the single-employee monthly statement print
+  // (EmployeeMonthlyStatementDrawer sets meta.compactVertical) — trims top/
+  // bottom page margin and the letterhead's own internal vertical rhythm so
+  // the header/KPI stack doesn't push the table unnecessarily far down the
+  // page. Scoped to this one caller via the meta flag rather than
+  // orientation/report-type, since other portrait reports (Dashboard,
+  // AttendanceDailyPage) share this same template and must render
+  // byte-identical to before. Horizontal margins (h) are untouched.
+  const compact           = !!meta.compactVertical;
+  const pageMarginTopMM   = compact ? Math.max(marginPreset.v - 3, 6) : marginPreset.v;
+  const pageMarginBotMM   = compact ? Math.max(marginPreset.v - 2, 7) : marginPreset.v;
 
   // ── Column selection — hide, don't silently compress ───────────────────────
   // A report whose columns' own priority floors (see columnLayoutEngine.js)
@@ -522,7 +533,7 @@ export function buildReportHTML(o = {}) {
   </div>`;
 
   return `<!DOCTYPE html>
-<html lang="ar" dir="rtl" data-cols="${density}" data-orientation="${isLand ? 'landscape' : 'portrait'}">
+<html lang="ar" dir="rtl" data-cols="${density}" data-orientation="${isLand ? 'landscape' : 'portrait'}" data-compact="${compact ? '1' : ''}">
 <head>
 <meta charset="UTF-8">
 <title>${esc(title)} — ${esc(brand.name)}</title>
@@ -544,14 +555,18 @@ ${tokensCSS()}
   /* Print-optimized default ("normal" preset, 10mm/8mm): far more than the
      7pt page-number footnote needs, but comfortably inside every printer's
      safe-print area. "narrow"/"wide" (Print Preview → Margins) scale this
-     same rule — nothing here is hardcoded anymore. */
-  margin: ${marginPreset.v}mm ${marginPreset.h}mm ${marginPreset.v}mm ${marginPreset.h}mm;
+     same rule — nothing here is hardcoded anymore. Top/bottom only trim
+     further under compact mode (see pageMarginTopMM/pageMarginBotMM above) —
+     horizontal (h) margin is always the untouched preset value. */
+  margin: ${pageMarginTopMM}mm ${marginPreset.h}mm ${pageMarginBotMM}mm ${marginPreset.h}mm;
   /* Document footer — repeats on every printed page (unlike the screen-only
      .screen-foot below, which only ever occupied page 1's flow). This is
      the ERP-document convention: company identity anchored bottom-left,
      pagination bottom-right, on every sheet. Tied to showHeaderFooter — off
      when printing onto pre-printed letterhead stationery that already
-     carries this information. */
+     carries this information. This shared template is not used by the
+     salary-card print output (CompactSalarySheet.jsx owns its own print
+     CSS and footer scoping) — generic reports keep their footer. */
   ${showHeaderFooter ? `@bottom-left{
     content: "${cssStr(footerLeft)}";
     font-size: 7pt; color: #9CA3AF;
@@ -1023,6 +1038,24 @@ tr.totals td.t-blank{
    under the 11px body-text floor, so it gets its own floor-compliant bump
    here without touching every other muted/secondary text style. */
 [data-orientation="portrait"] th.idx, [data-orientation="portrait"] td.idx{ font-size: 11px; }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   VERTICAL COMPACTION — single-employee monthly statement print only
+   (meta.compactVertical, set by EmployeeMonthlyStatementDrawer.jsx; see the
+   compact const above). Touches ONLY box heights / margins / gaps of the
+   header, metadata cards, and KPI cards — never a font-size, never a table
+   row/column rule, never horizontal spacing. Every value below still leaves
+   each card's own (unchanged) text comfortably centered — the height drop
+   is surplus padding, not a squeeze against the text. Landscape/other
+   report types never carry data-compact="1", so this block is a no-op for
+   every other caller of buildReportHTML. ════════════════════════════════════════ */
+[data-compact="1"]{
+  --rhythm: 6px; /* was 9px — gap between the 4 letterhead sections */
+}
+[data-compact="1"] .dh-title{ margin-bottom: 3px; } /* was 5px */
+[data-compact="1"] .dh-meta-card{ height: 44px; }   /* was 55px */
+[data-compact="1"] .dh-kpi{ height: 50px; }         /* was 64px */
+[data-compact="1"] .dh-divider{ margin-bottom: 4px; } /* was 6px */
 </style>
 </head>
 <body>

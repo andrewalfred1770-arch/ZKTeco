@@ -1,6 +1,6 @@
 const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
-const { getRules, parseTime } = require('./rulesEngine');
+const { getRules, getRulesBatch, parseTime } = require('./rulesEngine');
 const { mergeEffectivePenalty } = require('./attendanceEngine');
 const { monthRange } = require('../utils/monthRange');
 const logger = require('../utils/logger');
@@ -110,7 +110,16 @@ async function computePayroll(employeeId, month, year, opts = {}) {
 
   if (!employee) throw new Error('Employee not found');
 
-  const rules = await getRules(employee.branchId, employee.departmentId, employee.id);
+  // Perf Batch 1: mirrors the `preload.employee` pattern above — a bulk
+  // caller that already batch-fetched rules for every employee in the
+  // request (rulesEngine.getRulesBatch) hands the per-employee result in via
+  // preload.rules, skipping the per-employee attendanceRule query this
+  // function would otherwise issue (the N+1 Phase 24.1's original preload
+  // never covered). Omitting it is byte-for-byte identical to previous
+  // behavior — still one getRules() call per invocation.
+  const rules = preload?.rules !== undefined
+    ? preload.rules
+    : await getRules(employee.branchId, employee.departmentId, employee.id);
 
   const { startDate, endDate } = monthRange(year, month);
 
@@ -280,10 +289,17 @@ async function computePayroll(employeeId, month, year, opts = {}) {
   const penaltyUnits = parseFloat(totalEffectiveDeductionUnits.toFixed(2));
   const penaltyAmount = parseFloat((penaltyUnits * hourlyRate).toFixed(2));
 
-  // Get advances for this month
-  const advancesList = await prisma.advance.findMany({
-    where: { employeeId, month, year },
-  });
+  // Get advances for this month. Perf Batch 1: same preload short-circuit as
+  // `rules` above — a bulk caller that already batch-fetched advances for
+  // every employee in the request hands the per-employee list in via
+  // preload.advancesList, skipping this per-employee prisma.advance query
+  // (the second N+1 Phase 24.1's original preload never covered). Omitting
+  // it is byte-for-byte identical to previous behavior.
+  const advancesList = preload?.advancesList !== undefined
+    ? preload.advancesList
+    : await prisma.advance.findMany({
+      where: { employeeId, month, year },
+    });
   const totalAdvances = advancesList.reduce((sum, a) => sum + a.amount, 0);
 
   // manualDeductionAdjustment: HR-entered additive deduction, preserved across
@@ -307,7 +323,17 @@ async function computePayroll(employeeId, month, year, opts = {}) {
   // Identical to PUT /payroll/:id. `bonus` is a manual HR field — preserved
   // from the existing row (engine never derives or resets it).
   const bonus = existingPayroll?.bonus || 0;
-  const netSalary = basicSalary + overtimeAmount + bonus - deductions - totalAdvances;
+  // F-04: floored at 0 — this system has no "employee owes the company"
+  // concept anywhere (no receivable ledger, no negative-pay UI/print
+  // affordance; CompactSalarySheet's print formatter explicitly documents
+  // "no negative-value use case"), so an uncapped combination of manual
+  // deductions/absences/advances against a low-or-zero basic salary must not
+  // silently produce a negative payable amount. Every component of this
+  // formula (basicSalary, overtimeAmount, bonus, deductions, advances) is
+  // still persisted unrounded on the Payroll row exactly as before, so the
+  // pre-floor shortfall stays fully auditable/reconstructible from those
+  // fields — nothing is discarded, only the final payable figure is clamped.
+  const netSalary = Math.max(0, basicSalary + overtimeAmount + bonus - deductions - totalAdvances);
 
   return {
     basicSalary,
@@ -408,8 +434,15 @@ async function withPayrollKeyLock(employeeId, month, year, fn) {
 }
 
 // ─── Public entry point — unchanged signature/behavior, now serialized ─────
-async function calculatePayroll(employeeId, month, year) {
-  return withPayrollKeyLock(employeeId, month, year, () => calculatePayrollImpl(employeeId, month, year));
+// `opts.preload` (Perf Batch 2) is additive, same as `opts.tx` below: every
+// existing caller that omits it (still the vast majority) is byte-for-byte
+// unaffected — computePayroll() falls through to its own per-employee
+// queries exactly as before. Only calculateMonthlyPayroll() and
+// recalcEngine.recalcScope() now pass one in, built once via
+// buildPayrollPreloadMap() ahead of their (still strictly sequential, still
+// individually lock-guarded) per-employee loops.
+async function calculatePayroll(employeeId, month, year, opts = {}) {
+  return withPayrollKeyLock(employeeId, month, year, () => calculatePayrollImpl(employeeId, month, year, opts));
 }
 
 // `opts.tx` is an optional Prisma transaction client — additive and
@@ -421,10 +454,11 @@ async function calculatePayroll(employeeId, month, year) {
 // second engine, no formula change, computePayroll()'s math is untouched.
 async function calculatePayrollImpl(employeeId, month, year, opts = {}) {
   const client = opts.tx || prisma;
-  // Forward tx into computePayroll too — otherwise its employee/attendance
-  // reads would go through the shared singleton and could miss this same
-  // transaction's own uncommitted writes (see computePayroll's opts.tx doc).
-  const computed = await computePayroll(employeeId, month, year, { tx: opts.tx });
+  // Forward tx AND preload into computePayroll — otherwise its
+  // employee/attendance reads would go through the shared singleton (missing
+  // an in-flight transaction's uncommitted writes) or re-issue the very
+  // per-employee queries opts.preload exists to skip.
+  const computed = await computePayroll(employeeId, month, year, { tx: opts.tx, preload: opts.preload });
   const {
     basicSalary, hourlyRate, workDays, absentDays, latePenalty,
     penaltyUnits, penaltyAmount,
@@ -527,6 +561,98 @@ async function filterProtectedPayrollTargets(targets) {
   return { allowed, protectedTargets };
 }
 
+// ─── Perf Batch 2: shared bulk-recalc preload builder ──────────────────────
+// The exact same preload shape/queries routes/payroll.js's GET / already
+// proved out (Phase 24.1 + Perf Batch 1) — reused here so calculateMonthlyPayroll
+// and recalcEngine.recalcScope's payroll pass stop repeating one employee/
+// rules/attendance/adjustments/existing-payroll/advances query PER employee
+// (their original N×6-query pattern) and instead issue a small, fixed number
+// of batched queries for the whole `targets` set. Every query filter below is
+// byte-for-byte identical to the one computePayroll() would issue itself for
+// that same target when no preload is given — this is a data-access change
+// only, never a formula change.
+//
+// `targets` — [{employeeId, month, year}, ...], possibly spanning more than
+// one distinct month (e.g. recalcScope's multi-month full recalc).
+// `employees` — full Employee rows for every employeeId referenced by
+// `targets` (a superset is fine; branchId/departmentId are needed for
+// getRulesBatch). Returns Map<"employeeId|month|year", preloadObject> ready
+// to hand straight into calculatePayroll(employeeId, month, year, { preload }).
+//
+// Queries stay bounded regardless of `targets` size: ONE rules query for the
+// whole employee set, then exactly 4 queries (Promise.all, never per-employee)
+// per DISTINCT month present in `targets` — awaited one month-group at a time
+// (not all months in parallel), so concurrency never scales with employee or
+// month count.
+async function buildPayrollPreloadMap(targets, employees) {
+  if (!targets.length) return new Map();
+
+  const employeeById = new Map(employees.map(e => [e.id, e]));
+  // Same getRulesBatch() already used by GET /payroll — one attendanceRule
+  // query for the whole employee set, same precedence/output as getRules()
+  // called once per employee (see rulesEngine.js's own doc comment).
+  const rulesByEmployee = await getRulesBatch(employees);
+
+  // attendanceDaily/attendanceAdjustment/existingPayroll/advances are all
+  // month-scoped queries — group targets by month so each group's batch
+  // query only spans the employees actually needed for that month.
+  const byMonth = new Map(); // "month-year" -> targets[]
+  for (const t of targets) {
+    const key = `${t.month}-${t.year}`;
+    if (!byMonth.has(key)) byMonth.set(key, []);
+    byMonth.get(key).push(t);
+  }
+
+  const groupByEmployeeId = (rows) => {
+    const map = new Map();
+    for (const row of rows) {
+      if (!map.has(row.employeeId)) map.set(row.employeeId, []);
+      map.get(row.employeeId).push(row);
+    }
+    return map;
+  };
+
+  const preloadMap = new Map();
+  for (const [key, monthTargets] of byMonth) {
+    const [month, year] = key.split('-').map(Number);
+    const empIds = [...new Set(monthTargets.map(t => t.employeeId))];
+    const { startDate, endDate } = monthRange(year, month);
+
+    // Same 4 filters computePayroll() itself would use per employee — just
+    // widened to `in: empIds` for this one month group.
+    const [rawRecordsAll, adjustmentsAll, existingPayrollsAll, advancesAll] = await Promise.all([
+      prisma.attendanceDaily.findMany({
+        where: { employeeId: { in: empIds }, date: { gte: startDate, lte: endDate } },
+      }),
+      prisma.attendanceAdjustment.findMany({
+        where: { employeeId: { in: empIds }, date: { gte: startDate, lte: endDate }, approvalStatus: 'approved' },
+      }),
+      prisma.payroll.findMany({
+        where: { employeeId: { in: empIds }, month, year },
+        select: { employeeId: true, bonus: true, manualDeductionAdjustment: true },
+      }),
+      prisma.advance.findMany({ where: { employeeId: { in: empIds }, month, year } }),
+    ]);
+
+    const recordsByEmployee = groupByEmployeeId(rawRecordsAll);
+    const adjustmentsByEmployee = groupByEmployeeId(adjustmentsAll);
+    const advancesByEmployee = groupByEmployeeId(advancesAll);
+    const existingPayrollByEmployee = new Map(existingPayrollsAll.map(p => [p.employeeId, p]));
+
+    for (const t of monthTargets) {
+      preloadMap.set(`${t.employeeId}|${month}|${year}`, {
+        employee: employeeById.get(t.employeeId) ?? null,
+        rules: rulesByEmployee.get(t.employeeId),
+        rawRecords: recordsByEmployee.get(t.employeeId) || [],
+        monthAdjustments: adjustmentsByEmployee.get(t.employeeId) || [],
+        existingPayroll: existingPayrollByEmployee.get(t.employeeId) || null,
+        advancesList: advancesByEmployee.get(t.employeeId) || [],
+      });
+    }
+  }
+  return preloadMap;
+}
+
 async function calculateMonthlyPayroll(month, year, branchId) {
   const employees = await prisma.employee.findMany({
     where: { status: true, branchId: branchId || undefined },
@@ -546,10 +672,21 @@ async function calculateMonthlyPayroll(month, year, branchId) {
       protectedTargets.map(t => `emp=${t.employeeId} (${t.status})`).join(', '));
   }
 
+  // Perf Batch 2: preload every employee/rules/attendance/adjustments/
+  // existing-payroll/advances query the loop below would otherwise repeat
+  // once per employee, in one bounded batch ahead of time. `employees` is
+  // already the exact superset buildPayrollPreloadMap needs (full rows,
+  // fetched once above) — filtered to just the `allowed` set so no query
+  // spends effort on a target that's about to be skipped as protected.
+  const allowedIds = new Set(allowed.map(t => t.employeeId));
+  const preloadEmployees = employees.filter(e => allowedIds.has(e.id));
+  const preloadMap = await buildPayrollPreloadMap(allowed, preloadEmployees);
+
   const results = [];
   for (const { employeeId } of allowed) {
     try {
-      const p = await calculatePayroll(employeeId, month, year);
+      const preload = preloadMap.get(`${employeeId}|${month}|${year}`);
+      const p = await calculatePayroll(employeeId, month, year, { preload });
       results.push(p);
     } catch (err) {
       logger.error(`Payroll error emp ${employeeId}: ${err.message}`);
@@ -558,4 +695,4 @@ async function calculateMonthlyPayroll(month, year, branchId) {
   return { results, protectedTargets };
 }
 
-module.exports = { calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, computeDeductionsBreakdown, withPayrollKeyLock, calculatePayrollImpl, selectOvertimeMultiplier, computeRates, filterProtectedPayrollTargets };
+module.exports = { calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, computeDeductionsBreakdown, withPayrollKeyLock, calculatePayrollImpl, selectOvertimeMultiplier, computeRates, filterProtectedPayrollTargets, buildPayrollPreloadMap };

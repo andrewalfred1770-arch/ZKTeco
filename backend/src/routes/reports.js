@@ -4,7 +4,7 @@ const moment = require('moment');
 const XLSX = require('xlsx');
 const { authenticate, authorize } = require('../middleware/auth');
 const { mergeEffectivePenalty } = require('../engines/attendanceEngine');
-const { applyApprovedAdjustment, computePayroll } = require('../engines/payrollEngine');
+const { applyApprovedAdjustment, computePayroll, buildPayrollPreloadMap } = require('../engines/payrollEngine');
 const { monthRange } = require('../utils/monthRange');
 const prisma = getPrisma();
 router.use(authenticate);
@@ -117,14 +117,17 @@ router.get('/payroll/export', async (req, res) => {
     const m = parseInt(month) || new Date().getMonth() + 1;
     const y = parseInt(year) || new Date().getFullYear();
 
-    const payrolls = await prisma.payroll.findMany({
-      where: { month: m, year: y },
+    // branchId filtering pushed into the query itself (was a JS-side
+    // .filter() AFTER fetching every branch's payrolls) — same result set,
+    // fewer rows ever fetched/decoded when a branch is selected.
+    const where = { month: m, year: y };
+    if (branchId) where.employee = { branchId: parseInt(branchId) };
+
+    const filtered = await prisma.payroll.findMany({
+      where,
       include: { employee: { include: { department: true, branch: true } } },
       orderBy: { employee: { name: 'asc' } },
     });
-
-    let filtered = payrolls;
-    if (branchId) filtered = filtered.filter(p => p.employee.branchId === parseInt(branchId));
 
     // EP-022 Phase 8: this export previously read straight off the stored
     // Payroll row — a write-time snapshot that goes stale the moment
@@ -132,7 +135,22 @@ router.get('/payroll/export', async (req, res) => {
     // class of bug fixed under EF-017 for GET /payroll. Overlaid fresh here
     // for the same reason: computePayroll() is the single canonical source,
     // so the exported Excel numbers can never diverge from the grid/print.
-    const fresh = await Promise.all(filtered.map(p => computePayroll(p.employeeId, p.month, p.year)));
+    //
+    // Perf: batch-preload rules/attendance/adjustments/existing-payroll/
+    // advances ONCE for the whole export instead of computePayroll()
+    // re-issuing its 6 per-employee queries for every row (the same N+1
+    // payrollEngine.buildPayrollPreloadMap() was built to eliminate for
+    // GET /payroll and calculateMonthlyPayroll — reused verbatim here, not
+    // reimplemented). `filtered[i].employee` is already the full Employee
+    // row (via the `include` above), so no extra employee query is needed
+    // either. Every value computePayroll() returns is byte-for-byte
+    // identical either way — this changes only how its inputs are fetched.
+    const preloadEmployees = filtered.map(p => p.employee);
+    const preloadTargets = filtered.map(p => ({ employeeId: p.employeeId, month: p.month, year: p.year }));
+    const preloadMap = await buildPayrollPreloadMap(preloadTargets, preloadEmployees);
+    const fresh = await Promise.all(filtered.map(p => computePayroll(p.employeeId, p.month, p.year, {
+      preload: preloadMap.get(`${p.employeeId}|${p.month}|${p.year}`),
+    })));
 
     // Column order mirrors the grid's canonical order (EP-022): كود، اسم
     // الموظف، الراتب الأساسي، أجر الساعة، أيام الحضور، الغياب، ساعات
