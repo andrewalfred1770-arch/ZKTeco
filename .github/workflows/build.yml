@@ -124,9 +124,11 @@ jobs:
             echo "OK: no mysql/ bundled"
 
             echo "================ app metadata version ================"
+            EXPECTED_VERSION=$(node -e "console.log(require('./package.json').version)")
             APP_VERSION=$(node -e "console.log(require('$ASAR_DIR/package.json').version)")
+            echo "Expected version (from checked-out frontend/package.json): $EXPECTED_VERSION"
             echo "Packaged version: $APP_VERSION"
-            [ "$APP_VERSION" = "1.2.2" ] && echo "OK: version is 1.2.2" || { echo "FAIL: version is '$APP_VERSION', expected 1.2.2"; exit 1; }
+            [ "$APP_VERSION" = "$EXPECTED_VERSION" ] && echo "OK: version is $EXPECTED_VERSION" || { echo "FAIL: version is '$APP_VERSION', expected '$EXPECTED_VERSION'"; exit 1; }
           done <<< "$APP_DIRS"
 
       - name: Runtime test — server-mode connection to a stub Windows Server, no local backend/MySQL ever spawned
