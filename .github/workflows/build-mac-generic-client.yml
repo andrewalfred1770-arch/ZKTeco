@@ -1,0 +1,105 @@
+name: Build macOS Generic Client (on-demand)
+
+# Manual, on-demand build of the generic "PETSHROW ERP" Mac client — the
+# same package.json "build" config (appId com.petshrow.erp, productName
+# "PETSHROW ERP") the Windows Setup/Portable build already uses, just for
+# macOS via `npm run electron:build:mac`. This is deliberately separate from
+# the three existing scheduled/PR/release mac jobs in build.yml (Manager,
+# Standalone, Mojave), which build different, purpose-specific editions with
+# their own pinned versions/configs — this job builds THIS repo's generic
+# client at whatever ref is requested, workflow_dispatch only, so it never
+# fires on a routine push/PR/release and never competes with those jobs.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref (tag/branch/sha) to build'
+        required: true
+        default: 'v1.2.9'
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  build-macos-generic-client:
+    name: Build macOS Generic Client
+    runs-on: macos-latest
+
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Checkout requested ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Verify checked-out commit
+        run: |
+          echo "Requested ref: ${{ inputs.ref }}"
+          echo "Checked-out HEAD: $(git rev-parse HEAD)"
+          git log -1 --oneline
+          git tag --points-at HEAD || true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build macOS Generic Client (frontend build + electron-builder --mac)
+        working-directory: frontend
+        # The project's own existing script: assets:gate -> vite build -> electron-builder --mac.
+        # No signing/notarization secrets are configured for this edition —
+        # artifacts are intentionally UNSIGNED (CSC_IDENTITY_AUTO_DISCOVERY=false
+        # above prevents electron-builder from picking up any ad-hoc local
+        # identity on the runner). Do not add CSC_LINK/notarize secrets here
+        # without also updating the signing-status report step below.
+        run: npm run electron:build:mac -- --publish=never
+
+      - name: Locate build output
+        id: find
+        working-directory: frontend
+        run: |
+          set -e
+          APP_DIR=$(find ../dist-electron -type d -name "*.app" -not -path "*/Contents/*" | head -n1)
+          DMG_FILE=$(find ../dist-electron -type f -name "*.dmg" | head -n1)
+          echo "App bundle: $APP_DIR"
+          echo "DMG file: $DMG_FILE"
+          [ -n "$APP_DIR" ] || { echo "FAIL: no .app bundle produced"; exit 1; }
+          [ -n "$DMG_FILE" ] || { echo "FAIL: no .dmg produced"; exit 1; }
+          echo "app_dir=$APP_DIR" >> "$GITHUB_OUTPUT"
+          echo "dmg_file=$DMG_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Verify packaged version / build marker
+        working-directory: frontend
+        run: |
+          set -e
+          APP_DIR="${{ steps.find.outputs.app_dir }}"
+          npx asar extract "$APP_DIR/Contents/Resources/app.asar" /tmp/asar-generic-client
+          PKG_VERSION=$(node -e "console.log(require('/tmp/asar-generic-client/package.json').version)")
+          echo "Packaged version: $PKG_VERSION"
+          [ "$PKG_VERSION" = "1.2.9" ] && echo "OK: version is 1.2.9" || { echo "FAIL: version is '$PKG_VERSION', expected 1.2.9"; exit 1; }
+          echo "================ Monthly Attendance print/summary code present ================"
+          grep -q "forEachNodeAfterFilter" $(find /tmp/asar-generic-client -iname "AttendanceMonthlyPage-*.js") && echo "OK: daily-detail print pipeline present" || { echo "FAIL: daily-detail print pipeline not found"; exit 1; }
+          grep -q "attendance_monthly_summary" $(find /tmp/asar-generic-client -iname "PrintPreviewModal-*.js") && echo "OK: monthly aggregate summary report type present" || { echo "FAIL: attendance_monthly_summary not found"; exit 1; }
+
+      - name: Report signing status (never faked)
+        run: |
+          echo "Signing: NOT VERIFIED — no Apple Developer certificate configured for this build (unsigned artifact)"
+          echo "Notarization: NOT VERIFIED — no Apple credentials configured for this build"
+          codesign -dv "${{ steps.find.outputs.app_dir }}" 2>&1 || echo "(codesign check above is informational only, expected to show 'not signed')"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: petshrow-macos-generic-client-1.2.9
+          path: |
+            dist-electron/*.dmg
+            dist-electron/*.zip
+          if-no-files-found: error
