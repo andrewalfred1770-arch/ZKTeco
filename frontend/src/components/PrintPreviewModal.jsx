@@ -14,9 +14,12 @@ import { printHTML, exportToPDF, exportToExcel, buildReportHTML } from '../lib/p
 import { useCompanyBrand } from '../lib/branding';
 import { PAPER_MM, MARGIN_PRESETS, MM_TO_PX } from '../lib/printDesignSystem';
 import { fmtTime, fmtMoney, fmtOTHours, fmtMinutes, fmtPenaltyUnits, fmtOvertimeUnits, fmtWorkedHours, fmtIntZero, fmtDec, STATUS_LABELS, displayNetSalary } from '../lib/formatters';
+import { ABSENCE_TYPE_LABELS } from './AbsenceTypeModal';
 import PrintSettingsSidebar from './print/PrintSettingsSidebar';
 import PrintThumbnails from './print/PrintThumbnails';
 import { useFocusTrap } from '../hooks/useFocusTrap';
+import { useIsNarrowViewport } from '../hooks/useIsNarrowViewport';
+import { MobileActionsMenu } from './ui';
 
 const STATUS_TD = r => {
   const m = { present:'status-present', late:'status-late', absent:'status-absent',
@@ -88,7 +91,46 @@ export const REPORT_COLUMNS = {
       tdClass: STATUS_TD, thStyle: 'width:72px' },
   ],
 
+  // Daily-detail: one printed row per employee per day — the same shape as
+  // the on-screen Grid's own rowData (/attendance/monthly-detail), not a
+  // per-employee monthly aggregate. Column set mirrors AttendanceMonthlyPage's
+  // `cols` field-for-field so the print report reads as a printable version
+  // of that exact Grid.
   attendance_monthly: [
+    { header: 'الكود',       key: 'employeeCode', thStyle: 'width:52px' },
+    { header: 'اسم الموظف', key: 'employeeName',  thStyle: 'width:130px' },
+    { header: 'التاريخ',     key: 'date', align: 'num', thStyle: 'width:80px',
+      format: v => {
+        if (!v) return '—';
+        const d = new Date(v + 'T00:00');
+        return `${d.getDate()} - ${['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'][d.getDay()]}`;
+      } },
+    { header: 'القسم',       key: 'department',   thStyle: 'width:95px' },
+    { header: 'الحضور',      key: 'checkIn',  format: v => fmtTime(v), align: 'num', thStyle: 'width:70px' },
+    { header: 'الانصراف',   key: 'checkOut', format: v => fmtTime(v), align: 'num', thStyle: 'width:70px' },
+    { header: 'ساعات العمل', key: 'workedMinutes', format: v => fmtWorkedHours(v),
+      tdClass: r => (r.workedMinutes||0) > 0 ? 'num green' : 'num muted', thStyle: 'width:75px' },
+    { header: 'خصم التأخير', key: 'effectiveLatePenalty', format: v => fmtPenaltyUnits(v),
+      tdClass: r => (r.effectiveLatePenalty||0) > 0 ? 'num amber' : 'num muted', thStyle: 'width:72px', total:'sum' },
+    { header: 'الإضافي',    key: 'effectiveOvertimeUnits', format: v => fmtOvertimeUnits(v),
+      tdClass: r => (r.effectiveOvertimeUnits||0) > 0 ? 'num green' : 'num muted', thStyle: 'width:65px', total:'sum' },
+    { header: 'انصراف مبكر', key: 'effectiveEarlyPenalty', format: v => fmtPenaltyUnits(v),
+      tdClass: r => (r.effectiveEarlyPenalty||0) > 0 ? 'num amber' : 'num muted', thStyle: 'width:80px', total:'sum' },
+    { header: 'الحالة',      key: 'status', format: v => STATUS_LABELS[v]?.ar || v || '—',
+      tdClass: STATUS_TD, thStyle: 'width:80px' },
+    { header: 'نوع الغياب', key: 'absenceType',
+      format: (v, r) => r.isAbsent ? (ABSENCE_TYPE_LABELS[v] || '—') : '—', thStyle: 'width:85px' },
+    { header: 'أيام الخصم', key: 'penaltyDays',
+      format: (v, r) => (r.isAbsent && v != null) ? String(v) : '—',
+      tdClass: r => r.isAbsent && r.penaltyDays != null ? 'num red' : 'num muted', thStyle: 'width:65px' },
+  ],
+
+  // "طباعة الملخص" — the OLD per-employee-per-month aggregate report (one
+  // row per employee for the whole month), restored verbatim as its own
+  // report type so it can sit alongside the daily-detail `attendance_monthly`
+  // print above without disturbing it. Sourced from the canonical
+  // /attendance/monthly aggregate endpoint.
+  attendance_monthly_summary: [
     { header: 'الكود',           key: 'employeeCode', thStyle: 'width:58px' },
     { header: 'اسم الموظف',     key: 'employeeName',  thStyle: 'width:140px' },
     { header: 'القسم',           key: 'department',   thStyle: 'width:110px' },
@@ -241,6 +283,7 @@ export const REPORT_LABELS = {
   attendance_daily_late:     'تقرير التأخيرات اليومي',
   attendance_daily_overtime: 'تقرير الإضافي اليومي',
   attendance_monthly:        'تقرير الحضور الشهري',
+  attendance_monthly_summary: 'تقرير الحضور الشهري',
   payroll:                   'كشف المرتبات',
   movement:                  'تقرير حركة الموظفين',
   adjustments:               'تقرير التعديلات اليدوية',
@@ -266,6 +309,11 @@ const SUMMARY_KEYS = {
     { key: 'effectiveOvertimeUnits', label: 'إجمالي الإضافي' },
   ],
   attendance_monthly: [
+    { key: '__absence',             label: 'إجمالي الغياب' },
+    { key: 'effectiveLatePenalty',  label: 'إجمالي خصم التأخير' },
+    { key: 'effectiveOvertimeUnits', label: 'إجمالي الإضافي' },
+  ],
+  attendance_monthly_summary: [
     { key: 'absentDays',                    label: 'إجمالي أيام الغياب' },
     { key: 'totalEffectiveOvertimeUnits',   label: 'إجمالي ساعات الإضافي' },
     { key: 'totalEffectiveDeductionUnits',  label: 'إجمالي الخصومات' },
@@ -311,6 +359,12 @@ export default function PrintPreviewModal({
   reportType = 'attendance_daily',
   customColumns = null, customStats = null, title = '', meta = {},
   orientation = 'landscape',
+  // KPI-only documents (e.g. Monthly Attendance's "طباعة الملخص") have no
+  // per-row table — just the letterhead + stats cards. false skips the
+  // "no data" placeholder (there's no table to be empty) and tells the
+  // renderer to omit the <table> entirely. Default true is every existing
+  // caller, unchanged.
+  showTable = true,
 }) {
   const { isLight } = useTheme();
   const iframeRef = useRef();
@@ -324,8 +378,13 @@ export default function PrintPreviewModal({
   const [contentHeightPx, setContentHeightPx] = useState(0);
   const [measurementReady, setMeasurementReady] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const [showSidebar, setShowSidebar] = useState(true);
-  const [showThumbs, setShowThumbs] = useState(true);
+  // Mobile: the settings sidebar (232px) + thumbnails rail (148px) sum to
+  // 380px — wider than a 360px phone by themselves, before the actual
+  // document gets any space at all. Default both closed on a narrow
+  // viewport; desktop keeps its existing always-open default unchanged.
+  const isNarrow = useIsNarrowViewport(768);
+  const [showSidebar, setShowSidebar] = useState(() => !isNarrow);
+  const [showThumbs, setShowThumbs] = useState(() => !isNarrow);
 
   useEffect(() => {
     if (isOpen) { setActiveReport(reportType); setOri(orientation); setSettings(DEFAULT_SETTINGS); setCurrentPage(1); }
@@ -448,7 +507,7 @@ export default function PrintPreviewModal({
     // Drawer, whose on-screen KPI cards must stay identical to what prints)
     // passes it straight through instead of this report-type-keyed default.
     if (customStats) return customStats;
-    if (activeReport.startsWith('attendance_daily') || activeReport === 'attendance_dashboard') {
+    if (activeReport.startsWith('attendance_daily') || activeReport === 'attendance_dashboard' || activeReport === 'attendance_monthly') {
       return [
         { label:'حاضر',  value: data.filter(r => ['present','late','early_leave'].includes(r.status)).length, color:'green' },
         { label:'غائب',  value: data.filter(r => r.isAbsent || r.status==='absent').length, color:'red' },
@@ -468,15 +527,6 @@ export default function PrintPreviewModal({
         { label:'إجمالي صافي الرواتب', value: fmtMoney(sum('netSalary')), color:'blue' },
       ];
     }
-    if (activeReport === 'attendance_monthly') {
-      const sum = k => data.reduce((s,r)=>s+(r[k]||0),0);
-      return [
-        { label:'عدد الموظفين',  value: data.length, color:'blue' },
-        { label:'أيام حضور',     value: sum('workDays'), color:'green' },
-        { label:'أيام غياب',     value: sum('absentDays'), color:'red' },
-        { label:'ساعات إضافي',   value: fmtOTHours(sum('overtimeHours')), color:'purple' },
-      ];
-    }
     return null;
   }, [data, activeReport, customStats]);
 
@@ -484,7 +534,7 @@ export default function PrintPreviewModal({
 
   const previewHTML = useMemo(() => {
     if (!isOpen) return '';
-    if (filteredData.length === 0)
+    if (showTable && filteredData.length === 0)
       return '<p style="padding:40px;font-family:Cairo,sans-serif;direction:rtl;text-align:center;color:#64748b">لا توجد بيانات للعرض</p>';
     return buildReportHTML({
       title: reportTitle, columns, rows: filteredData,
@@ -493,9 +543,9 @@ export default function PrintPreviewModal({
       paperSize: settings.paperSize, margins: settings.margins, scalePercent: settings.scalePercent,
       showHeaderFooter: settings.showHeaderFooter, repeatHeader: settings.repeatHeader,
       printBackground: settings.printBackground, watermarkText, showStamp: settings.showStamp,
-      summaryKeys: SUMMARY_KEYS[activeReport],
+      summaryKeys: SUMMARY_KEYS[activeReport], showTable,
     });
-  }, [isOpen, filteredData, columns, reportTitle, meta, stats, ori, brand, settings, watermarkText, activeReport]);
+  }, [isOpen, filteredData, columns, reportTitle, meta, stats, ori, brand, settings, watermarkText, activeReport, showTable]);
 
   // Write into iframe, auto-fit its height, and measure the total content
   // height — the one real input the page-count estimate and thumbnail
@@ -565,7 +615,7 @@ export default function PrintPreviewModal({
     showHeaderFooter: settings.showHeaderFooter, repeatHeader: settings.repeatHeader,
     printBackground: settings.printBackground, watermarkText, showStamp: settings.showStamp,
     showSignatures: settings.showSignatures, copies: settings.copies,
-    summaryKeys: SUMMARY_KEYS[activeReport],
+    summaryKeys: SUMMARY_KEYS[activeReport], showTable,
   };
 
   // Routed through the one IPC print pipeline (printUtils.js → ipc.js's
@@ -645,9 +695,11 @@ export default function PrintPreviewModal({
           <div style={{ display:'flex', alignItems:'center', gap:10, minWidth:0 }}>
             <div style={{ width:28, height:28, borderRadius:8, flexShrink:0, background: isLight ? 'linear-gradient(135deg,#3b82f6,#1d4ed8)' : 'linear-gradient(135deg,#2F81F7,#1F6FEB)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, color:'#fff', fontSize:14 }}>P</div>
             <span id={titleId} style={{ color:'var(--text)', fontWeight:700, fontSize:14, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', maxWidth:240 }}>{reportTitle}</span>
-            <span style={{ background:'var(--accent-soft)', color:'var(--accent)', padding:'2px 9px', borderRadius:99, fontSize:11, fontWeight:700, whiteSpace:'nowrap' }}>
-              {filteredData.length} سجل
-            </span>
+            {showTable && (
+              <span style={{ background:'var(--accent-soft)', color:'var(--accent)', padding:'2px 9px', borderRadius:99, fontSize:11, fontWeight:700, whiteSpace:'nowrap' }}>
+                {filteredData.length} سجل
+              </span>
+            )}
           </div>
 
           {/* Zone 2 — view controls: zoom · fit · page navigation.
@@ -668,12 +720,19 @@ export default function PrintPreviewModal({
               <button onClick={() => setZoom(z => Math.min(150, z+10))} title="تكبير" style={{ ...segBtn(false), padding:'6px 8px' }}><ZoomIn style={{ width:14, height:14 }} /></button>
             </div>
 
-            <button onClick={fitToWidth} title="ملائمة العرض للعرض" style={ghostBtn}>
-              <StretchHorizontal style={{ width:13, height:13 }} /> ملائمة العرض
-            </button>
-            <button onClick={fitToPage} title="ملائمة الصفحة كاملة" style={ghostBtn}>
-              <Maximize2 style={{ width:13, height:13 }} /> ملائمة الصفحة
-            </button>
+            {/* Fit-width/fit-page: desktop only in the main row — folded
+                into the overflow menu on mobile below, since their icon+
+                label pairs are the widest items in this zone. */}
+            {!isNarrow && (
+              <>
+                <button onClick={fitToWidth} title="ملائمة العرض للعرض" style={ghostBtn}>
+                  <StretchHorizontal style={{ width:13, height:13 }} /> ملائمة العرض
+                </button>
+                <button onClick={fitToPage} title="ملائمة الصفحة كاملة" style={ghostBtn}>
+                  <Maximize2 style={{ width:13, height:13 }} /> ملائمة الصفحة
+                </button>
+              </>
+            )}
           </div>
 
           {/* Zone 3 — export actions (secondary → primary, left-to-right by consequence) */}
@@ -685,12 +744,28 @@ export default function PrintPreviewModal({
               {showThumbs ? <PanelRightClose style={{ width:15, height:15 }} /> : <PanelRight style={{ width:15, height:15 }} />}
             </button>
             <div style={{ width:1, height:22, background:'var(--border)', margin:'0 2px' }} />
-            <button onClick={handleExcel} style={{ display:'flex', alignItems:'center', gap:6, background:'transparent', border:'1px solid rgba(16,185,129,0.4)', color: isLight ? '#059669' : '#34d399', borderRadius:8, cursor:'pointer', padding:'6px 12px', fontSize:12, fontWeight:700 }}>
-              <FileSpreadsheet style={{ width:14, height:14 }} /> Excel
-            </button>
-            <button onClick={handlePDF} disabled={pdfBusy} style={{ display:'flex', alignItems:'center', gap:6, background:'transparent', border:'1px solid rgba(239,68,68,0.4)', color: isLight ? '#dc2626' : '#f87171', borderRadius:8, cursor:'pointer', padding:'6px 12px', fontSize:12, fontWeight:700, opacity: pdfBusy?0.6:1 }}>
-              {pdfBusy ? <Loader2 style={{ width:14, height:14, animation:'spin 1s linear infinite' }} /> : <FileText style={{ width:14, height:14 }} />} PDF
-            </button>
+
+            {/* Excel/PDF: full buttons on desktop, folded into the overflow
+                menu on mobile alongside fit-width/fit-page — Print stays
+                the one obvious primary action at every width. */}
+            {!isNarrow && (
+              <>
+                <button onClick={handleExcel} style={{ display:'flex', alignItems:'center', gap:6, background:'transparent', border:'1px solid rgba(16,185,129,0.4)', color: isLight ? '#059669' : '#34d399', borderRadius:8, cursor:'pointer', padding:'6px 12px', fontSize:12, fontWeight:700 }}>
+                  <FileSpreadsheet style={{ width:14, height:14 }} /> Excel
+                </button>
+                <button onClick={handlePDF} disabled={pdfBusy} style={{ display:'flex', alignItems:'center', gap:6, background:'transparent', border:'1px solid rgba(239,68,68,0.4)', color: isLight ? '#dc2626' : '#f87171', borderRadius:8, cursor:'pointer', padding:'6px 12px', fontSize:12, fontWeight:700, opacity: pdfBusy?0.6:1 }}>
+                  {pdfBusy ? <Loader2 style={{ width:14, height:14, animation:'spin 1s linear infinite' }} /> : <FileText style={{ width:14, height:14 }} />} PDF
+                </button>
+              </>
+            )}
+            {isNarrow && (
+              <MobileActionsMenu actions={[
+                { key: 'fitWidth', label: 'ملائمة العرض', icon: <StretchHorizontal style={{ width: 15, height: 15 }} />, onClick: fitToWidth },
+                { key: 'fitPage', label: 'ملائمة الصفحة', icon: <Maximize2 style={{ width: 15, height: 15 }} />, onClick: fitToPage },
+                { key: 'excel', label: 'Excel', icon: <FileSpreadsheet style={{ width: 15, height: 15 }} />, onClick: handleExcel },
+                { key: 'pdf', label: 'PDF', icon: pdfBusy ? <Loader2 style={{ width: 15, height: 15 }} className="animate-spin" /> : <FileText style={{ width: 15, height: 15 }} />, onClick: handlePDF, disabled: pdfBusy },
+              ]} />
+            )}
             <div style={{ width:1, height:22, background:'var(--border)', margin:'0 2px' }} />
             <button onClick={handlePrint} style={{ display:'flex', alignItems:'center', gap:6, background:'var(--accent)', border:'none', color:'#fff', borderRadius:8, cursor:'pointer', padding:'7px 16px', fontSize:12.5, fontWeight:700, boxShadow:'0 1px 3px rgba(37,99,235,0.35)' }}>
               <Printer style={{ width:14, height:14 }} /> طباعة
@@ -724,14 +799,27 @@ export default function PrintPreviewModal({
           </div>
         )}
 
-        {/* ── Workspace body: settings sidebar · paper viewport · thumbnails ── */}
-        <div style={{ flex:1, display:'flex', minHeight:0, overflow:'hidden' }}>
-          {showSidebar && (
-            <PrintSettingsSidebar
-              settings={settings} onChange={setSettings}
-              orientation={ori} onOrientationChange={setOri}
-              hasStamp={!!brand.stampUrl}
+        {/* ── Workspace body: settings sidebar · paper viewport · thumbnails ──
+            Mobile: opening either panel overlays it on top of the document
+            (position:fixed + backdrop) instead of squeezing it as a
+            permanent flex sibling — 232px+148px alone exceeds a 360px
+            screen. Desktop keeps the original side-by-side layout. */}
+        <div style={{ flex:1, display:'flex', minHeight:0, overflow:'hidden', position:'relative' }}>
+          {isNarrow && (showSidebar || showThumbs) && (
+            <div
+              onClick={() => { setShowSidebar(false); setShowThumbs(false); }}
+              style={{ position:'fixed', inset:0, zIndex:9300, background:'rgba(0,0,0,0.45)' }}
             />
+          )}
+
+          {showSidebar && (
+            <div style={isNarrow ? { position:'fixed', insetInlineStart:0, top:0, bottom:0, zIndex:9301, boxShadow:'4px 0 24px rgba(0,0,0,0.3)' } : undefined}>
+              <PrintSettingsSidebar
+                settings={settings} onChange={setSettings}
+                orientation={ori} onOrientationChange={setOri}
+                hasStamp={!!brand.stampUrl}
+              />
+            </div>
           )}
 
           {/* Paper viewport — a neutral, document-first surface: generous
@@ -768,12 +856,14 @@ export default function PrintPreviewModal({
           </div>
 
           {showThumbs && (
-            <PrintThumbnails
-              previewHTML={previewHTML} pageWidthPx={pageWidthPx} pageHeightPx={pageHeightPx}
-              contentHeightPx={contentHeightPx} pageCount={pageCount} currentPage={currentPage}
-              ready={measurementReady}
-              onNavigate={goToPage}
-            />
+            <div style={isNarrow ? { position:'fixed', insetInlineEnd:0, top:0, bottom:0, zIndex:9301, boxShadow:'-4px 0 24px rgba(0,0,0,0.3)' } : undefined}>
+              <PrintThumbnails
+                previewHTML={previewHTML} pageWidthPx={pageWidthPx} pageHeightPx={pageHeightPx}
+                contentHeightPx={contentHeightPx} pageCount={pageCount} currentPage={currentPage}
+                ready={measurementReady}
+                onNavigate={goToPage}
+              />
+            </div>
           )}
         </div>
     </div>

@@ -3,12 +3,13 @@ import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-quartz.css';
 import {
-  Download, RefreshCw, Loader2, Play, Printer,
+  Download, RefreshCw, Loader2, Play, Printer, FileBarChart,
   CheckCircle, XCircle, Clock, TrendingUp,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api, { LONG_OP } from '../lib/api';
 import { useTheme } from '../contexts/ThemeContext';
+import { useIsNarrowViewport } from '../hooks/useIsNarrowViewport';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import {
   fmtTime, fmtWorkedHours, fmtPenaltyUnits, fmtOvertimeUnits, fmtEditableZero,
@@ -50,7 +51,11 @@ export default function AttendanceMonthlyPage() {
   const [processing, setProc]      = useState(false);
   const [printOpen,  setPrintOpen] = useState(false);
   const [printRows,  setPrintRows] = useState([]);
-  const [printLoading, setPrintLoading] = useState(false);
+  const [summaryPrintOpen,    setSummaryPrintOpen]    = useState(false);
+  const [summaryPrintRows,    setSummaryPrintRows]    = useState([]);
+  const [summaryPrintStats,   setSummaryPrintStats]   = useState([]);
+  const [summaryPrintMeta,    setSummaryPrintMeta]    = useState({});
+  const [summaryPrintLoading, setSummaryPrintLoading] = useState(false);
   const [departments, setDepts]    = useState([]);
   const [deptId,     setDeptId]    = useState(_saved.deptId ?? 0);
   const [absenceModal, setAbsenceModal] = useState(null);
@@ -84,15 +89,20 @@ export default function AttendanceMonthlyPage() {
   };
 
   // ── Column definitions ────────────────────────────────────────────────────
+  // Pinned-right columns (# + code + name + date) sum to ~470px, exceeding
+  // a narrow phone's entire viewport. Below ~480px, only the name column
+  // stays pinned — the rest flow into the normal scrollable region.
+  const isNarrow = useIsNarrowViewport(480);
+
   const cols = useMemo(() => [
     {
-      headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'right',
+      headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: isNarrow ? undefined : 'right',
       sortable: false, filter: false, headerClass: 'ag-header-center',
       checkboxSelection: true, headerCheckboxSelection: true,
       cellStyle: rowNumCell(),
     },
     {
-      field: 'employeeCode', headerName: 'كود', width: 88, pinned: 'right',
+      field: 'employeeCode', headerName: 'كود', width: 88, pinned: isNarrow ? undefined : 'right',
       cellStyle: codeCell(),
     },
     {
@@ -111,7 +121,7 @@ export default function AttendanceMonthlyPage() {
         : value,
     },
     {
-      field: 'date', headerName: 'التاريخ', width: 130, pinned: 'right',
+      field: 'date', headerName: 'التاريخ', width: 130, pinned: isNarrow ? undefined : 'right',
       valueFormatter: p => {
         if (!p.value) return '';
         const d = new Date(p.value + 'T00:00');
@@ -266,7 +276,7 @@ export default function AttendanceMonthlyPage() {
           : 'transparent',
       }),
     },
-  ], []); // eslint-disable-line react-hooks/exhaustive-deps
+  ], [isNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
 
@@ -514,26 +524,77 @@ export default function AttendanceMonthlyPage() {
   const exportCSV = () =>
     gridRef.current?.api?.exportDataAsCsv({ fileName: `حضور_شهري_${year}_${month}.csv` });
 
-  // EF-020.1: the print/PDF/Excel report is per-employee-per-month, not
-  // per-day — `rows` (from /attendance/monthly-detail) is the wrong shape for
-  // it (that's what caused blank aggregate columns + a daily-granularity
-  // report). Reuse the canonical aggregate endpoint (/attendance/monthly),
-  // whose response already matches REPORT_COLUMNS.attendance_monthly field-
-  // for-field, instead of duplicating the aggregation client-side.
-  const openPrint = useCallback(async () => {
-    setPrintLoading(true);
+  // Shared by both print buttons: the Grid's own post-filter daily-detail
+  // node set (forEachNodeAfterFilter — reflects both the custom filter bar's
+  // external filter AND AG Grid's built-in per-column header filters).
+  const collectFilteredRows = useCallback(() => {
+    const filtered = [];
+    if (gridRef.current?.api) {
+      gridRef.current.api.forEachNodeAfterFilter(node => {
+        if (node.data) filtered.push(node.data);
+      });
+    } else {
+      filtered.push(...rows);
+    }
+    return filtered;
+  }, [rows]);
+
+  // "طباعة" — daily-detail report: one row per employee per day, exactly
+  // what the Grid shows. node.data IS a /attendance/monthly-detail row,
+  // field-for-field what REPORT_COLUMNS.attendance_monthly expects — no
+  // fetch, no aggregation. Stable-sorted by date ascending on top of the
+  // Grid's filtered node order so the printed report always reads
+  // start-of-month → end-of-month, Grid order preserved as the tiebreaker
+  // for same-date rows. UNCHANGED — do not modify.
+  const openPrint = useCallback(() => {
+    const printData = collectFilteredRows();
+    printData.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    setPrintRows(printData);
+    setPrintOpen(true);
+  }, [collectFilteredRows]);
+
+  // "طباعة الملخص" — a SEPARATE action from "طباعة": the OLD per-employee-
+  // per-month aggregate report (summary/KPI cards + one row per employee for
+  // the month), reusing the same canonical /attendance/monthly aggregate
+  // endpoint and field set "طباعة" used before the daily-detail redesign.
+  // Employee selection reuses the identical Grid-filter pipeline (Grid's
+  // filtered daily nodes -> employeeId Set -> filter the aggregate rows by
+  // those IDs) — same source of truth as "طباعة", just applied to the
+  // aggregate dataset instead of the daily one. KPI totals are plain sums of
+  // the aggregate's own already-computed fields (workDays/absentDays/
+  // totalHours/totalEffectiveLatePenalty/totalEffectiveOvertimeUnits/
+  // totalEffectiveDeductionUnits) — no new calculation, just the existing
+  // aggregate numbers scoped to the filtered employee set.
+  const openSummaryPrint = useCallback(async () => {
+    setSummaryPrintLoading(true);
     try {
       const params = { month, year };
       if (deptId) params.departmentId = deptId;
       const { data } = await api.get('/attendance/monthly', { params });
-      setPrintRows(data);
-      setPrintOpen(true);
+
+      const passingEmployeeIds = new Set(collectFilteredRows().map(r => r.employeeId).filter(id => id != null));
+      const filteredAggregate = data.filter(r => passingEmployeeIds.has(r.employeeId));
+
+      const sum = k => filteredAggregate.reduce((s, r) => s + (r[k] || 0), 0);
+      setSummaryPrintStats([
+        { label: 'عدد الموظفين',     value: filteredAggregate.length, color: 'blue' },
+        { label: 'أيام حضور',        value: sum('workDays'), color: 'green' },
+        { label: 'أيام غياب',        value: sum('absentDays'), color: 'red' },
+        { label: 'إجمالي الساعات',   value: fmtWorkedHours(sum('totalHours') * 60), color: 'blue' },
+        { label: 'إجمالي التأخير',   value: fmtPenaltyUnits(sum('totalEffectiveLatePenalty')), color: 'amber' },
+        { label: 'إجمالي الإضافي',   value: fmtOvertimeUnits(sum('totalEffectiveOvertimeUnits')), color: 'purple' },
+        { label: 'إجمالي الخصومات',  value: fmtPenaltyUnits(sum('totalEffectiveDeductionUnits')), color: 'red' },
+      ]);
+      const deptName = deptId ? (departments.find(d => d.id === deptId)?.name || '') : 'جميع الأقسام';
+      setSummaryPrintMeta({ period: `${MONTHS_AR[month - 1]} ${year}`, generatedBy: ACTOR, subtitle: `القسم: ${deptName}` });
+      setSummaryPrintRows(filteredAggregate);
+      setSummaryPrintOpen(true);
     } catch {
-      toast.error('تعذر تحميل بيانات التقرير الشهري');
+      toast.error('تعذر تحميل بيانات ملخص الحضور الشهري');
     } finally {
-      setPrintLoading(false);
+      setSummaryPrintLoading(false);
     }
-  }, [month, year, deptId]);
+  }, [month, year, deptId, departments, collectFilteredRows]);
 
   const summary = useMemo(() => ({
     present: rows.filter(r => ['present','late','early_leave'].includes(r.status)).length,
@@ -558,9 +619,13 @@ export default function AttendanceMonthlyPage() {
           <button onClick={exportCSV} className="btn-secondary text-xs py-1.5 px-3">
             <Download className="w-3.5 h-3.5" /> CSV
           </button>
-          <button onClick={openPrint} className="btn-secondary text-xs py-1.5 px-3" disabled={printLoading}>
-            {printLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Printer className="w-3.5 h-3.5" />}
+          <button onClick={openPrint} className="btn-secondary text-xs py-1.5 px-3">
+            <Printer className="w-3.5 h-3.5" />
             طباعة
+          </button>
+          <button onClick={openSummaryPrint} className="btn-secondary text-xs py-1.5 px-3" disabled={summaryPrintLoading}>
+            {summaryPrintLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileBarChart className="w-3.5 h-3.5" />}
+            طباعة الملخص
           </button>
           <button onClick={handleProcess} className="btn-primary text-xs py-1.5 px-3" disabled={processing}
             title="إعادة تطبيق قواعد الحضور والانصراف على الشهر المحدد لجميع الموظفين">
@@ -599,7 +664,7 @@ export default function AttendanceMonthlyPage() {
           </button>
         </div>
 
-        <div className="flex items-center gap-5 text-xs font-semibold">
+        <div className="hidden md:flex items-center gap-5 text-xs font-semibold">
           <span className="flex items-center gap-1.5" style={{ color: 'var(--c-green)' }}>
             <CheckCircle className="w-3.5 h-3.5" /> {summary.present} حاضر
           </span>
@@ -665,6 +730,17 @@ export default function AttendanceMonthlyPage() {
         data={printRows}
         reportType="attendance_monthly"
         meta={{ period: `${MONTHS_AR[month - 1]} ${year}`, generatedBy: ACTOR }}
+        orientation="landscape"
+      />
+
+      <PrintPreviewModal
+        isOpen={summaryPrintOpen}
+        onClose={() => setSummaryPrintOpen(false)}
+        data={summaryPrintRows}
+        customStats={summaryPrintStats}
+        title="تقرير الحضور الشهري"
+        reportType="attendance_monthly_summary"
+        meta={summaryPrintMeta}
         orientation="landscape"
       />
 

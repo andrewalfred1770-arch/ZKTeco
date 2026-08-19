@@ -124,7 +124,7 @@ export async function exportToPDF(data, columns, title, meta = {}, orientation =
     paperSize: meta.paperSize, margins: meta.margins, scalePercent: meta.scalePercent,
     showHeaderFooter: meta.showHeaderFooter, repeatHeader: meta.repeatHeader,
     printBackground: meta.printBackground, watermarkText: meta.watermarkText, showStamp: meta.showStamp,
-    summaryKeys: meta.summaryKeys,
+    summaryKeys: meta.summaryKeys, showTable: meta.showTable,
   });
 
   const filename = `${FILE_PREFIX}_${safeName(title)}_${nowFilename()}`;
@@ -161,7 +161,7 @@ export function printHTML(data, columns, title, meta = {}, showSignatures = true
     paperSize: meta.paperSize, margins: meta.margins, scalePercent: meta.scalePercent,
     showHeaderFooter: meta.showHeaderFooter, repeatHeader: meta.repeatHeader,
     printBackground: meta.printBackground, watermarkText: meta.watermarkText, showStamp: meta.showStamp,
-    summaryKeys: meta.summaryKeys,
+    summaryKeys: meta.summaryKeys, showTable: meta.showTable,
   });
   printDocument(html, meta.copies, orientation);
 }

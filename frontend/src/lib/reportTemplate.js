@@ -216,6 +216,12 @@ export function buildReportHTML(o = {}) {
     // status column is present — a safe generic fallback for any caller
     // that hasn't curated a specific set.
     summaryKeys      = null,
+    // KPI-only documents (e.g. the Monthly Attendance "طباعة الملخص" summary
+    // print) have no per-row table at all — just the letterhead + `stats`
+    // cards above. false omits the <table> entirely; every other section
+    // (header, KPI cards, signatures, footer) is unaffected. Default true
+    // keeps every existing caller byte-identical.
+    showTable        = true,
   } = o;
 
   // ── Print Experience geometry ──────────────────────────────────────────────
@@ -1082,14 +1088,14 @@ tr.totals td.t-blank{
   ${kpiHTML}
   ${showHeaderFooter ? '<div class="dh-divider"></div>' : ''}
 
-  <div class="table-wrap">
+  ${showTable ? `<div class="table-wrap">
     <table>
       <thead><tr>${ths}</tr></thead>
       <tbody>${trs}${totalsRow}</tbody>
     </table>
-  </div>
+  </div>` : ''}
 
-  ${summaryStripHTML}
+  ${showTable ? summaryStripHTML : ''}
 
   ${signatureHTML}
 
