@@ -1,4 +1,6 @@
 const router = require('express').Router();
+const { sendError, numericIdParam } = require('../utils/apiError');
+router.param('id', numericIdParam);
 const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
 const { authenticate, authorize } = require('../middleware/auth');
@@ -6,6 +8,7 @@ const recalcEngine = require('../engines/recalcEngine');
 const { getRules } = require('../engines/rulesEngine');
 const { monthRangeMoment } = require('../utils/monthRange');
 const logger = require('../utils/logger');
+const { parseMoney } = require('../utils/numeric');
 const prisma = getPrisma();
 router.use(authenticate);
 
@@ -53,7 +56,7 @@ router.get('/', async (req, res) => {
       orderBy: { date: 'desc' },
     });
     res.json(advances);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/', authorize('admin', 'hr'), async (req, res) => {
@@ -65,8 +68,8 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
     // greater than a positive maxAllowed, so it silently passed through and
     // became a net addition to pay via recalcForAdvance. NaN similarly
     // failed to trip `NaN > maxAllowed` (always false).
-    const amountNum = parseFloat(amount);
-    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+    const amountNum = parseMoney(amount);
+    if (amountNum === null || amountNum <= 0) {
       return res.status(400).json({ error: 'قيمة السلفة يجب أن تكون رقمًا موجبًا' });
     }
     const monthNum = parseInt(month);
@@ -85,9 +88,9 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
     const maxPercent = parseFloat(rules.advance_max_percent || '0');
     if (maxPercent > 0) {
       const maxAllowed = (employee.salary || 0) * (maxPercent / 100);
-      if (parseFloat(amount) > maxAllowed) {
+      if (amountNum > maxAllowed) {
         return res.status(400).json({
-          error: `السلفة المطلوبة (${parseFloat(amount).toFixed(2)}) تتجاوز الحد الأقصى المسموح (${maxAllowed.toFixed(2)} = ${maxPercent}% من الراتب الأساسي)`,
+          error: `السلفة المطلوبة (${amountNum.toFixed(2)}) تتجاوز الحد الأقصى المسموح (${maxAllowed.toFixed(2)} = ${maxPercent}% من الراتب الأساسي)`,
         });
       }
     }
@@ -127,7 +130,7 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
 
     await recalcForAdvance(advance, req.io);
     res.status(201).json(advance);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 router.delete('/:id', authorize('admin', 'hr'), async (req, res) => {
@@ -157,7 +160,7 @@ router.delete('/:id', authorize('admin', 'hr'), async (req, res) => {
 
     await recalcForAdvance(existing, req.io);
     res.json({ message: 'Advance deleted' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

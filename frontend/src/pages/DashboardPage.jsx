@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import api, { LONG_OP } from '../lib/api';
 import toast from 'react-hot-toast';
 import { westernDigits, fmtTime, fmtPenaltyUnits, fmtOvertimeUnits, STATUS_LABELS } from '../lib/formatters';
+import { todayStr } from '../lib/businessDate';
 import { attendanceRowClass } from '../lib/gridDefaults';
 import { useTheme } from '../contexts/ThemeContext';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
@@ -25,6 +26,7 @@ import Card from '../components/ui/Card';
 import Select from '../components/ui/Select';
 
 const GAP = 16; // spec: 16px grid gap / card padding throughout this page
+const ALERTS_STEP = 200; // alert rows rendered at a time (see alertLimit) — above any normal roster, so ordinary companies see no change
 
 const W = (v) => westernDigits(String(v ?? 0));
 const DAY_AR = { Mon:'إثنين', Tue:'ثلاثاء', Wed:'أربعاء', Thu:'خميس', Fri:'جمعة', Sat:'سبت', Sun:'أحد' };
@@ -100,11 +102,19 @@ export default function DashboardPage() {
   // Department filter
   const [deptFilter, setDeptFilter] = useState('');
 
+  // The alerts table is a plain <table> (not virtualized): on a day nobody has
+  // punched yet EVERY employee is an alert, so a large company rendered one <tr>
+  // per employee (~2,100 rows / ~19k DOM nodes for 2,100 employees — a half-second
+  // main-thread stall on every dashboard load, worst on phones). The list is
+  // already sorted by severity, so it renders in steps and the rest is one click
+  // away; nothing is dropped ("show more" reveals the remainder).
+  const [alertLimit, setAlertLimit] = useState(ALERTS_STEP);
+
   // Print state
   const [printOpen, setPrintOpen]   = useState(false);
   const [printType, setPrintType]   = useState('attendance_daily');
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = todayStr();
   const todayAr = new Date().toLocaleDateString('ar-EG', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
 
   const load = async () => {
@@ -194,6 +204,10 @@ export default function DashboardPage() {
       return sev(b) - sev(a) || (b.effectiveLatePenalty||0) - (a.effectiveLatePenalty||0);
     }), [filteredRoster]);
 
+  // A different department is a different list — start from the top again.
+  useEffect(() => { setAlertLimit(ALERTS_STEP); }, [deptFilter]);
+  const visibleAlerts = useMemo(() => alerts.slice(0, alertLimit), [alerts, alertLimit]);
+
   // Pass full dept-filtered roster; modal's filteredData handles type-specific sub-filtering.
   const printData = filteredRoster;
 
@@ -204,10 +218,16 @@ export default function DashboardPage() {
     timestamp: log.timestamp,
     isManual: log.source && log.source !== 'device',
   })), [deviceEvents]);
-  const deviceTotalLogs = useMemo(
-    () => devices.reduce((s, d) => s + (d.rawLogCount ?? d.totalLogsCount ?? 0), 0),
-    [devices]
-  );
+  // Records currently stored ON the devices themselves: each device's own
+  // reported log count (getInfo().logCounts, captured by every sync into
+  // lastPullTotal) — the same source /devices/stats exposes as deviceLogCount
+  // for the Devices page KPI. Deliberately NOT rawLogCount (the application's
+  // attendance_logs row count) or the legacy totalLogsCount counter. null until
+  // at least one device has synced.
+  const deviceTotalLogs = useMemo(() => {
+    const reported = devices.filter(d => d.lastPullTotal != null);
+    return reported.length ? reported.reduce((s, d) => s + d.lastPullTotal, 0) : null;
+  }, [devices]);
   const startOfToday = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, [today]);
   const deviceImportedToday = useMemo(() =>
     syncLogs
@@ -284,7 +304,7 @@ export default function DashboardPage() {
   const liveSyncing = fpSync.state.phase === 'running';
 
   return (
-    <div style={{ position:'relative', display:'flex', flexDirection:'column', flex:1, minHeight:0, overflow:'hidden' }}>
+    <div className="ps-scroll-mobile" style={{ position:'relative', display:'flex', flexDirection:'column', flex:1, minHeight:0, overflow:'hidden' }}>
       {/* Brand watermark — identity without distraction: a single large,
           near-invisible (3%) mark fixed to a corner, never over interactive
           content (zIndex below the scrolling content layer, pointer-events
@@ -399,15 +419,19 @@ export default function DashboardPage() {
         </span>
       </Card>
 
-      {/* ── Row 1: six equal KPI cards ──────────────────────────────────────── */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(6, minmax(0,1fr))', gap:GAP }}>
+      {/* ── Row 1: six equal KPI cards on desktop, 2 on mobile / 3 on tablet ── */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6" style={{ gap:GAP }}>
         {metrics.map(m => <KpiCard key={m.label} {...m} isLight={isLight} />)}
       </div>
 
       {/* ── Main grid: Left (~33%, compact/top-aligned) | Center+Right (stretched
           to fill the remaining viewport height so the alerts table grows
-          naturally instead of the left column dictating row height) ──────── */}
-      <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,2fr)', gridTemplateRows:'1fr', gap:GAP, flex:1, minHeight:0 }}>
+          naturally instead of the left column dictating row height).
+          Below 1024px (tablet/mobile) this stacks to a single column — the
+          page itself becomes scrollable there via .ps-scroll-mobile above,
+          so stacked panels get their natural height instead of being
+          squeezed into a fixed viewport slice. ──────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]" style={{ gridTemplateRows:'1fr', gap:GAP, flex:1, minHeight:0 }}>
 
         {/* Left column — compact, top-aligned; never taller than the center table */}
         <div style={{ display:'flex', flexDirection:'column', gap:GAP, alignSelf:'start', minWidth:0 }}>
@@ -467,8 +491,10 @@ export default function DashboardPage() {
           </Card>
         </div>
 
-        {/* Center + right-inside region — stretched to the full row height */}
-        <div style={{ display:'grid', gridTemplateColumns:'minmax(0,2.2fr) minmax(0,1fr)', gridTemplateRows:'1fr', gap:GAP, minHeight:0 }}>
+        {/* Center + right-inside region — stretched to the full row height on
+            desktop; stacks to one column below 1024px, same reasoning as the
+            outer grid above. */}
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)]" style={{ gridTemplateRows:'1fr', gap:GAP, minHeight:0 }}>
 
           {/* Center: Today's Employee Alerts — fills the remaining height naturally */}
           <Card padding="none" style={{ overflow:'hidden', borderRadius:12, display:'flex', flexDirection:'column', minHeight:0 }}
@@ -505,7 +531,7 @@ export default function DashboardPage() {
                     <tr><td colSpan={7} style={{ textAlign:'center', padding:'34px 0', color:'var(--text-3)' }}>
                       لا توجد تنبيهات — جميع الموظفين منتظمون اليوم
                     </td></tr>
-                  ) : alerts.map((r, i) => (
+                  ) : visibleAlerts.map((r, i) => (
                     <tr key={r.id || i} className={attendanceRowClass({ data: r })}>
                       <td className="num" style={{ color:'var(--text-3)' }}>{W(i+1)}</td>
                       <td style={{ fontWeight:700, color: r.isAbsent ? 'var(--row-absent-name)' : 'var(--c-name)' }}>{r.employeeName}</td>
@@ -516,6 +542,16 @@ export default function DashboardPage() {
                       <td><StatusPill value={r.isAbsent ? 'absent' : r.status} /></td>
                     </tr>
                   ))}
+                  {alerts.length > alertLimit && (
+                    <tr>
+                      <td colSpan={7} style={{ textAlign:'center', padding:'10px 0' }}>
+                        <button onClick={() => setAlertLimit(n => n + ALERTS_STEP)}
+                          style={{ fontSize:13, fontWeight:600, color:'var(--accent)', background:'none', border:'none', cursor:'pointer' }}>
+                          عرض المزيد — متبقي {W(alerts.length - alertLimit)}
+                        </button>
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>

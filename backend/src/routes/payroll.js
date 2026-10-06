@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const { sendError } = require('../utils/apiError');
 const moment = require('moment');
 const { getPrisma } = require('../utils/prisma');
 const { authenticate, authorize } = require('../middleware/auth');
@@ -7,6 +8,7 @@ const { mergeEffectivePenalty } = require('../engines/attendanceEngine');
 const { getRules, getRulesBatch } = require('../engines/rulesEngine');
 const { writeAudit } = require('../utils/manualEditAudit');
 const { monthRange } = require('../utils/monthRange');
+const { parseMoney } = require('../utils/numeric');
 const { MONTHS_AR } = require('../utils/constants');
 const { pLimit } = require('../utils/pLimit');
 
@@ -225,7 +227,7 @@ router.get('/', async (req, res) => {
     });
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -251,7 +253,7 @@ router.get('/:employeeId', async (req, res, next) => {
     if (!payroll) return res.status(404).json({ error: 'Payroll not found' });
     res.json(payroll);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -279,7 +281,7 @@ router.post('/calculate', async (req, res) => {
       res.json({ count: results.length, results, protectedPayroll: protectedTargets });
     }
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -300,16 +302,18 @@ router.put('/:id', async (req, res) => {
     // EF-007.4: `parseFloat(x) || 0` let a negative value (truthy) through —
     // a negative bonus silently reduces totalEarnings with no deduction
     // audit trail; same class of bug the basicSalary check below already guards.
-    if (bonus !== undefined && (!Number.isFinite(parseFloat(bonus)) || parseFloat(bonus) < 0)) {
+    // Strict parse (utils/numeric.js): parseFloat("12abc") === 12 and
+    // parseFloat("0x10") === 0 would store a different amount than was typed.
+    if (bonus !== undefined && parseMoney(bonus) === null) {
       return res.status(400).json({ error: 'قيمة المكافأة يجب أن تكون رقمًا موجبًا' });
     }
-    if (manualDeductionAdjustment !== undefined && (!Number.isFinite(parseFloat(manualDeductionAdjustment)) || parseFloat(manualDeductionAdjustment) < 0)) {
+    if (manualDeductionAdjustment !== undefined && parseMoney(manualDeductionAdjustment) === null) {
       return res.status(400).json({ error: 'قيمة الخصم الإضافي يجب أن تكون رقمًا موجبًا' });
     }
 
     const data = {};
-    if (bonus !== undefined) data.bonus = parseFloat(bonus) || 0;
-    if (manualDeductionAdjustment !== undefined) data.manualDeductionAdjustment = parseFloat(manualDeductionAdjustment) || 0;
+    if (bonus !== undefined) data.bonus = parseMoney(bonus);
+    if (manualDeductionAdjustment !== undefined) data.manualDeductionAdjustment = parseMoney(manualDeductionAdjustment);
     if (notes !== undefined) data.notes = notes;
     if (status !== undefined) data.status = status;
 
@@ -318,8 +322,8 @@ router.put('/:id', async (req, res) => {
     // edit on the employee, not the payroll row (otherwise it would revert).
     let newSalary = null;
     if (basicSalary !== undefined) {
-      newSalary = parseFloat(basicSalary);
-      if (isNaN(newSalary) || newSalary < 0) {
+      newSalary = parseMoney(basicSalary);
+      if (newSalary === null) {
         return res.status(400).json({ error: 'قيمة الراتب الأساسي غير صالحة' });
       }
     }
@@ -393,7 +397,7 @@ router.put('/:id', async (req, res) => {
 
     res.json(updated);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -406,8 +410,8 @@ router.put('/:id', async (req, res) => {
 router.put('/:id/advances', async (req, res) => {
   try {
     const { amount, reason, modifiedBy, modifiedByName, modifiedByRole } = req.body;
-    const newTotal = parseFloat(amount);
-    if (isNaN(newTotal) || newTotal < 0) return res.status(400).json({ error: 'قيمة السلف غير صالحة' });
+    const newTotal = parseMoney(amount);
+    if (newTotal === null) return res.status(400).json({ error: 'قيمة السلف غير صالحة' });
 
     const payroll = await prisma.payroll.findUnique({ where: { id: parseInt(req.params.id) } });
     if (!payroll) return res.status(404).json({ error: 'Payroll not found' });
@@ -473,7 +477,7 @@ router.put('/:id/advances', async (req, res) => {
     res.json(updated);
   } catch (err) {
     if (err.statusCode) return res.status(err.statusCode).json({ error: err.message });
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -487,7 +491,7 @@ router.get('/:id/audit', async (req, res, next) => {
     });
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -697,7 +701,7 @@ router.get('/final-sheet', async (req, res) => {
       notes:      pr.notes || '',
       status:     pr.status || 'draft',
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Final Salary Sheet — bulk (all employees for month) ────────────────────
@@ -737,7 +741,7 @@ router.get('/final-sheet/bulk', async (req, res) => {
       .map(e => e.id);
 
     res.json({ ids, month: m, year: y, count: ids.length });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

@@ -1,4 +1,4 @@
-import { app, ipcMain, dialog, shell, contentTracing, BrowserWindow, safeStorage } from 'electron';
+import { app, dialog, shell, contentTracing, BrowserWindow, safeStorage } from 'electron';
 import { existsSync, writeFileSync, unlinkSync, mkdirSync, readFileSync } from 'fs';
 import os from 'os';
 import { join } from 'path';
@@ -11,20 +11,21 @@ import { isStandalone } from './edition.js';
 import { createBackup, listBackups, restoreBackup } from './standaloneBackup.js';
 import { getConnectionEnv } from './mysqlManager.js';
 import { getPaths } from './paths.js';
+import { secureHandle, secureOn, asHtml, asBool, asCopies, asString, asConnectionPatch, isHttpUrl, installSecurityGuards } from './security.js';
 
 // ─── IPC handlers ─────────────────────────────────────────────────────────────
-ipcMain.on('app:minimize', () => state.mainWindow?.minimize());
-ipcMain.on('app:maximize', () =>
+secureOn('app:minimize', () => state.mainWindow?.minimize());
+secureOn('app:maximize', () =>
   state.mainWindow?.isMaximized() ? state.mainWindow.unmaximize() : state.mainWindow.maximize()
 );
-ipcMain.on('app:close', () => state.mainWindow?.hide());
-ipcMain.on('app:quit',  () => { app.isQuitting = true; app.quit(); });
-ipcMain.handle('app:version', () => app.getVersion());
-ipcMain.handle('app:is-dev',  () => IS_DEV);
-ipcMain.handle('app:build-marker', () => BUILD_MARKER);
+secureOn('app:close', () => state.mainWindow?.hide());
+secureOn('app:quit',  () => { app.isQuitting = true; app.quit(); });
+secureHandle('app:version', () => app.getVersion());
+secureHandle('app:is-dev',  () => IS_DEV);
+secureHandle('app:build-marker', () => BUILD_MARKER);
 // Restarts the whole app so a saved Connection Settings change (Local ⇄
 // Server) takes effect — mode is only resolved once, at startup (lifecycle.js).
-ipcMain.on('app:relaunch', () => { app.relaunch(); app.exit(0); });
+secureOn('app:relaunch', () => { app.relaunch(); app.exit(0); });
 
 // ─── Connection Layer (EP-003 Hybrid Client/Server) ──────────────────────────
 // The renderer never talks to these settings directly — it only ever calls
@@ -32,9 +33,9 @@ ipcMain.on('app:relaunch', () => { app.relaunch(); app.exit(0); });
 // load from the sync getter below). These handlers exist solely for the
 // Connection Settings page to read/write the persisted mode + test reachability
 // of either the current settings or a candidate (not-yet-saved) one.
-ipcMain.handle('connection:get-settings', () => readConnectionSettings());
+secureHandle('connection:get-settings', () => readConnectionSettings());
 
-ipcMain.handle('connection:set-settings', (_e, patch) => writeConnectionSettings(patch));
+secureHandle('connection:set-settings', (_e, patch) => writeConnectionSettings(asConnectionPatch(patch)));
 
 // Synchronous by design: preload.cjs reads this once, before the page loads,
 // to expose a single static `backendBaseUrl` string — mirrors the existing
@@ -47,12 +48,12 @@ ipcMain.handle('connection:set-settings', (_e, patch) => writeConnectionSettings
 // (a fast backend can be ready in a few hundred ms). This lets the renderer
 // ask "what's the CURRENT state" on mount, so it never misses a signal that
 // already happened. Pure state readback, no side effects.
-ipcMain.handle('system:get-ready-state', () => ({
+secureHandle('system:get-ready-state', () => ({
   ready: state.backendReady,
   mode:  state.connectionMode,
 }));
 
-ipcMain.on('connection:get-effective-base-url-sync', (e) => {
+secureOn('connection:get-effective-base-url-sync', (e) => {
   e.returnValue = state.backendBaseUrl || getEffectiveBackendBaseUrl();
 });
 
@@ -60,17 +61,17 @@ ipcMain.on('connection:get-effective-base-url-sync', (e) => {
 // No-ops (returning a clear "not applicable" shape) on server/manager builds —
 // these channels only ever do real work when isStandalone, so a Server or
 // Manager renderer accidentally calling them can't trigger anything.
-ipcMain.handle('mysql:status', () => ({
+secureHandle('mysql:status', () => ({
   applicable: isStandalone,
   ready: isStandalone ? !!state.mysqlReady : null,
 }));
 
-ipcMain.handle('backup:list', () => {
+secureHandle('backup:list', () => {
   if (!isStandalone) return [];
   try { return listBackups(); } catch (err) { console.error('[Backup] list failed:', err.message); return []; }
 });
 
-ipcMain.handle('backup:create', async () => {
+secureHandle('backup:create', async () => {
   if (!isStandalone) return { ok: false, error: 'Not applicable to this edition' };
   if (!state.mysqlCreds) return { ok: false, error: 'Managed database is not ready yet' };
   try {
@@ -85,7 +86,12 @@ ipcMain.handle('backup:create', async () => {
 // itself takes a pre-restore safety backup first, see standaloneBackup.js) →
 // restart the backend against the same managed instance → wait for it to
 // report healthy again. Never overwrites a healthy database blindly.
-ipcMain.handle('backup:restore', async (_e, { path: backupPath } = {}) => {
+secureHandle('backup:restore', async (_e, arg) => {
+  // Only a file the app itself lists as a backup may be restored — never an
+  // arbitrary renderer-supplied path.
+  const backupPath = (arg && typeof arg.path === 'string' && isStandalone)
+    ? (listBackups().find(b => b.path === arg.path)?.path || null) : null;
+  if (arg?.path && isStandalone && !backupPath) return { ok: false, error: 'Unknown backup file' };
   if (!isStandalone) return { ok: false, error: 'Not applicable to this edition' };
   if (!state.mysqlCreds) return { ok: false, error: 'Managed database is not ready yet' };
   if (!backupPath) return { ok: false, error: 'No backup file specified' };
@@ -138,7 +144,8 @@ function sessionFile() {
   return join(dir, 'session.enc');
 }
 
-ipcMain.handle('session:save', (_e, token) => {
+secureHandle('session:save', (_e, token) => {
+  if (typeof token !== 'string' || token.length > 8192) return { ok: false };
   if (!token || !safeStorage.isEncryptionAvailable()) return { ok: false };
   try {
     writeFileSync(sessionFile(), safeStorage.encryptString(token));
@@ -149,7 +156,7 @@ ipcMain.handle('session:save', (_e, token) => {
   }
 });
 
-ipcMain.handle('session:load', () => {
+secureHandle('session:load', () => {
   try {
     const p = sessionFile();
     if (!existsSync(p) || !safeStorage.isEncryptionAvailable()) return { token: null };
@@ -161,7 +168,7 @@ ipcMain.handle('session:load', () => {
   }
 });
 
-ipcMain.handle('session:clear', () => {
+secureHandle('session:clear', () => {
   try {
     const p = sessionFile();
     if (existsSync(p)) unlinkSync(p);
@@ -235,7 +242,15 @@ function testSocketReachable(baseUrl, timeoutMs = 8000) {
 // Tests a candidate {mode, serverUrl} pair WITHOUT saving it — lets the
 // Connection Settings page show live Backend/DB/Socket.IO/Version results
 // before the user commits to Save + Restart.
-ipcMain.handle('connection:test', async (_e, { mode, serverUrl } = {}) => {
+secureHandle('connection:test', async (_e, arg) => {
+  const { mode, serverUrl } = (arg && typeof arg === 'object') ? arg : {};
+  if ((mode !== undefined && mode !== 'local' && mode !== 'server') || (serverUrl && !isHttpUrl(serverUrl))) {
+    return {
+      baseUrl: null, reachable: false, dbConnected: false, socketStatus: 'unreachable',
+      remoteVersion: null, remoteApiVersion: null, requiredApiVersion: REQUIRED_API_VERSION,
+      versionCompatible: null, error: 'Invalid server URL (http:// or https:// required)',
+    };
+  }
   const baseUrl = getEffectiveBackendBaseUrl({ mode: mode || 'local', serverUrl: serverUrl || '' });
   const health = await fetchHealth(baseUrl, 4000);
   const socket = health.ok ? await testSocketReachable(baseUrl) : { status: 'unreachable', detail: null };
@@ -257,10 +272,14 @@ ipcMain.handle('connection:test', async (_e, { mode, serverUrl } = {}) => {
 
 // ─── PDF export via Chromium print engine ─────────────────────────────────────
 // Renders real HTML/CSS + embedded Arabic fonts → perfect RTL shaping, no mojibake.
-ipcMain.handle('pdf:export', async (_e, { html, filename = 'PETSHROW_report', landscape = true } = {}) => {
+secureHandle('pdf:export', async (_e, arg) => {
   let pdfWin  = null;
   let tmpFile = null;
   try {
+    const { html: rawHtml, filename: rawName = 'PETSHROW_report', landscape: rawLand } = (arg && typeof arg === 'object') ? arg : {};
+    const html = asHtml(rawHtml);
+    const filename = asString(String(rawName), 200, 'filename');
+    const landscape = asBool(rawLand, true);
     const safe = String(filename).replace(/[\\/:*?"<>|]/g, '_').slice(0, 120) || 'report';
     const defaultPath = join(app.getPath('documents'), `${safe}.pdf`);
     const { canceled, filePath } = await dialog.showSaveDialog(state.mainWindow, {
@@ -276,7 +295,7 @@ ipcMain.handle('pdf:export', async (_e, { html, filename = 'PETSHROW_report', la
 
     pdfWin = new BrowserWindow({
       show: false,
-      webPreferences: { sandbox: false, javascript: true, offscreen: false },
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, javascript: true, offscreen: false },
     });
     await pdfWin.loadFile(tmpFile);
     // Wait for the embedded fonts to be ready before printing
@@ -310,16 +329,20 @@ ipcMain.handle('pdf:export', async (_e, { html, filename = 'PETSHROW_report', la
 // printDocument() in printUtils.js calls window.electron.printHTML() which routes here.
 // Renders the report HTML in a hidden BrowserWindow then calls webContents.print() so
 // the OS native print dialog appears — no window.open() popup needed.
-ipcMain.handle('print:html', async (_e, { html, landscape = true, copies } = {}) => {
+secureHandle('print:html', async (_e, arg) => {
   let pdfWin  = null;
   let tmpFile = null;
   try {
+    const { html: rawHtml, landscape: rawLand, copies: rawCopies } = (arg && typeof arg === 'object') ? arg : {};
+    const html = asHtml(rawHtml);
+    const landscape = asBool(rawLand, true);
+    const copies = asCopies(rawCopies);
     tmpFile = join(os.tmpdir(), `petshrow_print_${Date.now()}.html`);
     writeFileSync(tmpFile, html, 'utf8');
     pdfWin = new BrowserWindow({
       show: false,
       parent: state.mainWindow,
-      webPreferences: { sandbox: false, javascript: true },
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, javascript: true },
     });
     await pdfWin.loadFile(tmpFile);
     try {
@@ -395,7 +418,8 @@ const TRACE_CATEGORIES = [
 ];
 let traceActive = false;
 
-ipcMain.handle('tracing:start', async () => {
+secureHandle('tracing:start', async () => {
+  if (!IS_DEV) return { ok: false, error: 'tracing is disabled in production builds' };
   if (traceActive) return { ok: false, error: 'trace already recording' };
   await contentTracing.startRecording({ included_categories: TRACE_CATEGORIES });
   traceActive = true;
@@ -403,7 +427,8 @@ ipcMain.handle('tracing:start', async () => {
   return { ok: true, categories: TRACE_CATEGORIES };
 });
 
-ipcMain.handle('tracing:stop', async () => {
+secureHandle('tracing:stop', async () => {
+  if (!IS_DEV) return { ok: false, error: 'tracing is disabled in production builds' };
   if (!traceActive) return { ok: false, error: 'no trace in progress' };
   const traceDir = join(app.getPath('userData'), 'tracing');
   if (!existsSync(traceDir)) mkdirSync(traceDir, { recursive: true });
@@ -422,7 +447,7 @@ ipcMain.handle('tracing:stop', async () => {
 // detects a trigger condition. Neither handler alters app behavior, state, or
 // timing — 'system:info' is read-only, 'flightRecorder:save' only writes the
 // evidence file the renderer already built.
-ipcMain.handle('system:info', async () => {
+secureHandle('system:info', async () => {
   try {
     let gpuInfo = null;
     try { gpuInfo = await app.getGPUInfo('basic'); } catch {}
@@ -451,13 +476,16 @@ ipcMain.handle('system:info', async () => {
   }
 });
 
-ipcMain.handle('flightRecorder:save', async (_e, payload) => {
+secureHandle('flightRecorder:save', async (_e, payload) => {
+  if (payload === null || typeof payload !== 'object') return { ok: false, error: 'invalid payload' };
   console.log('[FlightRecorder] flightRecorder:save IPC received, event count:', payload?.events?.length ?? 'n/a');
   try {
     const dir = join(app.getPath('userData'), 'flight-recordings');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const outPath = join(dir, `flight-${Date.now()}.json`);
-    writeFileSync(outPath, JSON.stringify(payload, null, 2), 'utf8');
+    const json = JSON.stringify(payload, null, 2);
+    if (json.length > 50 * 1024 * 1024) return { ok: false, error: 'payload too large' };
+    writeFileSync(outPath, json, 'utf8');
     console.log('[FlightRecorder] evidence written to:', outPath);
     return { ok: true, path: outPath };
   } catch (err) {
@@ -469,7 +497,12 @@ ipcMain.handle('flightRecorder:save', async (_e, payload) => {
 // Temporary verification channel (see preload.cjs debugLog) — tees renderer
 // console lines into main.log purely so Flight Recorder behavior can be
 // inspected from the log file. Read-only, no state mutation.
-ipcMain.on('renderer:log', (_e, { level, args } = {}) => {
-  const fn = console[level] && typeof console[level] === 'function' ? level : 'log';
-  try { console[fn]('[Renderer]', ...(args || [])); } catch {}
+secureOn('renderer:log', (_e, arg) => {
+  const { level, args } = (arg && typeof arg === 'object') ? arg : {};
+  const fn = ['log', 'info', 'warn', 'error', 'debug'].includes(level) ? level : 'log';
+  const safe = (Array.isArray(args) ? args : []).slice(0, 20).map(a => String(a).slice(0, 2000));
+  try { console[fn]('[Renderer]', ...safe); } catch {}
 });
+
+// Navigation / webview / permission guards for every window (P3-09).
+installSecurityGuards();

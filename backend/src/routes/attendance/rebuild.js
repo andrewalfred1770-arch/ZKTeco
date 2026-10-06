@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const { sendError } = require('../../utils/apiError');
 const moment = require('moment');
 const { authorize } = require('../../middleware/auth');
 const historicalRebuildService = require('../../services/historicalRebuildService');
@@ -14,7 +15,7 @@ router.get('/rebuild-status', authorize('admin', 'hr'), async (req, res) => {
   try {
     const status = await historicalRebuildService.getStatus();
     res.json(status);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // Read-only: which date ranges have AttendanceLog rows not yet reflected in
@@ -23,7 +24,7 @@ router.get('/rebuild-discover', authorize('admin', 'hr'), async (req, res) => {
   try {
     const ranges = await historicalRebuildService.discoverRanges();
     res.json({ ranges });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // Start a rebuild. If from/to are omitted, uses the union of discoverRanges().
@@ -53,7 +54,7 @@ router.post('/rebuild', authorize('admin'), async (req, res) => {
     });
 
     res.json(result);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

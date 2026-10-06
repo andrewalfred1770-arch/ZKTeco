@@ -6,7 +6,7 @@ import {
   UserSquare2, Download, Play,
   CheckCircle, XCircle, Clock, TrendingUp, AlertTriangle,
   Loader2, ChevronLeft, ChevronRight, Printer, Pencil,
-  Zap, ZapOff,
+  Zap, ZapOff, Filter, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../lib/api';
@@ -16,6 +16,7 @@ import {
   fmtTime, fmtWorkedHours, timeToMinutes, STATUS_LABELS, manualOverrideTooltip,
 } from '../lib/formatters';
 import { useTheme } from '../contexts/ThemeContext';
+import { useIsNarrowViewport } from '../hooks/useIsNarrowViewport';
 import PrintPreviewModal from '../components/PrintPreviewModal';
 import ManualPenaltyModal from '../components/ManualPenaltyModal';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
@@ -237,6 +238,11 @@ export default function EmployeeMovementPage() {
   const pendingReloadRef = useRef(false);
   const moneyRefreshTokenRef = useRef(0); // EF-004.1: discard out-of-order money-summary responses
 
+  // Mobile-only: the employee/branch/department/status selects default
+  // collapsed (matching AttendanceFilterBar's pattern) — the month
+  // navigator stays visible always since it's the primary control here,
+  // used on every visit, not an optional filter.
+  const [showFilters, setShowFilters] = useState(false);
   const [employees,   setEmployees]   = useState([]);
   const [branches,    setBranches]    = useState([]);
   const [departments, setDepartments] = useState([]);
@@ -302,8 +308,19 @@ export default function EmployeeMovementPage() {
   }, [empId, branchId, departmentId, statusFilter, month]);
 
   useEffect(() => {
-    Promise.all([api.get('/employees'), api.get('/branches'), api.get('/departments')])
-      .then(([e, b, d]) => { setEmployees(e.data); setBranches(b.data); setDepartments(d.data); })
+    // The employee picker lists CURRENT employees only: stopped (status=false)
+    // employees are excluded at the query (the endpoint's own status filter), the
+    // same active-only rule the all-employees report below already applies in
+    // GET /attendance/movement. Nothing is deleted or changed — a stopped
+    // employee's history is untouched, it just isn't offered here.
+    Promise.all([api.get('/employees', { params: { status: true } }), api.get('/branches'), api.get('/departments')])
+      .then(([e, b, d]) => {
+        setEmployees(e.data); setBranches(b.data); setDepartments(d.data);
+        // A remembered selection (localStorage) may point at an employee who has
+        // since been stopped — fall back to "all employees" instead of silently
+        // keeping a report for someone no longer in the list.
+        setEmpId(cur => (cur && !e.data.some(x => String(x.id) === String(cur))) ? '' : cur);
+      })
       .catch(() => {});
   }, []);
 
@@ -421,10 +438,17 @@ export default function EmployeeMovementPage() {
     return cls.join(' ');
   };
 
+  // Pinned-right identity columns + the pinned-left status column never
+  // shrink and always keep their configured width — below ~480px their
+  // combined width exceeds the viewport and the two pinned groups visually
+  // overlap. Unpinning status below that width lets it flow into the normal
+  // scrollable region instead (same fix as Payroll/Devices grids).
+  const isNarrow = useIsNarrowViewport(480);
+
   // ── Column definitions ─────────────────────────────────────────────────────
   const cols = useMemo(() => [
     {
-      headerName:'', field:'_actions', width:50, pinned:'right',
+      headerName:'', field:'_actions', width:50, pinned: isNarrow ? undefined : 'right',
       sortable:false, filter:false, resizable:false, headerClass:'ag-header-center',
       cellStyle:{ display:'flex', alignItems:'center', justifyContent:'center' },
       cellRenderer: ({ data, node }) => node.rowPinned ? null : (
@@ -447,7 +471,7 @@ export default function EmployeeMovementPage() {
       ),
     },
     {
-      field:'employeeCode', headerName:'الكود', width:80, pinned:'right',
+      field:'employeeCode', headerName:'الكود', width:80, pinned: isNarrow ? undefined : 'right',
       cellStyle: codeCell(),
     },
     {
@@ -469,7 +493,7 @@ export default function EmployeeMovementPage() {
       },
     },
     {
-      field:'date', headerName:'التاريخ', width:105, pinned:'right',
+      field:'date', headerName:'التاريخ', width:105, pinned: isNarrow ? undefined : 'right',
       cellRenderer: ({ data, node, value }) => node.rowPinned
         ? <span style={{ fontWeight:'800' }}>{data?.date}</span>
         : value,
@@ -635,7 +659,7 @@ export default function EmployeeMovementPage() {
       }),
     },
     {
-      headerName:'الحالة', width:125, pinned:'left',
+      headerName:'الحالة', width:125, pinned: isNarrow ? undefined : 'left',
       editable: p => !p.node?.rowPinned,
       cellEditor:'agSelectCellEditor',
       cellEditorParams:{ values:['present','late','absent','early_leave','weekend','holiday'] },
@@ -645,7 +669,7 @@ export default function EmployeeMovementPage() {
       cellRenderer: ({ data, node }) => node.rowPinned ? null : <StatusCell data={data} />,
       cellStyle:{ justifyContent:'center' },
     },
-  ], [isLight]); // eslint-disable-line react-hooks/exhaustive-deps
+  ], [isLight, isNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
 
@@ -1057,7 +1081,10 @@ export default function EmployeeMovementPage() {
 
       {/* Base filters (employee / branch / dept / month) */}
       <div className="card p-3 flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
+        {/* Employee/branch/department/status selects — always visible on
+            desktop, collapsed behind a toggle on mobile by default so this
+            card doesn't push the table below the fold on its own. */}
+        <div className="hidden md:flex items-center gap-2">
           <label className="label mb-0 whitespace-nowrap">الموظف</label>
           <select className="input w-52 text-xs py-1.5" value={empId} onChange={e => setEmpId(e.target.value)}>
             <option value="">كل الموظفين</option>
@@ -1067,27 +1094,42 @@ export default function EmployeeMovementPage() {
               .map(e => <option key={e.id} value={e.id}>{e.name} ({e.code})</option>)}
           </select>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="hidden md:flex items-center gap-2">
           <label className="label mb-0 whitespace-nowrap">الفرع</label>
           <select className="input w-36 text-xs py-1.5" value={branchId} onChange={e => setBranchId(e.target.value)}>
             <option value="">الكل</option>
             {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
           </select>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="hidden md:flex items-center gap-2">
           <label className="label mb-0 whitespace-nowrap">القسم</label>
           <select className="input w-36 text-xs py-1.5" value={departmentId} onChange={e => setDepartmentId(e.target.value)}>
             <option value="">الكل</option>
             {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="hidden md:flex items-center gap-2">
           <label className="label mb-0 whitespace-nowrap">الحالة</label>
           <select className="input w-32 text-xs py-1.5" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
             {STATUS_FILTER_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </div>
-        <div className="flex items-center gap-1 mr-auto">
+
+        {/* Mobile-only compact toggle for the four selects above */}
+        <button onClick={() => setShowFilters(v => !v)} className="flex md:hidden touch-target"
+          style={{
+            alignItems: 'center', gap: 4, padding: '0 12px', height: 34,
+            borderRadius: 6, fontSize: 12.5, fontWeight: 600, cursor: 'pointer', border: '1px solid',
+            background:  showFilters ? 'var(--accent-soft)' : 'var(--surface-2)',
+            borderColor: showFilters ? 'var(--accent)'      : 'var(--border)',
+            color:       showFilters ? 'var(--accent)'      : 'var(--text-2)',
+          }}>
+          <Filter style={{ width: 13, height: 13 }} />
+          الفلاتر
+          {showFilters ? <ChevronUp style={{ width: 13, height: 13 }} /> : <ChevronDown style={{ width: 13, height: 13 }} />}
+        </button>
+
+        <div className="flex items-center gap-1 md:mr-auto">
           <button onClick={() => shiftMonth(-1)} className="btn-ghost p-1.5 rounded-lg">
             <ChevronRight className="w-4 h-4" />
           </button>
@@ -1096,16 +1138,59 @@ export default function EmployeeMovementPage() {
           <button onClick={() => shiftMonth(1)} className="btn-ghost p-1.5 rounded-lg">
             <ChevronLeft className="w-4 h-4" />
           </button>
-          <span className="text-xs px-2 font-semibold" style={{ color:'var(--erp-text-muted)' }}>
+          <span className="hidden sm:inline text-xs px-2 font-semibold" style={{ color:'var(--erp-text-muted)' }}>
             {monthLabel}
           </span>
         </div>
+
+        {/* Mobile-only: the four selects, revealed by the toggle above */}
+        {showFilters && (
+          <div className="flex md:hidden flex-wrap items-center gap-3" style={{ width: '100%' }}>
+            <div className="flex items-center gap-2" style={{ width: '100%' }}>
+              <label className="label mb-0 whitespace-nowrap">الموظف</label>
+              <select className="input text-xs py-1.5" style={{ flex: 1, minWidth: 0 }} value={empId} onChange={e => setEmpId(e.target.value)}>
+                <option value="">كل الموظفين</option>
+                {employees
+                  .filter(e => !branchId     || e.branchId     === parseInt(branchId))
+                  .filter(e => !departmentId || e.departmentId === parseInt(departmentId))
+                  .map(e => <option key={e.id} value={e.id}>{e.name} ({e.code})</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-2" style={{ flex: '1 1 45%', minWidth: 0 }}>
+              <label className="label mb-0 whitespace-nowrap">الفرع</label>
+              <select className="input text-xs py-1.5" style={{ flex: 1, minWidth: 0 }} value={branchId} onChange={e => setBranchId(e.target.value)}>
+                <option value="">الكل</option>
+                {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-2" style={{ flex: '1 1 45%', minWidth: 0 }}>
+              <label className="label mb-0 whitespace-nowrap">القسم</label>
+              <select className="input text-xs py-1.5" style={{ flex: 1, minWidth: 0 }} value={departmentId} onChange={e => setDepartmentId(e.target.value)}>
+                <option value="">الكل</option>
+                {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-2" style={{ width: '100%' }}>
+              <label className="label mb-0 whitespace-nowrap">الحالة</label>
+              <select className="input text-xs py-1.5" style={{ flex: 1, minWidth: 0 }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+                {STATUS_FILTER_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* KPI Cards */}
+      {/* KPI Cards — a compact horizontal-scroll strip on mobile (same
+          reasoning as the Payroll totals strip: 4 stacked-to-2-cols cards
+          cost real vertical space the table needs more); unchanged 4-column
+          grid on desktop (md+). */}
       {s && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-          {kpis.map(kpi => <KpiCard key={kpi.label} {...kpi} />)}
+        <div className="flex flex-nowrap gap-2 overflow-x-auto md:grid md:grid-cols-4 md:overflow-visible">
+          {kpis.map(kpi => (
+            <div key={kpi.label} className="md:contents" style={{ flex: '0 0 150px' }}>
+              <KpiCard {...kpi} />
+            </div>
+          ))}
         </div>
       )}
 

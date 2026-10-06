@@ -151,13 +151,15 @@ export default function DataCleanupPage() {
         </div>
       </div>
 
-      {/* Step indicator */}
-      <div className="card p-4 flex items-center gap-2">
+      {/* Step indicator — labels hide below sm (numbered circles + current-step
+          color/weight still convey progress) so the row can never be forced
+          wider than the viewport by 5x nowrap Arabic labels. */}
+      <div className="card p-4 flex items-center gap-2 overflow-x-auto">
         {STEPS.map((s, i) => (
           <React.Fragment key={s.id}>
-            <div className={`flex-1 flex items-center justify-center gap-2.5 px-4 py-3 rounded-lg text-sm transition-colors ${step === s.id ? 'bg-blue-600/20 text-blue-300 font-bold' : step > s.id ? 'text-emerald-400' : 'text-gray-500'}`}>
-              {step > s.id ? <CheckCircle2 className="w-5 h-5" /> : <span className="w-6 h-6 rounded-full border border-current text-sm flex items-center justify-center shrink-0">{s.id}</span>}
-              <span className="whitespace-nowrap">{s.label}</span>
+            <div className={`sm:flex-1 flex items-center justify-center gap-2.5 px-3 sm:px-4 py-3 rounded-lg text-sm transition-colors ${step === s.id ? 'bg-blue-600/20 text-blue-300 font-bold' : step > s.id ? 'text-emerald-400' : 'text-gray-500'}`}>
+              {step > s.id ? <CheckCircle2 className="w-5 h-5 shrink-0" /> : <span className="w-6 h-6 rounded-full border border-current text-sm flex items-center justify-center shrink-0">{s.id}</span>}
+              <span className="whitespace-nowrap hidden sm:inline">{s.label}</span>
             </div>
             {i < STEPS.length - 1 && <ChevronLeft className="w-5 h-5 text-gray-700 shrink-0" />}
           </React.Fragment>

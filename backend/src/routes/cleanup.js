@@ -11,7 +11,9 @@
  * audit/recalc/live-push patterns (see routes/rules.js) so the rest of the
  * app refreshes itself with no new wiring.
  */
-const router = require('express').Router();
+const router = require('express').Router();
+const { sendError } = require('../utils/apiError');
+const deviceLogCounts = require('../services/deviceLogCounts');
 const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
 const XLSX = require('xlsx');
@@ -225,7 +227,7 @@ router.post('/preview', async (req, res) => {
     }
     const impact = await analyzeImpact({ f: range.from, t: range.to, types });
     res.json(impact);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Execute (the real, destructive operation — admin-only) ─────────────────
@@ -326,6 +328,7 @@ router.post('/execute', authorize('admin'), async (req, res) => {
         }
       }
     }, { timeout: 5 * 60 * 1000, maxWait: 30 * 1000 });
+    deviceLogCounts.invalidate();   // raw logs were deleted: per-device counts are no longer exact
 
     // ── Scoped consistency check (req. #26) ─────────────────────────────────
     // MySQL/InnoDB enforces FK constraints, and our delete order guarantees no
@@ -425,7 +428,7 @@ router.post('/execute', authorize('admin'), async (req, res) => {
       }
     } catch { /* audit-trail best effort */ }
     emit(req.io, 'cleanup:done', { error: err.message });
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -445,7 +448,7 @@ router.get('/logs', async (req, res) => {
     const take = Math.min(parseInt(req.query.limit) || 20, 100);
     const logs = await prisma.cleanupLog.findMany({ orderBy: { createdAt: 'desc' }, take });
     res.json(logs);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

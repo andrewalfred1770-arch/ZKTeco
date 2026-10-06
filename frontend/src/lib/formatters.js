@@ -7,6 +7,8 @@
  *  3. CSS font-variant-numeric in index.css — browser-level prevention
  */
 
+import { instantDateStr } from './businessDate';
+
 // ─── Nuclear option: strip Arabic-Indic digits from any string ──────────────
 // Eastern Arabic-Indic:  ٠١٢٣٤٥٦٧٨٩  (U+0660–U+0669)
 // Extended Arabic-Indic: ۰۱۲۳۴۵۶۷۸۹  (U+06F0–U+06F9)
@@ -63,19 +65,29 @@ export function fmtTime(value) {
 }
 
 // ─── Date ─────────────────────────────────────────────────────────────────────
-/** Any date → "YYYY-MM-DD" */
+/**
+ * Date-only → "YYYY-MM-DD". Strings keep their date prefix (a business date is
+ * never re-interpreted through a timezone). A Date object is an instant, so its
+ * calendar day is the local one (matching what fmtTime shows for it).
+ */
 export function fmtDate(value) {
   if (!value) return '—';
   try {
-    if (value instanceof Date) return value.toISOString().split('T')[0];
-    const s = String(value);
-    return s.includes('T') ? s.split('T')[0] : s.split('T')[0];
+    if (value instanceof Date) return instantDateStr(value) || '—';
+    return String(value).split('T')[0];
   } catch { return '—'; }
 }
 
-/** Full datetime → "2026-06-03  08:00 AM" */
+/**
+ * Instant → "2026-06-03  08:00 AM", date AND time from the same local instant.
+ * Date-only / time-only strings (no 'T') keep the legacy behaviour.
+ */
 export function fmtDateTime(value) {
   if (!value) return '—';
+  if (value instanceof Date || (typeof value === 'string' && value.includes('T'))) {
+    const d = instantDateStr(value);
+    return d ? `${d}  ${fmtTime(value)}` : '—';
+  }
   return `${fmtDate(value)}  ${fmtTime(value)}`;
 }
 

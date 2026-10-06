@@ -1,10 +1,14 @@
 const router = require('express').Router();
+const { sendError, numericIdParam } = require('../utils/apiError');
+router.param('id', numericIdParam);
 const { getPrisma } = require('../utils/prisma');
 const bcrypt = require('bcryptjs');
 const { authenticate, authorize } = require('../middleware/auth');
 const { relinkAttendanceLogs } = require('../services/relinkService');
 const { deleteDeviceUser } = require('../services/zktecoService');
+const { actorFromReq } = require('../utils/deviceAudit');
 const logger = require('../utils/logger');
+const { parseMoney } = require('../utils/numeric');
 
 const prisma = getPrisma();
 const inc = { department: true, branch: true, shift: true };
@@ -16,10 +20,32 @@ const incList = { department: true, branch: true };
 // EF-007.4: `parseFloat(salary) || 0` let a negative value (truthy) through
 // unchanged — Employee.salary feeds dailyRate/hourlyRate for every payroll
 // run for that employee. null/undefined/omitted salary is still valid (0).
+//
+// Strictness: parseFloat() is a prefix parser — "12abc" became 12 and "0x10"
+// became 0 (silently zeroing the salary). Salary must be a finite number >= 0 or
+// a string holding exactly one decimal number (utils/numeric.js parseMoney).
+const SALARY_ERROR = 'الراتب يجب أن يكون رقمًا موجبًا';
 function validateSalary(salary) {
   if (salary === undefined || salary === null || salary === '') return null;
-  const n = parseFloat(salary);
-  if (!Number.isFinite(n) || n < 0) return 'الراتب يجب أن يكون رقمًا موجبًا';
+  return parseMoney(salary) === null ? SALARY_ERROR : null;
+}
+
+// Reference ids (branch/department/shift) and flag fields arrive from the client
+// as-is; parseInt('abc') is NaN and Boolean('zzz') is true, which used to be
+// written to the database silently (NaN → NULL department). Absent / null /
+// '' keep their existing meaning (omitted, or "none"); anything else must be a
+// positive integer / a real boolean. Checked BEFORE any write.
+function validateRefFields(body) {
+  for (const [key, label] of [['branchId', 'الفرع'], ['departmentId', 'القسم'], ['shiftId', 'الوردية']]) {
+    const v = body[key];
+    if (v === undefined || v === null || v === '') continue;
+    if (!/^\d{1,10}$/.test(String(v).trim())) return `معرّف ${label} غير صالح`;
+  }
+  for (const [key, label] of [['status', 'الحالة'], ['isMonitored', 'المراقبة']]) {
+    const v = body[key];
+    if (v === undefined || typeof v === 'boolean') continue;
+    return `قيمة ${label} غير صالحة`;
+  }
   return null;
 }
 
@@ -49,7 +75,7 @@ router.get('/', authorize('admin', 'hr'), async (req, res) => {
     });
     res.json(employees);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -62,6 +88,18 @@ async function assertEmployeeReadAllowed(req, res, employeeId) {
   return false;
 }
 
+// NOTE: static GET routes must be registered BEFORE router.get('/:id') — Express matches
+// in registration order, so a later '/import-template' was captured by '/:id'
+// (id = NaN) and answered 500.
+// GET /api/employees/import-template — returns CSV column headers for download
+router.get('/import-template', async (_req, res) => {
+  const header = 'name,zkUserId,code,phone,position,salary,branchId,departmentId,shiftId\n';
+  const example = 'أحمد محمد,1001,EMP001,0501234567,محاسب,5000,1,,\n';
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="employees_template.csv"');
+  res.send('﻿' + header + example); // BOM for Excel Arabic compatibility
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
@@ -73,7 +111,7 @@ router.get('/:id', async (req, res) => {
     if (!emp) return res.status(404).json({ error: 'Employee not found' });
     res.json(emp);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -90,9 +128,20 @@ const MAX_EMPLOYEE_NUMBER_LENGTH = 9;
 // (an explicit mismatch is rejected, not silently resolved); if only one is
 // given, the other is derived from it, so every existing caller/import path
 // that still sends just one field keeps working unchanged.
-function resolveUnifiedNumber(code, zkUserId) {
-  const c = (code !== undefined && code !== null && String(code).trim() !== '') ? String(code).trim() : null;
-  const z = (zkUserId !== undefined && zkUserId !== null && String(zkUserId).trim() !== '') ? String(zkUserId).trim() : null;
+// The number is what the device reports as the user id (ASCII), so it is stored in
+// that form: Arabic-Indic / Persian digits typed on an Arabic keyboard ("١٠٠٠")
+// are converted to ASCII ("1000") — stored verbatim they would never match a punch —
+// and embedded whitespace (never part of a device PIN) is rejected. `unchanged` is
+// the employee's current code/zkUserId on edit: a number already stored is not
+// re-judged for whitespace, so legacy rows stay editable.
+const NON_ASCII_DIGITS = /[\u0660-\u0669\u06F0-\u06F9]/g;
+const toAsciiDigit = (d) => String(d.charCodeAt(0) >= 0x06F0 ? d.charCodeAt(0) - 0x06F0 : d.charCodeAt(0) - 0x0660);
+const HAS_WHITESPACE = /[\s\u200B-\u200F\u202A-\u202E\uFEFF]/;
+function resolveUnifiedNumber(code, zkUserId, { unchanged = [] } = {}) {
+  const clean = (v) => (v !== undefined && v !== null && String(v).trim() !== '')
+    ? String(v).trim().replace(NON_ASCII_DIGITS, toAsciiDigit) : null;
+  const c = clean(code);
+  const z = clean(zkUserId);
   if (c && z && c !== z) {
     return { error: 'رقم الموظف يجب أن يطابق رقم المستخدم في جهاز البصمة.' };
   }
@@ -100,6 +149,9 @@ function resolveUnifiedNumber(code, zkUserId) {
   if (!value) return { error: 'رقم الموظف / كود البصمة مطلوب' };
   if (value.length > MAX_EMPLOYEE_NUMBER_LENGTH) {
     return { error: `رقم الموظف يجب ألا يتجاوز ${MAX_EMPLOYEE_NUMBER_LENGTH} خانات (حد جهاز البصمة)` };
+  }
+  if (HAS_WHITESPACE.test(value) && !unchanged.some((u) => u != null && String(u) === value)) {
+    return { error: 'رقم الموظف / كود البصمة يجب ألا يحتوي على مسافات' };
   }
   return { value };
 }
@@ -118,12 +170,28 @@ function resolveUnifiedNumber(code, zkUserId) {
 // inserting/activating the same number until this one commits or rolls
 // back, so two admins racing to reuse a freed number can never both
 // succeed (Phase 22.4 TEST 9 / Phase 23.1 TEST 4).
-async function assertActiveNumberAvailable(tx, value, excludeId = null) {
+async function assertActiveNumberAvailable(tx, value, excludeId = null, { numberIsNew = true, willBeActive = true } = {}) {
   if (!value) return;
   const rows = await tx.$queryRaw`SELECT id, name, status FROM employees WHERE code = ${value} OR zkUserId = ${value} FOR UPDATE`;
-  const conflict = rows.find(r => Number(r.status) === 1 && r.id !== excludeId);
-  if (conflict) {
-    const err = new Error(`رقم الموظف "${value}" مستخدم حاليًا لموظف نشط: "${conflict.name}"`);
+  const others = rows.filter(r => r.id !== excludeId);
+
+  // Another ACTIVE employee holding this number blocks when this row will be
+  // active, or when the number is being newly assigned.
+  const activeConflict = others.find(r => Number(r.status) === 1);
+  if (activeConflict && (willBeActive || numberIsNew)) {
+    const err = new Error(`كود البصمة "${value}" مستخدم بالفعل لموظف آخر: "${activeConflict.name}"`);
+    err.statusCode = 409;
+    throw err;
+  }
+
+  // Task 2: a number belonging to a STOPPED employee is no longer silently
+  // reusable — device history keyed on it must keep pointing at that
+  // employee. Only blocks NEWLY assigning the number (create, or an edit that
+  // changes it); an employee keeping their own number, or legacy stopped rows
+  // that already share one, are never affected.
+  const stoppedConflict = others.find(r => Number(r.status) !== 1);
+  if (stoppedConflict && numberIsNew) {
+    const err = new Error(`كود البصمة "${value}" مستخدم لموظف موقوف بالفعل: "${stoppedConflict.name}". يرجى مراجعة بيانات الموظف الموقوف قبل استخدام هذا الكود.`);
     err.statusCode = 409;
     throw err;
   }
@@ -138,6 +206,8 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
 
     const salaryErr = validateSalary(salary);
     if (salaryErr) return res.status(400).json({ error: salaryErr });
+    const refErr = validateRefFields(req.body);
+    if (refErr) return res.status(400).json({ error: refErr });
 
     const identity = resolveUnifiedNumber(code, zkUserId);
     if (identity.error) return res.status(400).json({ error: identity.error });
@@ -184,7 +254,7 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
         .catch(err => logger.error(`[Relink] auto-relink on create failed for emp ${emp.id}: ${err.message}`));
     }
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -196,6 +266,8 @@ router.put('/:id', authorize('admin', 'hr'), async (req, res) => {
 
     const salaryErr = validateSalary(salary);
     if (salaryErr) return res.status(400).json({ error: salaryErr });
+    const refErr = validateRefFields(req.body);
+    if (refErr) return res.status(400).json({ error: refErr });
 
     const before = await prisma.employee.findUnique({ where: { id: parseInt(req.params.id) }, select: { zkUserId: true, status: true, code: true } });
 
@@ -210,7 +282,7 @@ router.put('/:id', authorize('admin', 'hr'), async (req, res) => {
     // and disagree.
     let unifiedValue;
     if (code !== undefined || zkUserId !== undefined) {
-      const identity = resolveUnifiedNumber(code, zkUserId);
+      const identity = resolveUnifiedNumber(code, zkUserId, { unchanged: [before?.code, before?.zkUserId] });
       if (identity.error) return res.status(400).json({ error: identity.error });
       unifiedValue = identity.value;
     }
@@ -250,8 +322,11 @@ router.put('/:id', authorize('admin', 'hr'), async (req, res) => {
     let emp;
     try {
       emp = await prisma.$transaction(async (tx) => {
-        if (effectiveStatus === true && effectiveValue) {
-          await assertActiveNumberAvailable(tx, effectiveValue, parseInt(req.params.id));
+        const numberIsNew = unifiedValue !== undefined
+          && unifiedValue !== before?.zkUserId && unifiedValue !== before?.code;
+        if (effectiveValue && (effectiveStatus === true || numberIsNew)) {
+          await assertActiveNumberAvailable(tx, effectiveValue, parseInt(req.params.id),
+            { numberIsNew, willBeActive: effectiveStatus === true });
         }
         return tx.employee.update({
           where: { id: parseInt(req.params.id) },
@@ -288,7 +363,7 @@ router.put('/:id', authorize('admin', 'hr'), async (req, res) => {
         .catch(err => logger.error(`[Relink] auto-relink on update failed for emp ${emp.id}: ${err.message}`));
     }
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -305,7 +380,7 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
     });
     res.json({ message: 'Employee deactivated' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -351,7 +426,7 @@ router.get('/:id/delete-info', authorize('admin', 'hr'), async (req, res) => {
     res.json({ employee: emp, payrollCount, attendanceCount, advanceCount,
                canHardDelete: !hasHistory, blockReason, devices });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -391,7 +466,7 @@ router.post('/:id/delete-confirm', authorize('admin'), async (req, res) => {
         select: { id: true },
       });
       deviceResults = await Promise.all(
-        devices.map(d => deleteDeviceUser(d.id, emp.zkUserId))
+        devices.map(d => deleteDeviceUser(d.id, emp.zkUserId, actorFromReq(req)))
       );
     }
 
@@ -436,7 +511,7 @@ router.post('/:id/delete-confirm', authorize('admin'), async (req, res) => {
     res.json({ success: true, mode, employeeName: emp.name, deviceResults });
   } catch (err) {
     logger.error(`[EMPLOYEE-DELETE] Failed id=${id}: ${err.message}`);
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -456,10 +531,14 @@ router.post('/bulk-import', authorize('admin', 'hr'), async (req, res) => {
     // — one existing-numbers Set, scoped to ACTIVE employees only (a number
     // held only by a stopped employee is legitimately reusable, same as
     // single-create/update above).
-    const existingActive = new Set(
-      (await prisma.employee.findMany({ where: { status: true }, select: { code: true, zkUserId: true } }))
-        .flatMap(e => [e.code, e.zkUserId].filter(Boolean))
-    );
+    const allEmps = await prisma.employee.findMany({ select: { code: true, zkUserId: true, status: true } });
+    const numsOf = e => [e.code, e.zkUserId].filter(Boolean);
+    // Keys are lower-cased: the code/zkUserId columns are case-INSENSITIVE
+    // (utf8mb4_unicode_ci) and the single-create path compares through SQL, so
+    // "EMP1" and "emp1" are the same number there — the import must agree.
+    const numKey = (v) => String(v).toLowerCase();
+    const existingActive  = new Set(allEmps.filter(e => e.status).flatMap(numsOf).map(numKey));
+    const existingStopped = new Set(allEmps.filter(e => !e.status).flatMap(numsOf).map(numKey));
     const seenNumbers = new Set();
 
     const errors   = [];
@@ -469,15 +548,23 @@ router.post('/bulk-import', authorize('admin', 'hr'), async (req, res) => {
       const rowNum = i + 1;
       if (!r.name?.trim())        return errors.push({ row: rowNum, field: 'name',     message: 'الاسم مطلوب' });
       if (!r.branchId)            return errors.push({ row: rowNum, field: 'branchId', message: 'الفرع مطلوب' });
+      const refErr = validateRefFields(r);                       // non-numeric ids would fail the WHOLE batch in Prisma
+      if (refErr)                 return errors.push({ row: rowNum, field: 'branchId', message: refErr });
+      const salaryErr = validateSalary(r.salary);               // same rule as create/update (no negatives, no "12abc")
+      if (salaryErr)              return errors.push({ row: rowNum, field: 'salary', message: salaryErr });
 
       const identity = resolveUnifiedNumber(r.code, r.zkUserId);
       if (identity.error) return errors.push({ row: rowNum, field: 'zkUserId', message: identity.error });
       const num = identity.value;
 
-      if (existingActive.has(num) || seenNumbers.has(num))
+      const nk = numKey(num);
+      if (existingActive.has(nk) || seenNumbers.has(nk))
         return errors.push({ row: rowNum, field: 'zkUserId', message: `رقم الموظف "${num}" مستخدم حاليًا لموظف نشط أو مكرر في نفس الملف` });
 
-      seenNumbers.add(num);
+      if (existingStopped.has(nk))
+        return errors.push({ row: rowNum, field: 'zkUserId', message: `كود البصمة "${num}" مستخدم لموظف موقوف بالفعل. يرجى مراجعة بيانات الموظف الموقوف قبل استخدام هذا الكود.` });
+
+      seenNumbers.add(nk);
 
       toCreate.push({
         name:         r.name.trim(),
@@ -485,7 +572,7 @@ router.post('/bulk-import', authorize('admin', 'hr'), async (req, res) => {
         code:         num,
         phone:        r.phone        ? String(r.phone).trim()        : null,
         position:     r.position     ? String(r.position).trim()     : null,
-        salary:       r.salary       ? parseFloat(r.salary) || 0     : 0,
+        salary:       r.salary       ? Number(r.salary) : 0,
         branchId:     parseInt(r.branchId),
         departmentId: r.departmentId ? parseInt(r.departmentId)       : null,
         shiftId:      r.shiftId      ? parseInt(r.shiftId)            : null,
@@ -500,17 +587,8 @@ router.post('/bulk-import', authorize('admin', 'hr'), async (req, res) => {
     res.json({ imported: toCreate.length, skipped: errors.length, errors });
   } catch (err) {
     logger.error(`[BULK-IMPORT] ${err.message}`);
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
-});
-
-// GET /api/employees/import-template — returns CSV column headers for download
-router.get('/import-template', async (_req, res) => {
-  const header = 'name,zkUserId,code,phone,position,salary,branchId,departmentId,shiftId\n';
-  const example = 'أحمد محمد,1001,EMP001,0501234567,محاسب,5000,1,,\n';
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', 'attachment; filename="employees_template.csv"');
-  res.send('﻿' + header + example); // BOM for Excel Arabic compatibility
 });
 
 module.exports = router;

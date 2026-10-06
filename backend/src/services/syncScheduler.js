@@ -10,7 +10,8 @@
 
 const cron = require('node-cron');
 const { getPrisma } = require('../utils/prisma');
-const { pullLogs, isDeviceSyncRunning } = require('./zktecoService');
+const { pullLogs, isDeviceSyncRunning, recoverStaleSyncState } = require('./zktecoService');
+const { pruneDeviceAuditLogs } = require('../utils/deviceAudit');
 const { auditDeviceTopology, reconcileCrossDeviceDuplicates } = require('./deviceIntegrity');
 const realtimeListener = require('./realtimeListenerService');
 const { processToday } = require('../engines/attendanceEngine');
@@ -157,6 +158,17 @@ function startSyncScheduler(socketIo) {
       logger.error(`[Scheduler] topology audit: ${err.message}`);
     }
   });
+
+  // Housekeeping (bounded, never throws into the scheduler):
+  //  - stale sync state left by a crash/timeout: once at startup, then every 15 min
+  //  - routine device-audit retention: once at startup, then daily at 03:30
+  const housekeeping = {
+    staleSync: () => recoverStaleSyncState().catch((err) => logger.error(`[Scheduler] stale sync recovery: ${err.message}`)),
+    auditPrune: () => pruneDeviceAuditLogs().catch(() => {}),
+  };
+  schedule('*/15 * * * *', housekeeping.staleSync);
+  schedule('30 3 * * *', housekeeping.auditPrune);
+  setImmediate(() => { housekeeping.staleSync(); housekeeping.auditPrune(); });
 
   logger.info(`[Scheduler] Started — realtime listeners primary, recovery polls every >=${RECOVERY_MIN_INTERVAL_MINUTES}min (1-min master tick)`);
 }

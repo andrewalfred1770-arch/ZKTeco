@@ -185,7 +185,7 @@ export default function CompanySettingsPage() {
             <textarea className="input text-sm" rows={2} value={form.company_description || ''} onChange={e => setField('company_description', e.target.value)} />
             <label className="text-xs text-gray-500">العنوان</label>
             <input className="input text-sm" value={form.company_address || ''} onChange={e => setField('company_address', e.target.value)} />
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div>
                 <label className="text-xs text-gray-500">رقم الهاتف</label>
                 <input className="input text-sm" dir="ltr" value={form.company_phone || ''} onChange={e => setField('company_phone', e.target.value)} />

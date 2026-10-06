@@ -82,7 +82,7 @@ export default function Drawer({
             borderBottom: '1px solid var(--border-2)', flexShrink: 0,
           }}>
             {title
-              ? <div id={titleId} style={{ fontSize: 'var(--text-lg)', fontWeight: 800, color: 'var(--text)' }}>{title}</div>
+              ? <div id={titleId} style={{ fontSize: 'var(--text-lg)', fontWeight: 800, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</div>
               : <span />}
             {showClose && (
               <button
@@ -110,6 +110,7 @@ export default function Drawer({
           <div style={{
             display: 'flex', gap: 9, padding: '14px 20px',
             borderTop: '1px solid var(--border-2)', flexShrink: 0,
+            flexWrap: 'wrap',
           }}>
             {footer}
           </div>

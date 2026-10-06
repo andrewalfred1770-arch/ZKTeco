@@ -610,7 +610,11 @@ html.light .text-emerald-400 { color: var(--c-green) !important; }
   html.dark .badge-purple { background:rgba(137,87,229,0.15); color:#D2A8FF; border:1px solid rgba(137,87,229,0.28); }
 
   /* ── Typography ──────────────────────────────────────────────────────── */
-  .page-header   { @apply flex items-center justify-between; margin-bottom: 12px; }
+  /* flex-wrap so the title block and the action-button group stack instead
+     of overflowing/clipping on narrow screens — shared by nearly every page,
+     so this one rule fixes the header row app-wide. Unaffected on desktop:
+     wrap only ever activates when content doesn't fit one row. */
+  .page-header   { @apply flex items-center justify-between; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
   .page-title    { font-family:var(--font-brand); font-size:1.375rem; font-weight:800; color:var(--text); letter-spacing:-0.02em; line-height:1.2; }
   .section-title { font-size:1rem; font-weight:700; color:var(--text); }
 
@@ -1116,3 +1120,96 @@ html.dark :is(a, button, input, select, textarea, [tabindex]):focus-visible {
 
 /* Utility: pulsing status dot (device status / realtime listener badges) */
 @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.35} }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MOBILE RESPONSIVE SHELL — PETSHROW Web
+   Scoped entirely to <768px (Tailwind's own `md` boundary) so desktop/tablet
+   (≥768px) layout is byte-for-byte unaffected. The app shell (Layout.jsx)
+   still sets its own inline styles for desktop; these rules only override the
+   sidebar's layout-critical properties (position/width/transform) below the
+   mobile breakpoint, turning it from a flex column into a slide-in drawer —
+   the standard technique for overriding inline styles from a stylesheet.
+═══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 767px) {
+  /* Tighten the shared page-padding/gap tokens on small screens — every page
+     that already uses var(--pad-page)/var(--gap) benefits automatically,
+     no per-page edits needed. */
+  :root {
+    --pad-page: 10px;
+    --gap: 8px;
+  }
+
+  .ps-sidebar {
+    position: fixed !important;
+    inset-inline-start: 0 !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    width: min(84vw, 300px) !important;
+    z-index: 9200;
+    transform: translateX(100%);
+    transition: transform 0.25s cubic-bezier(.2,0,0,1) !important;
+    box-shadow: -8px 0 30px rgba(0,0,0,0.35);
+  }
+  .ps-sidebar.is-open { transform: translateX(0); }
+
+  .ps-sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.50);
+    z-index: 9150;
+    animation: ps-fade-in 0.2s ease;
+  }
+}
+
+@keyframes ps-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* Table wrapper for any component that renders a plain HTML <table> instead
+   of AG Grid — keeps horizontal scroll confined to the table itself, never
+   the page. AG Grid pages don't need this: AG Grid manages its own internal
+   scroll viewport already. */
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 767px) {
+  /* Comfortable touch targets for icon-only buttons on mobile, without
+     changing desktop's denser sizing. Opt-in via className, not a blanket
+     button selector, so unrelated dense controls (AG Grid's own chrome,
+     table row actions) are unaffected. */
+  .touch-target {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  /* Opt-in escape hatch for pages built as a fixed-height, non-scrolling
+     flex column with internally-scrolling panels (the desktop dashboard
+     pattern) — on mobile those panels stack instead of sitting side by
+     side, so the page needs to scroll as a whole rather than clipping.
+     Desktop/tablet (≥768px) keep the original overflow:hidden, unaffected.
+     Applied per-page via className, not globally — AG Grid list pages keep
+     their existing fixed-height + internally-scrolling grid, which already
+     handles mobile touch-scroll correctly on its own. */
+  .ps-scroll-mobile {
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Mobile: no pagination footer on any AG Grid — the user scrolls through
+     every row continuously instead of clicking through pages. The grid's
+     `pagination` boolean itself is deliberately left ON (unchanged from
+     desktop) with a very large paginationPageSize set per-page instead of
+     being toggled off — toggling the boolean was found to leave AG Grid's
+     internal row-count model out of sync with the true dataset (rendering
+     only a small stale subset). A single huge page means "page 1" already
+     contains every row, so this is purely a visual removal of the now-
+     redundant footer, not a change to how many rows are available.
+     The 767px breakpoint of this block is mirrored by
+     MOBILE_PAGINATION_MAX_WIDTH in hooks/useGridPagination.js — the page size
+     must switch to the single page at exactly the width the footer hides. */
+  .ag-paging-panel {
+    display: none !important;
+  }
+}

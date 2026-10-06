@@ -1,4 +1,6 @@
 const router = require('express').Router();
+const { sendError, numericIdParam } = require('../utils/apiError');
+router.param('id', numericIdParam);
 const { getPrisma } = require('../utils/prisma');
 const { authenticate, authorize } = require('../middleware/auth');
 const prisma = getPrisma();
@@ -12,7 +14,7 @@ router.get('/', async (_req, res) => {
   try {
     const companies = await prisma.company.findMany({ orderBy: { name: 'asc' } });
     res.json(companies);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // Dependency counts — called by the delete-confirmation modal BEFORE the user commits.
@@ -28,7 +30,7 @@ router.get('/:id/deps', async (req, res) => {
       prisma.department.count({ where: { branch: { companyId: id }, status: true } }),
     ]);
     res.json({ activeBranches, allBranches, employees, devices, departments });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/', authorize('admin'), async (req, res) => {
@@ -39,7 +41,7 @@ router.post('/', authorize('admin'), async (req, res) => {
       data: { name: name.trim(), address: address || null, phone: phone || null, email: email || null },
     });
     res.status(201).json(company);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // Rename / update metadata — always allowed, even if company has branches or employees.
@@ -55,7 +57,7 @@ router.put('/:id', authorize('admin'), async (req, res) => {
     if (!Object.keys(data).length) return res.status(400).json({ error: 'لا توجد بيانات للتحديث' });
     const company = await prisma.company.update({ where: { id: parseInt(req.params.id) }, data });
     res.json(company);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // Soft-delete (archive) — ALWAYS allowed.
@@ -69,7 +71,7 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
     if (!company.status) return res.json({ message: 'الشركة مؤرشفة مسبقاً' });
     await prisma.company.update({ where: { id }, data: { status: false } });
     res.json({ message: `تم أرشفة الشركة "${company.name}" بنجاح` });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // Restore an archived company
@@ -78,7 +80,7 @@ router.patch('/:id/restore', authorize('admin'), async (req, res) => {
     const id = parseInt(req.params.id);
     await prisma.company.update({ where: { id }, data: { status: true } });
     res.json({ message: 'تم استعادة الشركة بنجاح' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

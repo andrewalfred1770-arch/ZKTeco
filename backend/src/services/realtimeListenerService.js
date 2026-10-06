@@ -45,6 +45,8 @@ const { getPrisma } = require('../utils/prisma');
 const { isValidPunchTimestamp } = require('../utils/timestamps');
 const moment = require('moment');
 const logger = require('../utils/logger');
+const deviceGate = require('./deviceGate');
+const deviceLogCounts = require('./deviceLogCounts');
 const attendanceEngine = require('../engines/attendanceEngine');
 const payrollEngine = require('../engines/payrollEngine');
 
@@ -170,6 +172,7 @@ async function ingestPunch(deviceId, io, zkUserId, timestamp, attempt = 1) {
     );
 
     if (inserted) {
+      deviceLogCounts.adjust(deviceId, 1);
       await prisma.device.update({
         where: { id: deviceId },
         data: {
@@ -331,11 +334,36 @@ function scheduleReconnect(deviceId, io, reason, immediate = false, gen = null) 
 }
 
 // ─── Connect (or reconnect) the persistent realtime listener ──────────────
+// Every path that opens a realtime session (start, reconnect timer, heartbeat
+// recycle, periodic refresh, resume, restart) funnels through here, so this is
+// where the shared per-device gate (deviceGate.js) is honored: while a sync /
+// device operation holds the device — or another attempt is already in
+// flight — no second session is opened. A blocked listener parks itself as
+// paused; the exclusive operation's release calls resumeListener(), which
+// reconnects it. No timer, no polling.
 async function connectListener(deviceId, io) {
   const state = listeners.get(deviceId);
   if (!state || state.stopped || state.pausedForSync) return;
   if (state.status === 'connected' || state.status === 'connecting') return;
 
+  const attempt = deviceGate.beginRealtimeConnect(deviceId);
+  if (!attempt) {
+    if (deviceGate.isExclusiveHeld(deviceId)) {
+      state.pausedForSync = true;
+      state.status = 'paused';
+      logger.info(`[RT-GATE] device=${deviceId} connect deferred — device is held by "${deviceGate.heldBy(deviceId)?.label}"; will resume on release`);
+    }
+    return;
+  }
+  try {
+    await connectListenerAttempt(deviceId, io, state);
+  } finally {
+    state.connectingZk = null;
+    attempt.done();   // no-op if the attempt was abandoned by pause/stop/watchdog
+  }
+}
+
+async function connectListenerAttempt(deviceId, io, state) {
   state.status = 'connecting';
   state.connectStartedAt = new Date(); // watched by the stuck-connecting heartbeat check
   // Claim ownership of this connection attempt: a fresh generation, no
@@ -346,6 +374,12 @@ async function connectListener(deviceId, io) {
   const connGen = ++state.listenerGeneration;
   state.activeGen = connGen;
 
+  // This attempt is stale when it was paused (an exclusive device operation
+  // took the device), stopped/replaced (stop/restart), or recycled (generation
+  // bumped) while it was awaiting. A stale attempt must never leave a session
+  // behind — it tears down whatever it opened and returns.
+  const aborted = () => listeners.get(deviceId) !== state || state.stopped || state.pausedForSync || connGen !== state.activeGen;
+
   let device;
   try {
     device = await prisma.device.findUnique({ where: { id: deviceId } });
@@ -354,6 +388,8 @@ async function connectListener(deviceId, io) {
     scheduleReconnect(deviceId, io, 'db lookup failed', false, connGen);
     return;
   }
+
+  if (aborted()) return;
 
   if (!device || !device.enabled || !device.autoSync || device.isArchived) {
     logger.info(`[RT] device=${deviceId} no longer eligible for realtime listening — stopping`);
@@ -364,6 +400,7 @@ async function connectListener(deviceId, io) {
   state.deviceName = device.name;
 
   const zk = new ZKLib(device.ipAddress, device.port, 8000, 4000);
+  state.connectingZk = zk;   // so pause/stop/watchdog can close an in-flight connect
   let settled = false;
 
   // Both handlers below capture `connGen`. They only act if:
@@ -408,14 +445,17 @@ async function connectListener(deviceId, io) {
 
   try {
     await zk.createSocket(onSocketError, onSocketClose);
+    if (aborted()) { settled = true; safeDisconnect(zk); return; }
 
     // OS-level dead-connection detection — no extra protocol traffic, so it
     // never collides with the permanent CMD_REG_EVENT 'data' listener below.
     try { zk.zklibTcp?.socket?.setKeepAlive(true, TCP_KEEPALIVE_DELAY_MS); } catch {}
 
     await zk.getRealTimeLogs((log) => handlePunchEvent(deviceId, io, log));
+    if (aborted()) { settled = true; safeDisconnect(zk); return; }
 
     settled = true;
+    state.connectingZk = null;
     state.zk = zk;
     state.status = 'connected';
     state.connectedAt = new Date();
@@ -432,6 +472,7 @@ async function connectListener(deviceId, io) {
   } catch (err) {
     settled = true;
     safeDisconnect(zk);
+    if (aborted()) return;   // closed on purpose by pause/stop — not a failure, nothing to reconnect
     logger.error(`[RT-ERROR] device=${deviceId} connect failed: ${zkErrorMessage(err, 'connect failed')}`);
     scheduleReconnect(deviceId, io, zkErrorMessage(err, 'connect failed'), false, connGen);
   }
@@ -441,6 +482,14 @@ async function connectListener(deviceId, io) {
 // A recovery poll needs the device's single TCP session for itself. We
 // gracefully drop our connection first so the device doesn't see two
 // concurrent sessions, then reconnect once the poll is done.
+// Closes a connection attempt that is still in flight (socket not yet an
+// established listener session) and releases its gate claim, so whoever is
+// taking the device never has to wait for — or race — a half-open attempt.
+function closeInFlightConnect(deviceId, state) {
+  if (state.connectingZk) { safeDisconnect(state.connectingZk); state.connectingZk = null; }
+  deviceGate.abandonRealtimeConnect(deviceId);
+}
+
 function pauseListener(deviceId) {
   const id = Number(deviceId);
   const state = listeners.get(id);
@@ -455,6 +504,7 @@ function pauseListener(deviceId) {
   state.pausedForSync = true;
   state.status = 'paused';
   state.intentionalDisconnect = true;
+  closeInFlightConnect(id, state);
   // Bump generation so any late close/error from the dropped socket is
   // recognized as stale and ignored.
   state.activeGen = ++state.listenerGeneration;
@@ -598,6 +648,7 @@ function stopListener(deviceId) {
   state.reconnectTimer = null;
   state.reconnectScheduled = false;
 
+  closeInFlightConnect(id, state);
   if (state.zk) safeDisconnect(state.zk);
   listeners.delete(id);
   logger.info(`[RT-LISTENER-CLEANUP] device=${id} realtime listener stopped (final gen=${state.listenerGeneration})`);
@@ -660,6 +711,7 @@ function checkHeartbeats(io) {
       logger.warn(`[RT-RECONNECT] device=${deviceId} "${state.deviceName}": connect attempt stuck for >${CONNECT_STUCK_MS / 1000}s — recycling (gen=${state.activeGen})`);
       state.intentionalDisconnect = true;
       state.activeGen = ++state.listenerGeneration; // orphan the hung attempt's callbacks
+      closeInFlightConnect(deviceId, state);
       safeDisconnect(state.zk);
       state.zk = null;
       state.status = 'reconnecting';

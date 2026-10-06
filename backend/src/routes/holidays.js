@@ -1,4 +1,6 @@
 const router = require('express').Router();
+const { sendError, numericIdParam } = require('../utils/apiError');
+router.param('id', numericIdParam);
 const moment = require('moment');
 const { getPrisma } = require('../utils/prisma');
 const { authenticate, authorize } = require('../middleware/auth');
@@ -32,7 +34,7 @@ router.get('/', async (req, res) => {
     if (branchId) where.branchId = parseInt(branchId);
     const holidays = await prisma.holiday.findMany({ where, orderBy: { date: 'asc' } });
     res.json(holidays);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/', authorize('admin', 'hr'), async (req, res) => {
@@ -43,7 +45,7 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
     });
     recalcHolidayMonth(holiday, req.io, `إضافة عطلة "${holiday.name}"`);
     res.status(201).json(holiday);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 router.delete('/:id', authorize('admin', 'hr'), async (req, res) => {
@@ -53,7 +55,7 @@ router.delete('/:id', authorize('admin', 'hr'), async (req, res) => {
     await prisma.holiday.delete({ where: { id } });
     if (existing) recalcHolidayMonth(existing, req.io, `حذف عطلة "${existing.name}"`);
     res.json({ message: 'Holiday deleted' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

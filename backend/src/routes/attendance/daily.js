@@ -1,10 +1,12 @@
-const router = require('express').Router();
+const router = require('express').Router();
+const { sendError } = require('../../utils/apiError');
 const { getPrisma } = require('../../utils/prisma');
 const moment = require('moment');
 const { mergeEffectivePenalty } = require('../../engines/attendanceEngine');
 const { applyApprovedAdjustment } = require('../../engines/payrollEngine');
 const { resolveVerifiedManualEditIds } = require('../../utils/manualEditAudit');
 const { buildAttendanceRow } = require('../../utils/attendanceRow');
+const { attendanceScopeWhere, dayPeriod } = require('../../utils/employmentEligibility');
 
 const prisma = getPrisma();
 
@@ -27,7 +29,7 @@ router.get('/daily', async (req, res) => {
     const targetDate = date ? new Date(date) : new Date();
     const d = new Date(moment(targetDate).format('YYYY-MM-DD'));
 
-    let empWhere = { status: true };
+    let empWhere = attendanceScopeWhere(dayPeriod(d));
     if (branchId) empWhere.branchId = parseInt(branchId);
     if (departmentId) empWhere.departmentId = parseInt(departmentId);
     // EP-014: optional narrowing for realtime single-row refresh — omitted by
@@ -86,7 +88,7 @@ router.get('/daily', async (req, res) => {
 
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 

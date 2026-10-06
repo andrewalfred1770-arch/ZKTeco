@@ -9,6 +9,7 @@
  * Socket.IO so every connected screen re-fetches and re-renders live.
  */
 const router  = require('express').Router();
+const { sendError } = require('../utils/apiError');
 const fs      = require('fs');
 const path    = require('path');
 const crypto  = require('crypto');
@@ -60,9 +61,9 @@ async function upsertSetting(key, value, type, changedByName) {
 // ─── Uploads (multer → disk) ──────────────────────────────────────────────────
 fs.mkdirSync(store.UPLOAD_DIR, { recursive: true });
 
-// Ensure cache.json exists from boot (e.g. fresh seed, no edits yet) so the
-// Electron splash screen always has a snapshot to read at startup.
-store.refreshSnapshot().catch(() => {});
+// cache.json (the Electron splash's settings snapshot) is refreshed by
+// src/index.js once the application is READY — never at module load, which
+// would read the database before migrations have been verified.
 
 // EF-007.2: client-declared MIME and originalname are both untrusted — the
 // filename/extension actually written to disk must never derive from either.
@@ -106,7 +107,7 @@ function deleteOldFile(publicPath) {
 router.get('/', async (_req, res) => {
   try {
     res.json(await store.getSettingsMap());
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Recent audit trail ───────────────────────────────────────────────────────
@@ -117,7 +118,7 @@ router.get('/audit', async (_req, res) => {
       take: 50,
     });
     res.json(rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Update text fields (partial) ─────────────────────────────────────────────
@@ -138,7 +139,7 @@ router.put('/', authorize('admin'), async (req, res) => {
     const map = await store.refreshSnapshot();
     if (changes.length) req.io.emit('company-settings:changed', { keys: changes.map(c => c[0]), changedByName, at: new Date() });
     res.json(map);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Upload / replace an image asset ──────────────────────────────────────────
@@ -176,7 +177,7 @@ router.post('/upload/:field', authorize('admin'), (req, res) => {
       const map = await store.refreshSnapshot();
       req.io.emit('company-settings:changed', { keys: [settingKey], changedByName, at: new Date() });
       res.status(201).json({ key: settingKey, value: publicPath, settings: map });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) { sendError(res, e); }
   });
 });
 
@@ -194,7 +195,7 @@ router.delete('/upload/:field', authorize('admin'), async (req, res) => {
     const map = await store.refreshSnapshot();
     req.io.emit('company-settings:changed', { keys: [settingKey], changedByName, at: new Date() });
     res.json({ key: settingKey, value: '', settings: map });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

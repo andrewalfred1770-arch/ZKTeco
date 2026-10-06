@@ -374,7 +374,7 @@ export default function ConnectionSettingsPage() {
                 style={{ textAlign: 'left' }}
               />
               <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
-                أمثلة: http://192.168.1.10:5000 · http://server.company.local:5000 · https://erp.company.com
+                الأفضل استخدام اسم جهاز الخادم (مثال: http://SERVER-PC:5000) لأن رقم IP قد يتغير · أمثلة أخرى: http://192.168.1.10:5000 · http://server.company.local:5000 · https://erp.company.com
               </span>
             </div>
           )}

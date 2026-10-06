@@ -1,4 +1,6 @@
 const router = require('express').Router();
+const { sendError, numericIdParam } = require('../utils/apiError');
+router.param('id', numericIdParam);
 const { getPrisma } = require('../utils/prisma');
 const { authenticate, authorize } = require('../middleware/auth');
 const prisma = getPrisma();
@@ -13,7 +15,7 @@ router.get('/', async (_req, res) => {
       orderBy: { name: 'asc' },
     });
     res.json(branches);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // Dependency counts — called by the delete-confirmation modal BEFORE the user commits.
@@ -28,7 +30,7 @@ router.get('/:id/deps', async (req, res) => {
       prisma.attendanceRule.count({ where: { branchId: id } }),
     ]);
     res.json({ activeDepts, allDepts, employees, devices, rules });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/', authorize('admin'), async (req, res) => {
@@ -41,7 +43,7 @@ router.post('/', authorize('admin'), async (req, res) => {
       include: { company: true },
     });
     res.status(201).json(branch);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // Rename / update metadata — always allowed, even if branch has employees or devices.
@@ -60,7 +62,7 @@ router.put('/:id', authorize('admin'), async (req, res) => {
       include: { company: true },
     });
     res.json(branch);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // Soft-delete (archive) — ALWAYS allowed.
@@ -74,7 +76,7 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
     if (!branch.status) return res.json({ message: 'الفرع مؤرشف مسبقاً' });
     await prisma.branch.update({ where: { id }, data: { status: false } });
     res.json({ message: `تم أرشفة الفرع "${branch.name}" بنجاح` });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // Restore an archived branch
@@ -87,7 +89,7 @@ router.patch('/:id/restore', authorize('admin'), async (req, res) => {
       include: { company: true },
     });
     res.json(branch);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

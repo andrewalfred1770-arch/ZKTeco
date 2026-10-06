@@ -7,11 +7,14 @@ import { Plus, RefreshCw, X, Loader2, UserCheck, UserX, Trash2, Monitor, AlertTr
 import toast from 'react-hot-toast';
 import api from '../lib/api';
 import { fmtMoney } from '../lib/formatters';
+import { todayStr } from '../lib/businessDate';
 import { useTheme } from '../contexts/ThemeContext';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS } from '../lib/gridDefaults';
 import { fmtDate } from '../lib/formatters';
 import Dialog from '../components/ui/Dialog';
+import { useGridPagination } from '../hooks/useGridPagination';
+import { searchTokens, matchesTokens, rowHaystack } from '../lib/searchText';
 
 const NUM = { textAlign: 'right', direction: 'ltr', justifyContent: 'flex-end', fontFamily: 'Consolas, monospace' };
 
@@ -325,6 +328,7 @@ function EmployeeModal({ open, onClose, onSaved, emp, branches, departments }) {
 
 export default function EmployeesPage() {
   const { agGridTheme } = useTheme();
+  const pagination = useGridPagination(50);
   const [employees,   setEmployees]   = useState([]);
   const [branches,    setBranches]    = useState([]);
   const [departments, setDepartments] = useState([]);
@@ -438,7 +442,7 @@ export default function EmployeesPage() {
     // unchanged: no date involved, and effectiveStopDate is preserved
     // (backend leaves it untouched when omitted from the request body).
     if (newStatus === false) {
-      setStopDate(new Date().toISOString().slice(0, 10));
+      setStopDate(todayStr());
       setStopTarget(emp);
       return;
     }
@@ -504,15 +508,13 @@ export default function EmployeesPage() {
 
   // Client-side filtered list
   const filteredEmployees = useMemo(() => {
-    const q = searchQ.trim().toLowerCase();
+    const tokens = searchTokens(searchQ);   // Arabic/English-normalized words (lib/searchText.js)
     return employees.filter(e => {
       if (filterStatus === 'active'   && !e.status) return false;
       if (filterStatus === 'inactive' &&  e.status) return false;
       if (filterDept   && String(e.departmentId) !== filterDept)  return false;
       if (filterBranch && String(e.branchId)     !== filterBranch) return false;
-      if (q && !e.name?.toLowerCase().includes(q) &&
-               !String(e.code || '').toLowerCase().includes(q) &&
-               !String(e.zkUserId || '').includes(q)) return false;
+      if (tokens.length && !matchesTokens(tokens, rowHaystack(e, [e.name, e.code, e.zkUserId]))) return false;
       return true;
     });
   }, [employees, searchQ, filterDept, filterBranch, filterStatus]);
@@ -609,7 +611,7 @@ export default function EmployeesPage() {
             localeText={AG_GRID_LOCALE_AR}
             animateRows={false}
             pagination
-            paginationPageSize={50}
+            {...pagination}
             loading={loading}
             getRowClass={getRowClass}
             getRowStyle={getRowStyle}

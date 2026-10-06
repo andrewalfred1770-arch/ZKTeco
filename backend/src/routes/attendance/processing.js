@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const { sendError } = require('../../utils/apiError');
 const { getPrisma } = require('../../utils/prisma');
 const { authorize } = require('../../middleware/auth');
 const { processDate, processMonth, processToday } = require('../../engines/attendanceEngine');
@@ -22,7 +23,7 @@ router.post('/process', authorize('admin', 'hr'), async (req, res) => {
     }
     res.json({ message: 'Processing complete', skipped: false, processedCount: result?.processedCount ?? null });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -33,7 +34,7 @@ router.post('/process-month', authorize('admin', 'hr'), async (req, res) => {
     await processMonth(parseInt(year), parseInt(month), branchId ? parseInt(branchId) : null);
     res.json({ message: 'Month processing complete' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -66,7 +67,7 @@ router.get('/logs', authorize('admin', 'hr'), async (req, res) => {
 
     res.json({ logs, total, page: parseInt(page), limit: parseInt(limit) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 

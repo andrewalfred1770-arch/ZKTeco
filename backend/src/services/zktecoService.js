@@ -14,9 +14,12 @@ const { getPrisma } = require('../utils/prisma');
 const { isValidPunchTimestamp } = require('../utils/timestamps');
 const logger = require('../utils/logger');
 const realtimeListener = require('./realtimeListenerService');
+const deviceGate = require('./deviceGate');
+const rawLogCountCache = require('./deviceLogCounts');   // NB: pullLogs has a local `deviceLogCounts` (the device-reported count)
 const { getAttendancesPaced, ZK_CHUNKED_READ_ENABLED, ZK_CHUNKED_READ_THRESHOLD } = require('./zkChunkedAttendanceReader');
 const historicalRebuildService = require('./historicalRebuildService');
 const attendanceEngine = require('../engines/attendanceEngine');
+const { recordDeviceAudit, ACTION, RESULT, SYSTEM_ACTOR } = require('../utils/deviceAudit');
 const moment = require('moment');
 
 const prisma = getPrisma();
@@ -31,8 +34,8 @@ const activeConnections = new Map();
 // registers the new connection AFTER an `await zk.createSocket()` — a real
 // gap in which two concurrent callers (e.g. getDeviceUsers() and
 // deleteDeviceUser() racing each other, or either racing pullLogs() before
-// its syncLocks claim lands) could both read "no existing connection" and
-// both open a physical TCP session to the same device. syncLocks only
+// its device-gate claim lands) could both read "no existing connection" and
+// both open a physical TCP session to the same device. The old syncLocks only
 // protects pullLogs() against itself; it was never a lock on connectDevice()
 // itself, so every OTHER caller was still exposed.
 //
@@ -45,18 +48,14 @@ const activeConnections = new Map();
 // so unrelated devices stay fully concurrent — this is not a global lock.
 const connectQueues = new Map();
 
-// In-memory per-device sync lock:  deviceId → { owner, startedAt, triggeredBy }
-// Prevents overlapping pullLogs() calls (manual + auto) for the same device,
-// which previously caused connectDevice() to yank an in-flight socket and
-// throw "write after end".
-//
-// ATOMICITY: the lock is claimed SYNCHRONOUSLY (no await between the has()
-// check and the set()) — the old code awaited a DB insert in between, so two
-// near-simultaneous triggers could both enter, and the loser's finally-block
-// then released the winner's lock and resumed the realtime listener mid-pull.
-// Release/resume is now ownership-checked: only the lock owner may do either.
-const syncLocks = new Map();
-let syncOwnerCounter = 0;
+// Per-device exclusivity lives in deviceGate.js — ONE gate shared by every path
+// that opens a device TCP session (pullLogs, getDeviceUsers, deleteDeviceUser,
+// pingDevice, testConnection, and the realtime listener). The claim is
+// SYNCHRONOUS (no await between the check and the claim, so two triggers can
+// never both enter) and released through an ownership-checked lease, so a
+// stale loser can never free the winner's claim or resume the paused realtime
+// listener mid-operation. This replaces the private syncLocks map pullLogs
+// used to own — that lock covered pullLogs against itself only.
 
 // Hard ceiling for a single sync run. If exceeded, the socket is forced
 // closed and the sync is marked 'failed' so it can never get stuck in
@@ -93,8 +92,32 @@ function attendanceKey(log) {
 }
 
 function isDeviceSyncRunning(deviceId) {
-  return syncLocks.has(String(deviceId));
+  return deviceGate.isExclusiveHeld(deviceId);
 }
+
+// Claim the device for a short operation that needs the single TCP session:
+// takes the gate, then pauses the realtime listener (which drops its session
+// and abandons any half-open attempt). Returns null when the device is
+// already claimed; otherwise `release(io)` frees the gate and resumes the
+// listener — only if this claim is still the owner. Synchronous claim.
+function acquireDevice(deviceId, label) {
+  const lease = deviceGate.tryAcquireExclusive(deviceId, label);
+  if (!lease) return null;
+  try {
+    realtimeListener.pauseListener(deviceId);
+  } catch (err) {
+    lease.release();            // never leave the gate held on a failed pause
+    throw err;
+  }
+  return {
+    label,
+    release(io = null) {
+      if (lease.release()) realtimeListener.resumeListener(deviceId, io);
+    },
+  };
+}
+
+const deviceBusyMessage = (device) => `Device "${device.name}" is busy (${deviceGate.heldBy(device.id)?.label || 'another operation'} is using the connection)`;
 
 // ─── Status constants ──────────────────────────────────────────────────────────
 const STATUS = { ONLINE: 'online', OFFLINE: 'offline', SYNCING: 'syncing', ERROR: 'error' };
@@ -148,6 +171,16 @@ function zkErrorMessage(err, fallback) {
   }
   if (err.err?.message) return err.err.message;
   return fallback;
+}
+
+// Stable machine-readable code for a connection failure (audit trail only).
+function classifyConnectError(msg) {
+  const m = String(msg || '');
+  if (/ETIMEDOUT/i.test(m)) return 'CONNECT_TIMEOUT';
+  if (/ECONNREFUSED/i.test(m)) return 'CONNECT_REFUSED';
+  if (/EHOSTUNREACH|ENETUNREACH/i.test(m)) return 'HOST_UNREACHABLE';
+  if (/TIMEOUT_ON_WRITING_MESSAGE|NO_REPLY/i.test(m)) return 'HANDSHAKE_TIMEOUT';
+  return 'CONNECT_FAILED';
 }
 
 // ─── Safe disconnect ────────────────────────────────────────────────────────
@@ -204,7 +237,7 @@ async function connectDeviceInner(device) {
   // from under whatever is using it (this used to cause "write after end"
   // when an overlapping sync force-disconnected an in-flight getAttendances()).
   // Fail fast instead — the caller (pullLogs) already guards against this via
-  // syncLocks, so this should only trigger for unrelated concurrent calls
+  // the device gate, so this should only trigger for unrelated concurrent calls
   // (e.g. getDeviceUsers while a sync is running).
   const existing = activeConnections.get(key);
   if (existing) {
@@ -249,9 +282,21 @@ async function disconnectDevice(deviceId) {
 }
 
 // ─── Update device status in DB ───────────────────────────────────────────────
+// Device.errorMessage, DeviceSyncLog.error and DeviceSyncLog.zkErr are VARCHAR(191).
+// In MySQL strict mode a longer value is REJECTED (Prisma P2000), which would
+// fail the very update that records a sync's outcome and leave its log row
+// stuck at 'running'. Clip only what is stored; the full text still goes to the
+// logger, the audit trail (TEXT) and the API/socket responses.
+const DB_ERROR_MAX = 191;
+function clipForDb(value) {
+  if (value === null || value === undefined) return value;
+  const s = String(value);
+  return s.length <= DB_ERROR_MAX ? s : s.slice(0, DB_ERROR_MAX - 1) + '…';
+}
+
 async function setDeviceStatus(deviceId, status, errorMessage = null, consecutiveErrors = undefined) {
   const data = { status };
-  if (errorMessage !== undefined) data.errorMessage = errorMessage;
+  if (errorMessage !== undefined) data.errorMessage = clipForDb(errorMessage);
   if (consecutiveErrors !== undefined) data.consecutiveErrors = consecutiveErrors;
   try {
     await prisma.device.update({ where: { id: deviceId }, data });
@@ -259,7 +304,11 @@ async function setDeviceStatus(deviceId, status, errorMessage = null, consecutiv
 }
 
 // ─── Pull logs from one device ────────────────────────────────────────────────
-async function pullLogs(deviceId, io, triggeredBy = 'auto') {
+// `actor` (optional) is the authenticated/local user behind a MANUAL trigger; it
+// is used only for the audit trail. Callers that omit it (the scheduler) are
+// audited as the system actor, with outcome rows only (no per-sync
+// STARTED / CONNECT_SUCCEEDED noise every few minutes).
+async function pullLogs(deviceId, io, triggeredBy = 'auto', actor = null) {
   const key = String(deviceId);
 
   const device = await prisma.device.findUnique({
@@ -268,8 +317,11 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
   });
 
   if (!device || !device.enabled) {
-    return { count: 0, skipped: true };
+    return { count: 0, skipped: true, skipReason: 'DEVICE_DISABLED' };
   }
+
+  const auditActor = actor || SYSTEM_ACTOR;
+  const auditVerbose = !!actor; // manual trigger -> full lifecycle
 
   // Refuse to start a second sync for the same device while one is already
   // running (manual or auto). Without this, an overlapping sync would force
@@ -278,26 +330,29 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
   //
   // The check AND the claim happen synchronously — no await may sit between
   // them, or two triggers can both enter (TOCTOU).
-  if (syncLocks.has(key)) {
-    const held = syncLocks.get(key);
-    logger.info(`[SYNC] [LOCK] device=${deviceId} skip — lock held by owner #${held.owner} (${held.triggeredBy}, since ${new Date(held.startedAt).toISOString()})`);
-    return { count: 0, skipped: true, reason: 'sync already running' };
-  }
   const t0 = Date.now();
-  const lockOwner = ++syncOwnerCounter;
-  syncLocks.set(key, { owner: lockOwner, startedAt: t0, triggeredBy });
+  const lease = deviceGate.tryAcquireExclusive(deviceId, triggeredBy);
+  if (!lease) {
+    const held = deviceGate.heldBy(deviceId) || { owner: '?', label: 'unknown', startedAt: Date.now() };
+    logger.info(`[SYNC] [LOCK] device=${deviceId} skip — device held by owner #${held.owner} (${held.label}, since ${new Date(held.startedAt).toISOString()})`);
+    await recordDeviceAudit({
+      action: ACTION.SYNC_BLOCKED, result: RESULT.BLOCKED, actor: auditActor, device,
+      errorCode: 'SYNC_ALREADY_RUNNING', errorMessage: 'Another sync is already running for this device',
+      metadata: { triggeredBy, heldBy: held.label, heldSince: new Date(held.startedAt) },
+    });
+    return { count: 0, skipped: true, skipReason: 'SYNC_ALREADY_RUNNING', reason: 'sync already running' };
+  }
+  const lockOwner = lease.owner;
   logger.info(`[SYNC] [LOCK] device=${deviceId} acquired by owner #${lockOwner} (${triggeredBy})`);
 
   // Ownership-checked release — shared by the finally block. Only the claim
   // above may undo itself; any other code path is a stale loser and must not
   // touch the lock or the paused realtime listener.
   const releaseLock = () => {
-    const held = syncLocks.get(key);
-    if (held?.owner !== lockOwner) {
-      logger.warn(`[SYNC] [LOCK] device=${deviceId} release skipped — owner #${lockOwner} no longer holds the lock (held by #${held?.owner ?? 'none'})`);
+    if (!lease.release()) {
+      logger.warn(`[SYNC] [LOCK] device=${deviceId} release skipped — owner #${lockOwner} no longer holds the lock (held by #${deviceGate.heldBy(deviceId)?.owner ?? 'none'})`);
       return false;
     }
-    syncLocks.delete(key);
     logger.info(`[SYNC] [LOCK] device=${deviceId} released by owner #${lockOwner}`);
     return true;
   };
@@ -313,21 +368,32 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
     throw err;
   }
 
-  logger.info(`[SYNC] start device=${deviceId} "${device.name}" ip=${device.ipAddress}:${device.port} trigger=${triggeredBy} syncLogId=${syncLog.id}`);
-  emit(io, 'device:syncing', { deviceId, name: device.name });
-  await setDeviceStatus(deviceId, STATUS.SYNCING, null);
-
   let zk;
   let watchdogFired = false;
   let watchdog;
 
-  // The realtime event listener (CMD_REG_EVENT) holds the device's single
-  // TCP session. Pause it before opening a recovery-poll connection so the
-  // two paths never fight over the same session, then resume it afterwards.
-  realtimeListener.pauseListener(deviceId);
-  await sleep(500);
-
+  // Everything from here on runs inside try/finally so the lock claimed above
+  // is released on ANY exit. Previously emit(), pauseListener() and the sleep
+  // sat between the claim and the try: an exception from any of them left the
+  // lock held until process restart and every later sync (manual and auto)
+  // was refused as "sync already running".
   try {
+    logger.info(`[SYNC] start device=${deviceId} "${device.name}" ip=${device.ipAddress}:${device.port} trigger=${triggeredBy} syncLogId=${syncLog.id}`);
+    emit(io, 'device:syncing', { deviceId, name: device.name });
+    if (auditVerbose) {
+      await recordDeviceAudit({
+        action: ACTION.SYNC_STARTED, result: RESULT.SUCCESS, actor: auditActor, device,
+        metadata: { triggeredBy, syncLogId: syncLog.id },
+      });
+    }
+    await setDeviceStatus(deviceId, STATUS.SYNCING, null);
+
+    // The realtime event listener (CMD_REG_EVENT) holds the device's single
+    // TCP session. Pause it before opening a recovery-poll connection so the
+    // two paths never fight over the same session, then resume it afterwards.
+    realtimeListener.pauseListener(deviceId);
+    await sleep(500);
+
     // ── Live workflow steps ──────────────────────────────────────────────────
     // Additive, observation-only events layered on top of the existing sync
     // flow above — every emission below fires at a checkpoint the code was
@@ -347,13 +413,28 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
 
       await prisma.deviceSyncLog.update({
         where: { id: syncLog.id },
-        data: { status: 'failed', error: msg, completedAt: new Date(), duration: Date.now() - t0 },
+        data: { status: 'failed', error: clipForDb(msg), completedAt: new Date(), duration: Date.now() - t0 },
       });
 
+      const connCode = classifyConnectError(msg);
+      await recordDeviceAudit({
+        action: ACTION.DEVICE_CONNECT_FAILED, result: RESULT.FAILED, actor: auditActor, device,
+        errorCode: connCode, errorMessage: msg, metadata: { triggeredBy, syncLogId: syncLog.id, consecutiveErrors: errCount },
+      });
+      await recordDeviceAudit({
+        action: ACTION.SYNC_FAILED, result: RESULT.FAILED, actor: auditActor, device,
+        errorCode: connCode, errorMessage: msg, metadata: { triggeredBy, syncLogId: syncLog.id, stage: 'connect', durationMs: Date.now() - t0 },
+      });
       emit(io, 'device:offline', { deviceId, name: device.name, error: msg });
-      return { count: 0, error: msg, deviceId };
+      return { count: 0, error: msg, deviceId, connectFailed: true, ip: device.ipAddress, port: device.port };
     }
     emit(io, 'device:sync-step', { deviceId, name: device.name, step: 'connected' });
+    if (auditVerbose) {
+      await recordDeviceAudit({
+        action: ACTION.DEVICE_CONNECT_SUCCEEDED, result: RESULT.SUCCESS, actor: auditActor, device,
+        metadata: { triggeredBy, syncLogId: syncLog.id },
+      });
+    }
 
     // ── Device integrity pre-check (Step 4) ─────────────────────────────────
     // Cheap CMD_GET_FREE_SIZES call: gives the device's own buffer count
@@ -540,6 +621,7 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
         // handling, executed as one INSERT instead of 50 round-trips.
         const res = await prisma.attendanceLog.createMany({ data: rows, skipDuplicates: true });
         newCount += res.count;
+        rawLogCountCache.adjust(deviceId, res.count);
         dupCount += rows.length - res.count;
       } catch (e) {
         logger.warn(`[ZK] Batch insert error (${rows.length} rows): ${e.message}`);
@@ -655,7 +737,7 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
           lastSyncCount:     newCount,
           totalLogsCount:    { increment: newCount },
           status:            STATUS.ONLINE,
-          errorMessage:      reason,
+          errorMessage:      clipForDb(reason),
           // Don't trip exponential backoff for partial pulls — the connection
           // itself succeeded (connectDevice already reset consecutiveErrors
           // to 0 on connect), so the scheduler keeps retrying at the normal
@@ -685,8 +767,8 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
           oldestTimestamp:   oldestTs,
           newestTimestamp:   newestTs,
           convergencePasses: passesRun,
-          zkErr:             lastZkErr ? String(lastZkErr.message || lastZkErr) : null,
-          error:             reason,
+          zkErr:             lastZkErr ? clipForDb(String(lastZkErr.message || lastZkErr)) : null,
+          error:             clipForDb(reason),
           completedAt:       new Date(),
           duration,
         },
@@ -695,6 +777,12 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
       emit(io, 'device:synced', {
         deviceId, name: device.name, newLogs: newCount, totalLogs: logs.length,
         duplicates: dupCount, duration, success: false, partial: true, reason,
+      });
+
+      await recordDeviceAudit({
+        action: ACTION.SYNC_COMPLETED, result: RESULT.PARTIAL, actor: auditActor, device,
+        errorCode: 'PARTIAL_PULL', errorMessage: reason,
+        metadata: { triggeredBy, syncLogId: syncLog.id, newLogs: newCount, totalLogs: logs.length, duplicates: dupCount, invalid: invalidCount, passes: passesRun, durationMs: duration },
       });
 
       // ── Gap detection still runs on partial pulls — newest visible
@@ -763,6 +851,10 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
     });
 
     logger.info(`[ZK] "${device.name}": ${newCount} new / ${logs.length} merged (converged in ${passesRun} pass(es), ${duration}ms)`);
+    await recordDeviceAudit({
+      action: ACTION.SYNC_COMPLETED, result: RESULT.SUCCESS, actor: auditActor, device,
+      metadata: { triggeredBy, syncLogId: syncLog.id, newLogs: newCount, totalLogs: logs.length, duplicates: dupCount, invalid: invalidCount, passes: passesRun, durationMs: duration },
+    });
 
     // ── STEP 6: gap detection ────────────────────────────────────────────────
     checkAttendanceGap(device, dbNewestTs, io);
@@ -793,14 +885,22 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
         where: { id: syncLog.id },
         data: {
           status:      'failed',
-          error:       msg,
+          error:       clipForDb(msg),
           completedAt: new Date(),
           duration:    Date.now() - t0,
         },
       });
 
+      await recordDeviceAudit({
+        action: ACTION.SYNC_FAILED, result: RESULT.FAILED, actor: auditActor, device,
+        errorCode: watchdogFired ? 'SYNC_TIMEOUT' : 'SYNC_ERROR', errorMessage: msg,
+        metadata: { triggeredBy, syncLogId: syncLog.id, stage: 'transfer', durationMs: Date.now() - t0 },
+      });
       emit(io, 'device:error', { deviceId, name: device.name, error: msg });
-      return { count: 0, error: msg, deviceId };
+      const errorKind = watchdogFired ? 'SYNC_TIMEOUT'
+        : /disconnect|ECONNRESET|EPIPE|write after end|socket/i.test(msg) ? 'DEVICE_DISCONNECTED'
+        : 'SYNC_ERROR';
+      return { count: 0, error: msg, deviceId, errorKind };
     }
   } finally {
     clearTimeout(watchdog);
@@ -815,17 +915,87 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto') {
   }
 }
 
+// ─── Stale sync recovery (crash / hard-kill safety) ─────────────────────────
+// A sync records itself as DeviceSyncLog.status='running' and sets
+// Device.status='syncing'; both are rewritten in pullLogs()'s own success/failure
+// paths, and the in-memory gate is always released in its finally. If the PROCESS
+// dies mid-sync (crash, power loss, Windows TerminateProcess) none of that runs,
+// leaving a 'running' row and a device stuck on 'syncing' forever.
+//
+// This repairs exactly that, and only that:
+//   - a log counts as stale only after STALE_SYNC_MS — well beyond the 10-minute
+//     sync watchdog plus connect/post-processing time;
+//   - a device whose gate is held in THIS process is never touched (its
+//     operation is alive, whatever its age) — the gate itself is not modified;
+//   - rows are updated with a status='running' guard, so a sync that finishes
+//     while this runs is never overwritten;
+//   - a 'syncing' device is only reset when no in-progress log is left for it,
+//     and to 'offline' (the honest "unknown") — the next sync sets the real state.
+const STALE_SYNC_MS = 30 * 60 * 1000;
+const MAX_INT32 = 2147483647;   // DeviceSyncLog.duration is a signed 32-bit INT (milliseconds)
+
+async function recoverStaleSyncState() {
+  const cutoff = new Date(Date.now() - STALE_SYNC_MS);
+  const now = Date.now();
+  let logsRecovered = 0; let devicesReset = 0;
+
+  const stale = await prisma.deviceSyncLog.findMany({
+    where: { status: 'running', completedAt: null, startedAt: { lt: cutoff } },
+    select: { id: true, deviceId: true, startedAt: true },
+  });
+  for (const row of stale) {
+    if (deviceGate.isExclusiveHeld(row.deviceId)) continue;   // live operation in this process
+    // One bad row must never stop the pass: each update is isolated, so every other
+    // stale row (and the device reset below) is still handled.
+    try {
+      const r = await prisma.deviceSyncLog.updateMany({
+        where: { id: row.id, status: 'running' },
+        data: {
+          status: 'failed',
+          error: clipForDb('Interrupted — the backend stopped or the sync timed out before it finished'),
+          completedAt: new Date(),
+          // `duration` is a 32-bit INT (ms): a log stale for more than ~24.9 days would
+          // overflow it and make MySQL reject the whole update. Clamp to the INT maximum.
+          duration: Math.min(now - new Date(row.startedAt).getTime(), MAX_INT32),
+        },
+      });
+      logsRecovered += r.count;
+    } catch (err) {
+      logger.error(`[SYNC-RECOVERY] could not close stale sync log #${row.id}: ${err.message}`);
+    }
+  }
+
+  const syncing = await prisma.device.findMany({ where: { status: STATUS.SYNCING }, select: { id: true } });
+  for (const d of syncing) {
+    if (deviceGate.isExclusiveHeld(d.id)) continue;
+    try {
+      const live = await prisma.deviceSyncLog.count({ where: { deviceId: d.id, status: 'running', completedAt: null } });
+      if (live > 0) continue;                                    // a recent (or other-process) sync is still in progress
+      const r = await prisma.device.updateMany({
+        where: { id: d.id, status: STATUS.SYNCING },
+        data: { status: STATUS.OFFLINE, errorMessage: clipForDb('Sync interrupted — status reset after restart') },
+      });
+      devicesReset += r.count;
+    } catch (err) {
+      logger.error(`[SYNC-RECOVERY] could not reset device #${d.id} stuck in 'syncing': ${err.message}`);
+    }
+  }
+
+  if (logsRecovered || devicesReset) logger.warn(`[SYNC-RECOVERY] closed ${logsRecovered} stale sync log(s), reset ${devicesReset} device(s) stuck in 'syncing'`);
+  return { logsRecovered, devicesReset };
+}
+
 // ─── Sync all enabled devices (parallel) ─────────────────────────────────────
 // Per-device sync locks already prevent overlapping syncs for the same device,
 // so parallel execution across different devices is safe.
-async function pullAllDevices(io) {
+async function pullAllDevices(io, actor = null) {
   const devices = await prisma.device.findMany({
     where: { enabled: true, autoSync: true, isArchived: false },
   });
 
   const results = await Promise.all(
     devices.map(device =>
-      pullLogs(device.id, io, 'auto')
+      pullLogs(device.id, io, 'auto', actor)
         .then(r  => ({ deviceId: device.id, name: device.name, ...r }))
         .catch(err => ({ deviceId: device.id, name: device.name, count: 0, error: err.message }))
     )
@@ -834,7 +1004,10 @@ async function pullAllDevices(io) {
 }
 
 // ─── Test connection (no sync, no DB write) ───────────────────────────────────
-async function testConnection(ipAddress, port) {
+// Raw probe: opens a session itself and NEVER checks the gate — only call it
+// while holding a lease for the device (or for an endpoint that is not a
+// registered device).
+async function probeEndpoint(ipAddress, port) {
   const zk = new ZKLib(ipAddress, parseInt(port) || 4370, 5000, 2000);
   const t0 = Date.now();
   try {
@@ -844,7 +1017,25 @@ async function testConnection(ipAddress, port) {
     safeDisconnect(zk);
     return { success: true, info, latency: Date.now() - t0 };
   } catch (err) {
+    safeDisconnect(zk);
     return { success: false, error: zkErrorMessage(err, 'Connection failed'), latency: Date.now() - t0 };
+  }
+}
+
+// Public test: if the endpoint is a registered device, the probe goes through
+// that device's gate like every other connection path (so it can never open a
+// second session next to a sync or the realtime listener).
+async function testConnection(ipAddress, port) {
+  const portNum = parseInt(port) || 4370;
+  const device = await prisma.device.findFirst({ where: { ipAddress, port: portNum, isArchived: false }, select: { id: true, name: true } });
+  if (!device) return probeEndpoint(ipAddress, portNum);
+
+  const lease = acquireDevice(device.id, 'test-connection');
+  if (!lease) return { success: false, busy: true, error: deviceBusyMessage(device), latency: 0 };
+  try {
+    return await probeEndpoint(ipAddress, portNum);
+  } finally {
+    lease.release();
   }
 }
 
@@ -863,7 +1054,17 @@ async function pingDevice(deviceId) {
     return { online: true, latency: 0, deviceId, viaRealtime: true };
   }
 
-  const result = await testConnection(device.ipAddress, device.port);
+  // Not answerable from the listener: probe through the gate. If another
+  // operation holds the device, report busy WITHOUT touching its stored status
+  // (a skipped probe is not evidence of "offline").
+  const lease = acquireDevice(deviceId, 'ping');
+  if (!lease) return { online: device.status === STATUS.ONLINE, busy: true, deviceId };
+  let result;
+  try {
+    result = await probeEndpoint(device.ipAddress, device.port);
+  } finally {
+    lease.release();
+  }
   const status = result.success ? STATUS.ONLINE : STATUS.OFFLINE;
   await setDeviceStatus(deviceId, status, result.success ? null : result.error);
   return { online: result.success, latency: result.latency, deviceId };
@@ -876,17 +1077,18 @@ async function getDeviceUsers(deviceId) {
   const device = await prisma.device.findUnique({ where: { id: deviceId } });
   if (!device) throw new Error(`Device ${deviceId} not found`);
 
-  realtimeListener.pauseListener(deviceId);
-  await sleep(500);
+  const lease = acquireDevice(deviceId, 'users');
+  if (!lease) throw new Error(deviceBusyMessage(device));
   let zk;
   try {
+    await sleep(500);
     zk = await connectDevice(device);
     const users = await zk.getUsers();
     return users?.data || [];
   } finally {
     safeDisconnect(zk);
     activeConnections.delete(String(deviceId));
-    realtimeListener.resumeListener(deviceId, null);
+    lease.release();
   }
 }
 
@@ -895,7 +1097,7 @@ async function getDeviceUsers(deviceId) {
 // (18) followed by CMD_DELETE_USERTEMP (19, fingerprint templates) and
 // CMD_REFRESHDATA (1013) to commit the change on the device.
 // Returns { success, deviceId, deviceName, uid? } — never throws.
-async function deleteDeviceUser(deviceId, zkUserId) {
+async function deleteDeviceUser(deviceId, zkUserId, actor = null) {
   const CMD_DELETE_USER     = 18;
   const CMD_DELETE_USERTEMP = 19;
   const CMD_REFRESHDATA     = 1013;
@@ -906,10 +1108,11 @@ async function deleteDeviceUser(deviceId, zkUserId) {
     return { success: false, error: 'الجهاز غير مفعّل', deviceId, deviceName: device.name };
   }
 
-  realtimeListener.pauseListener(deviceId);
-  await sleep(400);
+  const lease = acquireDevice(deviceId, 'delete-user');
+  if (!lease) return { success: false, busy: true, error: deviceBusyMessage(device), deviceId, deviceName: device.name };
   let zk;
   try {
+    await sleep(400);
     zk = await connectDevice(device);
 
     // Map zkUserId → device-internal UID
@@ -918,6 +1121,10 @@ async function deleteDeviceUser(deviceId, zkUserId) {
     const target = users.find(u => String(u.userId).trim() === String(zkUserId).trim());
 
     if (!target) {
+      await recordDeviceAudit({
+        action: ACTION.DEVICE_USER_DELETED, result: RESULT.FAILED, actor, device,
+        errorCode: 'USER_NOT_FOUND', errorMessage: `ZK ID ${zkUserId} not found on device`, metadata: { zkUserId: String(zkUserId) },
+      });
       return {
         success: false, notFound: true,
         error: `ZK ID ${zkUserId} غير موجود على الجهاز`,
@@ -936,15 +1143,24 @@ async function deleteDeviceUser(deviceId, zkUserId) {
       `[ZK-DELETE] Removed zkUserId=${zkUserId} (uid=${target.uid}) ` +
       `from device "${device.name}" (${device.ipAddress}:${device.port})`
     );
+    await recordDeviceAudit({
+      action: ACTION.DEVICE_USER_DELETED, result: RESULT.SUCCESS, actor, device,
+      metadata: { zkUserId: String(zkUserId), uid: target.uid },
+    });
     return { success: true, deviceId, deviceName: device.name, uid: target.uid };
   } catch (err) {
     const msg = zkErrorMessage(err, err.message || 'فشل حذف المستخدم من الجهاز');
     logger.error(`[ZK-DELETE] device=${deviceId} zkUserId=${zkUserId}: ${msg}`);
+    await recordDeviceAudit({
+      action: ACTION.DEVICE_USER_DELETED, result: RESULT.FAILED, actor, device,
+      errorCode: classifyConnectError(msg) === 'CONNECT_FAILED' ? 'DEVICE_COMMAND_FAILED' : classifyConnectError(msg),
+      errorMessage: msg, metadata: { zkUserId: String(zkUserId) },
+    });
     return { success: false, error: msg, deviceId, deviceName: device.name };
   } finally {
     safeDisconnect(zk);
     activeConnections.delete(String(deviceId));
-    realtimeListener.resumeListener(deviceId, null);
+    lease.release();
   }
 }
 
@@ -958,5 +1174,6 @@ module.exports = {
   getDeviceUsers,
   deleteDeviceUser,
   isDeviceSyncRunning,
+  recoverStaleSyncState,
   STATUS,
 };

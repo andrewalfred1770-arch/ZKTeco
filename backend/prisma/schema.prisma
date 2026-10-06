@@ -538,3 +538,34 @@ model CompanySettingAudit {
 
   @@map("company_setting_audits")
 }
+
+// Fingerprint-device audit trail (Task 5). Deliberately has NO relation to
+// Device: audit rows must survive device deletion (DeviceSyncLog cascades away
+// with its device, so it cannot serve as history). Device identity is
+// therefore copied into each row (deviceName/deviceIp/devicePort) alongside the
+// plain, un-constrained deviceId. Rows are append-only; nothing deletes them.
+model DeviceAuditLog {
+  id           Int      @id @default(autoincrement())
+  createdAt    DateTime @default(now())
+  actorType    String   @default("system")   // user | local | system
+  actorId      Int?
+  actorName    String?
+  actorRole    String?
+  action       String                          // DEVICE_CREATED, SYNC_COMPLETED, ...
+  result       String                          // SUCCESS | FAILED | BLOCKED | PARTIAL
+  entityType   String   @default("device")
+  deviceId     Int?                            // plain column, NOT a foreign key
+  deviceName   String?
+  deviceIp     String?
+  devicePort   Int?
+  errorCode    String?
+  errorMessage String?  @db.Text
+  before       Json?
+  after        Json?
+  metadata     Json?
+
+  @@index([createdAt])
+  @@index([deviceId, createdAt])
+  @@index([action])
+  @@map("device_audit_logs")
+}

@@ -9,6 +9,7 @@
  */
 import React, { useState } from 'react';
 import { Search, X, ChevronDown, ChevronUp, Filter } from 'lucide-react';
+import DebouncedInput from './ui/DebouncedInput';
 
 // ── Quick-filter chip definitions ──────────────────────────────────────────
 const QUICK_CHIPS = [
@@ -110,8 +111,12 @@ export default function AttendanceFilterBar({
   return (
     <div className="card" style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 7 }}>
 
-      {/* ── Row 1: Quick filter chips ────────────────────────────────────── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+      {/* ── Row 1 (desktop only): Quick filter chips + search + toggle on
+          one row — unchanged from before. On mobile this entire row is
+          replaced by the compact Row 1b below; the chips reappear inside
+          the collapsible panel instead so nothing is lost, just reachable
+          one tap further in. ────────────────────────────────────────── */}
+      <div className="hidden md:flex" style={{ alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
         {QUICK_CHIPS.map(chip => {
           const isCurrent = activeQuick === chip.key ||
             (chip.key === 'all' && !isActive);
@@ -136,13 +141,13 @@ export default function AttendanceFilterBar({
         <span style={{ flex: 1 }} />
 
         {/* Search */}
-        <div style={{ position: 'relative', width: 200 }}>
+        <div className="w-[200px]" style={{ position: 'relative' }}>
           <Search style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, color: 'var(--text-3)' }} />
-          <input
+          <DebouncedInput
             type="text"
             placeholder="بحث: اسم، كود، قسم..."
             value={filters.search}
-            onChange={e => updateFilter('search', e.target.value)}
+            onCommit={v => updateFilter('search', v)}
             className="input text-xs py-1"
             style={{ paddingRight: 28, paddingLeft: 8, width: '100%' }}
           />
@@ -179,6 +184,77 @@ export default function AttendanceFilterBar({
           </button>
         )}
       </div>
+
+      {/* ── Row 1b (mobile only): compact default — search + a single
+          "الفلاتر ▼" toggle that reveals quick chips + advanced fields.
+          This is the entire default-visible filter footprint on a phone. */}
+      <div className="flex md:hidden" style={{ alignItems: 'center', gap: 6 }}>
+        <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+          <Search style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, color: 'var(--text-3)' }} />
+          <DebouncedInput
+            type="text"
+            placeholder="بحث: اسم، كود، قسم..."
+            value={filters.search}
+            onCommit={v => updateFilter('search', v)}
+            className="input text-xs py-1"
+            style={{ paddingRight: 28, paddingLeft: 8, width: '100%' }}
+          />
+          {filters.search && (
+            <button onClick={() => updateFilter('search', '')}
+              style={{ position: 'absolute', left: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-3)' }}>
+              <X style={{ width: 12, height: 12 }} />
+            </button>
+          )}
+        </div>
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="touch-target"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 4, padding: '0 12px', height: 34, flexShrink: 0,
+            borderRadius: 6, fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
+            border: '1px solid',
+            background:  (open || isActive) ? 'var(--accent-soft)' : 'var(--surface-2)',
+            borderColor: (open || isActive) ? 'var(--accent)'      : 'var(--border)',
+            color:       (open || isActive) ? 'var(--accent)'      : 'var(--text-2)',
+          }}>
+          <Filter style={{ width: 13, height: 13 }} />
+          الفلاتر
+          {open ? <ChevronUp style={{ width: 13, height: 13 }} /> : <ChevronDown style={{ width: 13, height: 13 }} />}
+        </button>
+      </div>
+
+      {/* ── Mobile-only: quick chips + clear, revealed with the panel below
+          instead of always occupying the compact default row. ─────────── */}
+      {open && (
+        <div className="flex md:hidden" style={{ alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+          {QUICK_CHIPS.map(chip => {
+            const isCurrent = activeQuick === chip.key ||
+              (chip.key === 'all' && !isActive);
+            return (
+              <button
+                key={chip.key}
+                onClick={() => applyQuick(chip.key)}
+                style={{
+                  padding: '3px 11px', borderRadius: 20, fontSize: 12.5, fontWeight: 700,
+                  cursor: 'pointer', border: '1px solid',
+                  background:  isCurrent ? chip.color : chip.bg,
+                  borderColor: isCurrent ? chip.color : 'transparent',
+                  color:       isCurrent ? '#fff'     : chip.color,
+                  transition:  'all 0.12s',
+                }}>
+                {chip.label}
+              </button>
+            );
+          })}
+          {isActive && (
+            <button onClick={clearFilters}
+              style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 9px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer', border: '1px solid rgba(220,38,38,0.35)', background: 'rgba(220,38,38,0.07)', color: '#dc2626' }}>
+              <X style={{ width: 13, height: 13 }} />
+              مسح الفلاتر
+            </button>
+          )}
+        </div>
+      )}
 
       {/* ── Row 2: Advanced panel (collapsible) ─────────────────────────── */}
       {open && (

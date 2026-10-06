@@ -38,7 +38,7 @@ export const APP_NAME     = 'PETSHROW ERP';
 // prove the EXE is loading THIS build and not a stale cached app.asar/dist.
 // Printed in [Startup Diagnostics] below and surfaced in the renderer console
 // + sidebar (see branding.js BRAND.buildMarker / Layout.jsx).
-export const BUILD_MARKER = 'BUILD: 2026-08-17-release-1.2.2-version-bump';
+export const BUILD_MARKER = 'BUILD: 2026-10-05-release-10.0.0-tasks-1-8-final';
 export const HEALTH_URL   = `http://localhost:${BACKEND_PORT}/api/health`;
 export const FRONTEND_URL = `http://localhost:${VITE_PORT}`;  // dev only
 
@@ -48,3 +48,10 @@ export const FRONTEND_URL = `http://localhost:${VITE_PORT}`;  // dev only
 // app's package.json version and the backend's — bump only on a real
 // API-contract change (must stay in sync with backend/src/apiVersion.js).
 export const REQUIRED_API_VERSION = 1;
+
+// Exit status the backend uses when it deliberately refuses to start because its
+// database is not in a verified-good state (failed migration / unexpected
+// bootstrap failure). Restarting it would only fail identically, so backend.js
+// does NOT auto-restart on it. Must stay in sync with EXIT_STARTUP_BLOCKED in
+// backend/src/init/bootstrapResult.js.
+export const BACKEND_EXIT_STARTUP_BLOCKED = 78;

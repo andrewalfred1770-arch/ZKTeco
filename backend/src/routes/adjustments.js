@@ -8,7 +8,9 @@
  * - Only approved adjustments affect payroll
  * - Every change is logged to AdjustmentAuditLog
  */
-const router = require('express').Router();
+const router = require('express').Router();
+const { sendError, numericIdParam } = require('../utils/apiError');
+router.param('id', numericIdParam);
 const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
 const payrollEngine = require('../engines/payrollEngine');
@@ -16,6 +18,7 @@ const attendanceEngine = require('../engines/attendanceEngine');
 const logger = require('../utils/logger');
 const { authenticate, authorize } = require('../middleware/auth');
 const { currentMonthRange } = require('../utils/monthRange');
+const { attendanceScopeWhere } = require('../utils/employmentEligibility');
 const { writeAudit } = require('../utils/manualEditAudit');
 
 const prisma = getPrisma();
@@ -135,7 +138,7 @@ router.get('/', authorize('admin', 'hr'), async (req, res) => {
     const startDate = from ? new Date(from) : defaultRange.start.toDate();
     const endDate   = to   ? new Date(to)   : defaultRange.end.toDate();
 
-    const empWhere = { status: true };
+    const empWhere = attendanceScopeWhere({ from: startDate, to: endDate });
     if (branchId) empWhere.branchId = parseInt(branchId);
     if (employeeId) empWhere.id = parseInt(employeeId);
 
@@ -170,7 +173,7 @@ router.get('/', authorize('admin', 'hr'), async (req, res) => {
     });
 
     res.json({ adjustments, total });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ── GET /api/adjustments/daily — full attendance + adjustment overlay ──────────
@@ -188,7 +191,7 @@ router.get('/daily', authorize('admin', 'hr'), async (req, res) => {
       endDate   = to   ? new Date(to)   : defaultRange.end.toDate();
     }
 
-    const empWhere = { status: true };
+    const empWhere = attendanceScopeWhere({ from: startDate, to: endDate });
     if (branchId)    empWhere.branchId = parseInt(branchId);
     if (employeeId)  empWhere.id       = parseInt(employeeId);
 
@@ -275,7 +278,7 @@ router.get('/daily', authorize('admin', 'hr'), async (req, res) => {
     };
 
     res.json({ rows, counts });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ── GET /api/adjustments/:id — single adjustment with full audit ───────────────
@@ -291,7 +294,7 @@ router.get('/:id', authorize('admin', 'hr'), async (req, res) => {
     });
     if (!adj) return res.status(404).json({ error: 'Adjustment not found' });
     res.json(adj);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ── POST /api/adjustments — create from a daily record ────────────────────────
@@ -372,7 +375,7 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
     await logAudit(adj.id, 'created', { userId: createdBy, userName: createdByName, userRole: createdByRole, reason });
 
     res.status(201).json(adj);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ── PUT /api/adjustments/:id — update overrides ────────────────────────────────
@@ -449,7 +452,7 @@ router.put('/:id', authorize('admin', 'hr'), async (req, res) => {
     }
 
     res.json(updated);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ── POST /api/adjustments/:id/approve ─────────────────────────────────────────
@@ -481,7 +484,7 @@ router.post('/:id/approve', authorize('admin', 'hr'), async (req, res) => {
     recalcForAdjustment(adj, req.io, 'approved');
 
     res.json({ message: 'تم الاعتماد بنجاح', adjustment: adj });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ── POST /api/adjustments/:id/reject ──────────────────────────────────────────
@@ -505,7 +508,7 @@ router.post('/:id/reject', authorize('admin', 'hr'), async (req, res) => {
 
     await logAudit(id, 'rejected', { userId: rejectedBy, userName: rejectedByName, userRole: 'hr', reason });
     res.json({ message: 'تم الرفض', adjustment: adj });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ── POST /api/adjustments/:id/revert ──────────────────────────────────────────
@@ -554,7 +557,7 @@ router.post('/:id/revert', authorize('admin', 'hr'), async (req, res) => {
     }).catch((err) => logger.error(`[Adjustments] revert audit write failed (adj #${id}): ${err.message}`));
 
     res.json({ message: 'تم الإلغاء واسترجاع القيم الأصلية' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ── POST /api/adjustments/:id/flag — quick flag toggles ───────────────────────
@@ -576,7 +579,7 @@ router.post('/:id/flag', authorize('admin', 'hr'), async (req, res) => {
 
     await logAudit(id, 'flag_toggled', { field: flag, old, new: value, userId, userName });
     res.json(adj);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ── GET /api/adjustments/:id/audit — full audit trail ─────────────────────────
@@ -587,7 +590,7 @@ router.get('/:id/audit', authorize('admin', 'hr'), async (req, res) => {
       orderBy: { changedAt: 'desc' },
     });
     res.json(logs);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ── POST /api/adjustments/bulk-approve ────────────────────────────────────────
@@ -660,7 +663,7 @@ router.post('/bulk-approve', authorize('admin', 'hr'), async (req, res) => {
       count: results.filter(r => r.success).length,
       protectedPayroll: protectedTargets,
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

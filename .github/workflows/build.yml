@@ -514,7 +514,9 @@ jobs:
             echo "================ app metadata version / API_VERSION ================"
             APP_VERSION=$(node -e "console.log(require('$ASAR_DIR/package.json').version)")
             echo "Packaged version: $APP_VERSION"
-            [ "$APP_VERSION" = "1.1.2" ] && echo "OK: version is 1.1.2" || { echo "FAIL: version is '$APP_VERSION', expected 1.1.2"; exit 1; }
+            EXPECTED_VERSION=$(node -e "console.log(require('./package.json').version)")
+            echo "Expected version (from checked-out frontend/package.json): $EXPECTED_VERSION"
+            [ "$APP_VERSION" = "$EXPECTED_VERSION" ] && echo "OK: version is $EXPECTED_VERSION" || { echo "FAIL: version is '$APP_VERSION', expected '$EXPECTED_VERSION'"; exit 1; }
             API_VERSION=$(node -e "console.log(require('$ASAR_DIR/backend/src/apiVersion.js').API_VERSION)" 2>/dev/null || echo "unreadable")
             echo "Packaged backend API_VERSION: $API_VERSION"
             [ "$API_VERSION" = "1" ] && echo "OK: API_VERSION is 1" || echo "NOTE: could not confirm API_VERSION from packaged backend (non-fatal, informational)"

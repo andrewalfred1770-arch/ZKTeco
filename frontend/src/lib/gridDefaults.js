@@ -20,6 +20,18 @@ export const ENTERPRISE_DEFAULT_COL_DEF = {
   lockPinned: true,
   suppressHeaderMenuButton: false,
   suppressSizeToFit: false,
+  // Mobile responsive fix: many pinned "utility" columns (#, كود, checkbox,
+  // status, date) across the app never set their own minWidth — only their
+  // initial `width`. onGridSizeChanged's sizeColumnsToFit() (below) shrinks
+  // every column toward the container's current width on every resize, and
+  // without an explicit minWidth AG Grid's own internal floor is small
+  // enough that these columns visibly collapsed (observed ~15px, headers/
+  // cell text overlapping) once the container narrowed to a phone-width
+  // viewport. A column that already declares its own (larger) minWidth is
+  // unaffected — defaultColDef only fills in properties a column doesn't
+  // set itself — so this is purely a floor for the previously-unprotected
+  // columns, not a change to any column's normal/desktop sizing.
+  minWidth: 60,
 };
 
 export const ENTERPRISE_GRID_PROPS = {
@@ -45,8 +57,18 @@ export const ENTERPRISE_GRID_PROPS = {
   // Guarded on a real width: a grid that fires this while zero-width (mounted
   // on a not-yet-visible route, mid-transition) would otherwise trip AG Grid's
   // "zero width" warning — the later real-size event does the actual fit.
+  // Mobile responsive fix: sizeColumnsToFit() compresses EVERY column
+  // (down to its minWidth floor) to cram the full column set into whatever
+  // width is available — correct on a wide desktop monitor (EP-025, above),
+  // but on a phone-width container this is exactly what produces "columns
+  // technically fit the viewport but are squeezed unreadable" instead of a
+  // real mobile table. Below ~640px, skip the fit entirely and let the grid
+  // render columns at their natural/configured widths with AG Grid's own
+  // horizontal scrollbar handling the rest — a real "swipe to see more
+  // columns" experience instead of a shrunken desktop table. 640 matches
+  // Tailwind's own `sm` breakpoint already used elsewhere in the app.
   onGridSizeChanged: (params) => {
-    if (params.clientWidth > 0) params.api.sizeColumnsToFit();
+    if (params.clientWidth > 0 && window.innerWidth >= 640) params.api.sizeColumnsToFit();
   },
   // Native OS tooltip for any column with tooltipValueGetter/tooltipField
   // (e.g. the manual-override explanation) — no effect on columns without

@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useFocusTrap } from '../hooks/useFocusTrap';
+import { useIsNarrowViewport } from '../hooks/useIsNarrowViewport';
+import { useGridPagination } from '../hooks/useGridPagination';
 import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-quartz.css';
-import { Download, Play, Loader2, RefreshCw, Users, Printer, AlertTriangle, X, ClipboardList, ChevronDown, ChevronUp, CalendarDays } from 'lucide-react';
+import { Download, Play, Loader2, RefreshCw, Users, Printer, AlertTriangle, X, ClipboardList, ChevronDown, ChevronUp, CalendarDays, Search } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api, { LONG_OP } from '../lib/api';
 import { useTheme } from '../contexts/ThemeContext';
@@ -11,12 +13,15 @@ import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import { fmtMoney, fmtIntZero, fmtOTHours, fmtPenaltyUnits, fmtEditableZero, fmtDec, displayNetSalary } from '../lib/formatters';
 import FinalSalaryModal from '../components/FinalSalaryModal';
 import PrintPreviewModal from '../components/PrintPreviewModal';
+import DebouncedInput from '../components/ui/DebouncedInput';
 import PayrollBreakdownDialog from '../components/PayrollBreakdownDialog';
 import EmployeeMonthlyStatementDrawer from '../components/EmployeeMonthlyStatementDrawer';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
 import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_TINY, tabToNextCell, safeRefreshCells } from '../lib/gridDefaults';
 import { MONTHS_AR, getYearRange } from '../lib/constants';
+import { MobileActionsMenu } from '../components/ui';
+import { normalizeSearch } from '../lib/searchText';
 
 const NUM    = { textAlign:'right', direction:'ltr', fontFamily:'Consolas,monospace' };
 const CENTER = { justifyContent:'center', textAlign:'center' };
@@ -166,6 +171,10 @@ export default function PayrollPage() {
   const [month,  setMonth]  = useState(now.getMonth() + 1);
   const [year,   setYear]   = useState(now.getFullYear());
   const [deptId, setDeptId] = useState(0); // 0 = جميع الأقسام
+  // Name search — display-only: fed to AG Grid's native quick filter below, so it
+  // combines with the (server-side) dept/month filters and never touches `rows`,
+  // totals, calculations, print or export.
+  const [searchQ, setSearchQ] = useState('');
   const gridRef = useRef();
   const savingCellsRef = useRef(new Set());
   // Counts in-flight PUT requests — live-sync reloads (useRulesLiveSync/
@@ -201,6 +210,16 @@ export default function PayrollPage() {
   const openReview = useCallback((row) => setReviewRow(row), []);
   const openMonthlyStatement = useCallback((row) => setStatementRow(row), []);
 
+  // Two pinned groups (code+name pinned right, netSalary+action pinned left)
+  // never shrink and always keep their configured width — pinned-right alone
+  // (code+name, ~280px) already leaves little room on a phone-width screen,
+  // and adding either pinned-left column on top of that still overlaps the
+  // first scrollable column below ~480px. Unpinning both left-pinned columns
+  // there lets them flow into the normal scrollable region instead — still
+  // reachable by scrolling, just no longer permanently docked.
+  const isNarrow = useIsNarrowViewport(480);
+  const pagination = useGridPagination(50, [25, 50, 100]);
+
   const cols = useMemo(() => [
     // ── Identity (pinned right, always visible while scrolling) ───────────────
     {
@@ -212,6 +231,7 @@ export default function PayrollPage() {
       field: 'employee.name', headerName: 'اسم الموظف', width: 210, minWidth: 170, pinned: 'right',
       cellRenderer: EmployeeNameCell,
       cellStyle: { display: 'flex', alignItems: 'center' },
+      getQuickFilterText: (p) => normalizeSearch(`${p.data?.employee?.name ?? ''} ${p.data?.employee?.code ?? ''}`),
     },
     // ── Earnings — basicSalary is editable inline ─────────────────────────────
     {
@@ -293,7 +313,7 @@ export default function PayrollPage() {
     // (basic/OT/deductions/advances), which could disagree with the other
     // consumers' own independent re-derivations by ±1 on some rows (EF-019).
     {
-      field: 'netSalary', headerName: 'صافي الراتب', width: 128, minWidth: 112, pinned: 'left',
+      field: 'netSalary', headerName: 'صافي الراتب', width: 128, minWidth: 112, pinned: isNarrow ? undefined : 'left',
       headerClass: 'ag-header-center',
       // `.ag-cell{font-weight:500!important}` (index.css) beats any
       // fontWeight set via cellStyle — same reason cell-manual-override
@@ -314,15 +334,17 @@ export default function PayrollPage() {
     // title (see that component). Width widened by the removed column's
     // freed space to fit the three action buttons this column now holds.
     {
-      field: '_action', headerName: '', width: 150, minWidth: 140, pinned: 'left',
+      field: '_action', headerName: '', width: 150, minWidth: 140, pinned: isNarrow ? undefined : 'left',
       sortable: false, filter: false, suppressHeaderMenuButton: true,
       headerClass: 'ag-header-center',
       cellRenderer: DetailBtnRenderer,
       cellStyle: { ...CENTER },
     },
-  ], []);
+  ], [isNarrow]);
 
-  const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
+  // Quick filter (name search) must match the employee name/code only — never
+  // salary figures — so every column opts out; the name column opts back in.
+  const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF, getQuickFilterText: () => '' }), []);
 
   // Guarded regardless of trigger (background live-sync OR the manual
   // refresh button) — either would otherwise replace rowData mid-edit.
@@ -536,8 +558,10 @@ export default function PayrollPage() {
             separated by a hairline from the one primary action, so the
             single most consequential button on the page (احتساب المرتبات)
             never competes visually with the read-only export buttons. */}
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Secondary actions: full row on desktop, "⋮ المزيد" overflow on
+              mobile — same three actions, nothing removed. */}
+          <div className="hidden md:flex items-center gap-2 flex-wrap">
             <button
               onClick={() => {
                 if (rows.length === 0) {
@@ -556,7 +580,19 @@ export default function PayrollPage() {
               <Printer className="w-3.5 h-3.5" /> طباعة
             </button>
           </div>
-          <div style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 2px' }} />
+          <div className="hidden md:block" style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 2px' }} />
+          <div className="md:hidden">
+            <MobileActionsMenu actions={[
+              { key: 'statements', label: 'كشوف الكل', icon: <Users style={{ width: 15, height: 15 }} />,
+                onClick: () => {
+                  if (rows.length === 0) { toast.error('لا توجد مرتبات محسوبة لهذا الشهر'); return; }
+                  setModal({ row: null, bulk: true });
+                } },
+              { key: 'excel', label: 'Excel', icon: <Download style={{ width: 15, height: 15 }} />, onClick: exportExcel },
+              { key: 'print', label: 'طباعة', icon: <Printer style={{ width: 15, height: 15 }} />, onClick: () => setPrintOpen(true) },
+            ]} />
+          </div>
+          {/* Primary action — always visible on every breakpoint */}
           <button onClick={() => setCalcConfirm(true)} className="btn-primary text-xs py-1.5 px-3" disabled={calcing}>
             {calcing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
             {calcing ? 'جاري الاحتساب...' : 'احتساب المرتبات'}
@@ -568,7 +604,11 @@ export default function PayrollPage() {
           Dashboard's own KPI row (.metric/.metric-label/.metric-value in
           index.css), so payroll totals read as first-class financial
           figures instead of small inline text stuffed into the filter row. */}
-      <div className="card" style={{ display: 'flex', flexWrap: 'wrap', padding: 0, overflow: 'hidden' }}>
+      {/* Mobile: a horizontally-scrollable single row instead of wrapping to
+          4 stacked rows — same data, same numbers, just presented as a
+          compact swipeable strip so the table below starts much higher on
+          a phone screen. Desktop (md+) keeps the original wrapping grid. */}
+      <div className="card flex-nowrap overflow-x-auto md:flex-wrap md:overflow-hidden" style={{ display: 'flex', padding: 0 }}>
         {[
           { label: 'إجمالي الرواتب',     value: totals.basic,       accent: 'var(--accent)', color: 'var(--text)' },
           { label: 'إجمالي الإضافي',     value: totals.ot,          accent: '#8b5cf6', color: '#8b5cf6' },
@@ -578,7 +618,7 @@ export default function PayrollPage() {
           { label: 'إجمالي خصم إداري',   value: totals.adminDeduct, accent: '#ef4444', color: '#ef4444' },
           { label: 'إجمالي صافي',        value: totals.net,         accent: '#2F81F7', color: '#2F81F7' },
         ].map((m, i) => (
-          <div key={m.label} style={{ flex: '1 1 150px', borderRight: i ? '1px solid var(--border)' : 'none' }}>
+          <div key={m.label} style={{ flex: '1 1 150px', flexShrink: 0, borderRight: i ? '1px solid var(--border)' : 'none' }}>
             <PayrollMetric {...m} />
           </div>
         ))}
@@ -588,7 +628,7 @@ export default function PayrollPage() {
         <button
           onClick={() => setReviewPanelOpen(v => !v)}
           style={{
-            flex: '1 1 150px', borderRight: '1px solid var(--border)', border: 0, borderInlineStart: '1px solid var(--border)',
+            flex: '1 1 150px', flexShrink: 0, borderRight: '1px solid var(--border)', border: 0, borderInlineStart: '1px solid var(--border)',
             background: reviewFlags.length ? 'rgba(245,158,11,0.06)' : 'transparent', cursor: 'pointer', textAlign: 'inherit',
           }}
         >
@@ -657,6 +697,15 @@ export default function PayrollPage() {
           {getYearRange().map(y => <option key={y} value={y}>{y}</option>)}
         </select>
 
+        <div style={{ position: 'relative', flex: '1 1 180px', minWidth: 160, maxWidth: 260 }}>
+          <Search style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, color: 'var(--text-3)' }} />
+          <DebouncedInput type="text" placeholder="بحث سريع باسم الموظف..." value={searchQ}
+            onCommit={setSearchQ}
+            className="input text-xs py-1.5"
+            style={{ paddingRight: 28, width: '100%' }} />
+          {searchQ && <button onClick={() => setSearchQ('')} title="مسح" style={{ position:'absolute', left:6, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', cursor:'pointer', padding:2, color:'var(--text-3)' }}><X style={{ width:12, height:12 }} /></button>}
+        </div>
+
         <button onClick={load} className="btn-ghost p-1.5 rounded" title="تحديث">
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
         </button>
@@ -671,6 +720,7 @@ export default function PayrollPage() {
             getRowId={getRowId}
             columnDefs={cols}
             defaultColDef={defaultColDef}
+            quickFilterText={normalizeSearch(searchQ)}
             context={{ openDetail, openReview, openMonthlyStatement }}
             {...ENTERPRISE_GRID_PROPS}
             onCellEditingStopped={handleCellEdit}
@@ -688,8 +738,7 @@ export default function PayrollPage() {
             rowHeight={38}
             headerHeight={42}
             pagination
-            paginationPageSize={50}
-            paginationPageSizeSelector={[25, 50, 100]}
+            {...pagination}
             loading={loading}
           />
         </div>

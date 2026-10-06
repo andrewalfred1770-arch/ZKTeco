@@ -1,4 +1,6 @@
 const router = require('express').Router();
+const { sendError, numericIdParam } = require('../utils/apiError');
+router.param('id', numericIdParam);
 const { getPrisma } = require('../utils/prisma');
 const { authenticate, authorize } = require('../middleware/auth');
 const prisma = getPrisma();
@@ -16,7 +18,7 @@ router.get('/', async (req, res) => {
       orderBy: { name: 'asc' },
     });
     res.json(depts);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // Dependency counts — called by the delete-confirmation modal BEFORE the user commits.
@@ -28,7 +30,7 @@ router.get('/:id/deps', async (req, res) => {
       prisma.attendanceRule.count({ where: { departmentId: id } }),
     ]);
     res.json({ employees, rules });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/', authorize('admin'), async (req, res) => {
@@ -41,7 +43,7 @@ router.post('/', authorize('admin'), async (req, res) => {
       include: { branch: true },
     });
     res.status(201).json(dept);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // Rename / move to another branch — always allowed, even if employees are assigned.
@@ -59,7 +61,7 @@ router.put('/:id', authorize('admin'), async (req, res) => {
       include: { branch: true },
     });
     res.json(dept);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // Soft-delete (archive) — ALWAYS allowed.
@@ -72,7 +74,7 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
     if (!dept.status) return res.json({ message: 'القسم مؤرشف مسبقاً' });
     await prisma.department.update({ where: { id }, data: { status: false } });
     res.json({ message: `تم أرشفة القسم "${dept.name}" بنجاح` });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // Restore an archived department
@@ -85,7 +87,7 @@ router.patch('/:id/restore', authorize('admin'), async (req, res) => {
       include: { branch: true },
     });
     res.json(dept);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

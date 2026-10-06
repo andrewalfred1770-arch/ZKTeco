@@ -91,10 +91,22 @@ function readOneChunk(tcp, start, len, expectedFramedLen, timeoutMs) {
     let settled = false;
     let timer = null;
 
+    // node-zklib's own once('close') handler sets `tcp.socket = null`, and it
+    // is registered before ours so it runs first. Re-reading `tcp.socket` in
+    // cleanup() therefore threw a TypeError from inside the 'close' emit —
+    // an uncaught exception that left this promise unsettled forever, hanging
+    // the whole sync (and its lock) until the 10-minute watchdog. Hold our own
+    // reference to the socket we attached listeners to instead.
+    const sock = tcp.socket;
+    if (!sock || sock.destroyed) {
+      resolve({ buf: Buffer.from([]), err: new Error('Socket is disconnected unexpectedly') });
+      return;
+    }
+
     const cleanup = () => {
       if (timer) clearTimeout(timer);
-      tcp.socket.removeListener('data', onData);
-      tcp.socket.removeListener('close', onClose);
+      sock.removeListener('data', onData);
+      sock.removeListener('close', onClose);
     };
 
     const finish = (buf, err) => {
@@ -128,8 +140,8 @@ function readOneChunk(tcp, start, len, expectedFramedLen, timeoutMs) {
 
     const onClose = () => finish(Buffer.from([]), new Error('Socket is disconnected unexpectedly'));
 
-    tcp.socket.on('data', onData);
-    tcp.socket.once('close', onClose);
+    sock.on('data', onData);
+    sock.once('close', onClose);
     armTimer();
     sendChunkRequest(tcp, start, len);
   });
@@ -162,11 +174,18 @@ async function getAttendancesPaced(zk, opts = {}, logger = null) {
   // carries the total size) or an immediate CMD_DATA (small buffer, single
   // packet, no chunking needed).
   const initial = await new Promise((resolve) => {
+    // Same hazard as readOneChunk: node-zklib nulls `tcp.socket` on close, so
+    // the timer/callbacks below must use our own reference, not re-read it.
+    const sock = tcp.socket;
+    if (!sock || sock.destroyed) {
+      resolve({ err: new Error('Socket is disconnected unexpectedly') });
+      return;
+    }
     let settled = false;
     let timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      tcp.socket.removeListener('data', onData);
+      sock.removeListener('data', onData);
       resolve({ err: new Error('TIMEOUT_IN_RECEIVING_RESPONSE_AFTER_REQUESTING_DATA') });
     }, ZK_CHUNK_TIMEOUT_MS);
 
@@ -175,17 +194,17 @@ async function getAttendancesPaced(zk, opts = {}, logger = null) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      tcp.socket.removeListener('data', onData);
+      sock.removeListener('data', onData);
       resolve({ reply: data });
     };
 
-    tcp.socket.on('data', onData);
-    tcp.socket.write(reqBuf, null, (err) => {
+    sock.on('data', onData);
+    sock.write(reqBuf, null, (err) => {
       if (err) {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        tcp.socket.removeListener('data', onData);
+        sock.removeListener('data', onData);
         resolve({ err });
       }
     });

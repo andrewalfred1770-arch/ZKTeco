@@ -1,10 +1,12 @@
 const router = require('express').Router();
+const { sendError } = require('../../utils/apiError');
 const { getPrisma } = require('../../utils/prisma');
 const moment = require('moment');
 const { mergeEffectivePenalty } = require('../../engines/attendanceEngine');
 const { applyApprovedAdjustment, selectOvertimeMultiplier, computeRates } = require('../../engines/payrollEngine');
 const { getRulesBatch } = require('../../engines/rulesEngine');
 const { buildAttendanceRow } = require('../../utils/attendanceRow');
+const { attendanceScopeWhere, monthPeriod } = require('../../utils/employmentEligibility');
 
 const prisma = getPrisma();
 
@@ -236,7 +238,7 @@ router.get('/movement', async (req, res) => {
       if (!employee) return res.status(404).json({ error: 'الموظف غير موجود' });
       employees = [employee];
     } else {
-      const empWhere = { status: true };
+      const empWhere = attendanceScopeWhere(monthPeriod(year, monthNo));
       if (branchId) empWhere.branchId = parseInt(branchId);
       if (departmentId) empWhere.departmentId = parseInt(departmentId);
       employees = await prisma.employee.findMany({
@@ -339,7 +341,7 @@ router.get('/movement', async (req, res) => {
       summary,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 

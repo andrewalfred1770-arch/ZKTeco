@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const { sendError } = require('../utils/apiError');
 const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
 const XLSX = require('xlsx');
@@ -6,6 +7,7 @@ const { authenticate, authorize } = require('../middleware/auth');
 const { mergeEffectivePenalty } = require('../engines/attendanceEngine');
 const { applyApprovedAdjustment, computePayroll, buildPayrollPreloadMap } = require('../engines/payrollEngine');
 const { monthRange } = require('../utils/monthRange');
+const { attendanceScopeWhere, monthPeriod } = require('../utils/employmentEligibility');
 const prisma = getPrisma();
 router.use(authenticate);
 
@@ -26,7 +28,7 @@ router.get('/attendance/monthly/export', async (req, res) => {
 
     const { startDate, endDate } = monthRange(y, m);
 
-    const empWhere = { status: true };
+    const empWhere = attendanceScopeWhere(monthPeriod(y, m));
     if (branchId) empWhere.branchId = parseInt(branchId);
 
     const employees = await prisma.employee.findMany({
@@ -106,7 +108,7 @@ router.get('/attendance/monthly/export', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="attendance_${m}_${y}.xlsx"`);
     res.send(buf);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -216,7 +218,7 @@ router.get('/payroll/export', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="payroll_${m}_${y}.xlsx"`);
     res.send(buf);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -259,7 +261,7 @@ router.get('/attendance/employee/:id/export', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="attendance_${employeeId}_${m}_${y}.xlsx"`);
     res.send(buf);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 

@@ -9,7 +9,8 @@
  * When AUTH_ENABLED=false they still work but the resulting token is
  * never required by other routes — useful for testing without enforcing auth.
  */
-const router  = require('express').Router();
+const router  = require('express').Router();
+const { sendError } = require('../utils/apiError');
 const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
 const { getPrisma }    = require('../utils/prisma');
@@ -55,7 +56,7 @@ router.post('/login', rateLimiter(10, 60_000), async (req, res) => {
       user: { id: user.id, name: user.name, username: user.username, role: user.role },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 

@@ -10,6 +10,10 @@ ensureEnvFile(process.env.DOTENV_CONFIG_PATH);
 const dotenvPath = process.env.DOTENV_CONFIG_PATH;
 require('dotenv').config(dotenvPath ? { path: dotenvPath } : {});
 
+// Business dates are server-local calendar days — pin the zone BEFORE anything
+// formats/compares a date (a host west of UTC otherwise shifts every day back).
+require('./utils/businessTimezone').applyBusinessTimezone();
+
 const express   = require('express');
 const cors      = require('cors');
 const http      = require('http');
@@ -20,6 +24,9 @@ const { startSyncScheduler, stopSyncScheduler } = require('./services/syncSchedu
 const realtimeListener = require('./services/realtimeListenerService');
 const historicalRebuildService = require('./services/historicalRebuildService');
 const { disconnectPrisma } = require('./utils/prisma');
+const startup = require('./init/startupState');
+const { sendError, validateQueryIds } = require('./utils/apiError');
+const { STAGE, EXIT_STARTUP_BLOCKED } = require('./init/bootstrapResult');
 const { API_VERSION } = require('./apiVersion');
 const { version: APP_VERSION } = require('../package.json');
 
@@ -54,12 +61,22 @@ const isLocalhostOrigin = (origin) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+
 function isPrivateLanOrigin(origin) {
   let hostname;
   try { hostname = new URL(origin).hostname; } catch { return false; }
+  // A LAN client may address the server by computer name instead of IP so the
+  // server's DHCP address changing never breaks it. Only names that cannot be
+  // public internet origins are accepted: single-label hostnames (e.g.
+  // "SERVER-PC") and .local / .lan (mDNS / private LAN) names.
+  if (/^[a-z][a-z0-9-]*$/i.test(hostname) || /^[a-z0-9-]+(\.[a-z0-9-]+)*\.(local|lan)$/i.test(hostname)) {
+    return true;
+  }
   return (
     /^10\.(\d{1,3}\.){2}\d{1,3}$/.test(hostname) ||
     /^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
     /^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)
   );
 }
+
+// A disallowed origin is a client/permission problem, not a server fault.
+const corsError = (origin) => Object.assign(new Error(`CORS: origin ${origin} not allowed`), { status: 403 });
 
 function corsOriginCheck(origin, cb) {
   // No-origin requests: Electron renderer, curl, health-check — always allow
@@ -70,11 +87,11 @@ function corsOriginCheck(origin, cb) {
   if (!AUTH_ENABLED) {
     return (isLocalhostOrigin(origin) || isPrivateLanOrigin(origin))
       ? cb(null, true)
-      : cb(new Error(`CORS: origin ${origin} not allowed`));
+      : cb(corsError(origin));
   }
   // LAN/Cloud mode: only explicitly listed origins
   if (corsAllowList.includes(origin)) return cb(null, true);
-  cb(new Error(`CORS: origin ${origin} not allowed`));
+  cb(corsError(origin));
 }
 
 // ─── Socket.IO ────────────────────────────────────────────────────────────────
@@ -82,6 +99,10 @@ const io = new Server(server, {
   cors: { origin: corsOriginCheck, methods: ['GET', 'POST'], credentials: true },
   pingTimeout: 60000,
 });
+
+// Readiness first: while the application is not READY (bootstrap blocked) no
+// realtime client may connect — registered before the auth middleware below.
+io.use((_socket, next) => (startup.isReady() ? next() : next(new Error('NOT_READY'))));
 
 // EP-011: Socket.IO connections bypass Express middleware entirely, so
 // AUTH_ENABLED must be enforced separately here — mirrors
@@ -115,6 +136,11 @@ app.use(cors({ origin: corsOriginCheck, credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use((req, _res, next) => { req.io = io; next(); });
+
+// Liveness ≠ readiness: until bootstrap has verified the database schema every
+// business route answers 503; only /health, /startup-status and /setup stay open.
+app.use('/api', startup.startupGate);
+app.use('/api', validateQueryIds);
 
 // ─── API Routes ───────────────────────────────────────────────────────────────
 app.use('/api/employees',    require('./routes/employees'));
@@ -150,9 +176,14 @@ app.use('/uploads', express.static(path.join(getConfigDir(), 'uploads')));
 const { checkDbConnection, getLastDbErrorReason } = require('./utils/prisma');
 app.get('/api/health', async (_req, res) => {
   const ok = await checkDbConnection();
+  const ready = startup.isReady();
+  // 200 only when the database is reachable AND bootstrap verified the schema
+  // (READY). A blocked bootstrap is never "healthy", whatever the connection says.
+  const healthy = ok && ready;
   const body = {
-    status: ok ? 'ok' : 'starting',
+    status: healthy ? 'ok' : (ready ? 'starting' : 'blocked'),
     db: ok ? 'connected' : 'disconnected',
+    ready,
     timestamp: new Date(),
     version: APP_VERSION,      // product release version (informational)
     apiVersion: API_VERSION,   // contract version — used by clients for compatibility checks
@@ -167,7 +198,9 @@ app.get('/api/health', async (_req, res) => {
   // from the API response alone: 'auth-failed' | 'unreachable' |
   // 'database-missing' | 'unknown'.
   if (!ok) body.dbError = getLastDbErrorReason();
-  res.status(ok ? 200 : 503).json(body);
+  // Why the application is not ready: phase + stage + reason only (no detail).
+  if (!ready) body.startup = startup.describe();
+  res.status(healthy ? 200 : 503).json(body);
 });
 
 // ─── Startup status (for Electron's functional splash) ───────────────────────
@@ -175,10 +208,15 @@ app.get('/api/health', async (_req, res) => {
 // a fake animated bar: DB connectivity, whether the background services
 // (sync scheduler + realtime listeners) have been launched, and how many
 // fingerprint devices have an active realtime connection.
-const startupState = { dbConnected: false, servicesStarted: false };
+const startupState = startup.state;   // { phase, failure, servicesStarted }
+let dbConnectedLatched = false;
 app.get('/api/startup-status', async (_req, res) => {
-  if (!startupState.dbConnected) {
-    startupState.dbConnected = await checkDbConnection().catch(() => false);
+  const ready = startup.isReady();
+  // dbConnected is the readiness signal Electron's splash gates on, so it is
+  // only ever true for a READY application — a reachable database behind a
+  // blocked (unverified-schema) bootstrap must not look like a started backend.
+  if (ready && !dbConnectedLatched) {
+    dbConnectedLatched = await checkDbConnection().catch(() => false);
   }
   const devices = { total: 0, connected: 0 };
   try {
@@ -188,9 +226,11 @@ app.get('/api/startup-status', async (_req, res) => {
     devices.connected = ids.filter((id) => status[id].status === 'connected').length;
   } catch {}
   res.json({
-    dbConnected: startupState.dbConnected,
-    servicesStarted: startupState.servicesStarted,
+    dbConnected: ready && dbConnectedLatched,
+    servicesStarted: ready && startupState.servicesStarted,
     devices,
+    ready,
+    ...(ready ? {} : { startup: startup.describe() }),
   });
 });
 
@@ -220,9 +260,10 @@ app.use((req, res) => {
 });
 
 // ─── Global error handler ─────────────────────────────────────────────────────
+// Single classification point shared with every route (utils/apiError.js): client
+// mistakes → 4xx, server faults → 500, never raw Prisma/internal text.
 app.use((err, _req, res, _next) => {
-  logger.error(err.message, { stack: err.stack });
-  res.status(err.status || 500).json({ error: err.message || 'خطأ في الخادم' });
+  sendError(res, err);
 });
 
 // ─── Socket.IO ────────────────────────────────────────────────────────────────
@@ -278,28 +319,55 @@ server.on('error', (err) => {
   logger.error('Server error:', err);
 });
 
-// EP-007: first-run initialization (folders, migrations, baseline seed) runs
-// and is awaited BEFORE the port opens — nothing answers /api/* until this
-// resolves, which is what makes Electron's existing /api/startup-status poll
-// (unchanged) correctly wait for initialization too. Never throws/crashes:
-// on failure the server still starts so /api/health can report real status.
+// ─── Application lifecycle ────────────────────────────────────────────────────
+//
+//   load env → [module load: Express/Socket.IO objects, routers — nothing listens,
+//   nothing runs] → bootstrap (database reachable → `prisma migrate deploy` →
+//   independent baseline seed) → ONLY IF the bootstrap result is ok:
+//   listen → mark READY → services (scheduler, device listeners, crons,
+//   interrupted-rebuild resume).
+//
+// The bootstrap result is authoritative (init/bootstrapResult.js). A failed
+// migration is never started over: no listener, no scheduler, no device
+// connection, no background job — the process exits with EXIT_STARTUP_BLOCKED.
+// An unreachable database gets a deliberately LIMITED listener (liveness,
+// readiness and the Database Setup Wizard only — see init/startupState.js),
+// because repairing DATABASE_URL from the UI needs a live backend; it is never
+// READY and never starts a service. Neither case retries in the background:
+// the next application restart re-runs the bootstrap.
 const { runFirstRunInit } = require('./init');
 
-(async () => {
-  await runFirstRunInit();
+async function exitStartupBlocked() {
+  try { await disconnectPrisma(); } catch { /* exiting anyway */ }
+  await new Promise((r) => setTimeout(r, 300));   // let the log transports flush
+  process.exit(EXIT_STARTUP_BLOCKED);
+}
 
+function blockStartup(boot) {
+  startup.markBlocked(boot);
+  logger.error(`[STARTUP-BLOCKED] stage=${boot.stage} reason=${boot.reason} — application NOT started: no scheduler, no device listeners, no background jobs`);
+
+  if (boot.stage === STAGE.DATABASE) {
+    server.listen(PORT, HOST, () => {
+      logger.warn(`[STARTUP-BLOCKED] limited recovery mode on ${HOST}:${PORT} — only /api/health, /api/startup-status and /api/setup are served; restart the application to retry`);
+    });
+    return;
+  }
+  // Schema state is failed or unverified — fail closed, never serve.
+  exitStartupBlocked();
+}
+
+function startApplication() {
   server.listen(PORT, HOST, () => {
     logger.info(`Server running on ${HOST}:${PORT} [${isProd ? 'production' : 'development'}]`);
+    startup.markReady();
 
-    // Start background services. DB readiness was already confirmed above by
-    // the awaited runFirstRunInit() (checkDbConnection inside
-    // runMigrationsAndSeed) before server.listen() was even called — the
-    // previous fixed 2s setTimeout here predated that await and had become
-    // pure dead time on every startup (it directly delayed fingerprint
-    // device connection, since startSyncScheduler → realtimeListener.startAll
-    // is what kicks off the device TCP handshake). setImmediate still lets
-    // this listen() callback return before the scheduler starts, without an
-    // arbitrary wait.
+    // Refresh the company-settings snapshot (cache.json, read by the Electron
+    // splash) — a DB read, so only after the schema is verified.
+    require('./services/companySettingsStore').refreshSnapshot().catch(() => {});
+
+    // Background services start only here: the schema was verified before
+    // listen() was called. setImmediate lets this callback return first.
     // syncScheduler is the SINGLE owner of attendance processing crons — the
     // old separate attendanceProcessor (a duplicate 15-min processToday path
     // racing the scheduler's 10-min one) has been removed.
@@ -330,6 +398,13 @@ const { runFirstRunInit } = require('./init');
         .catch((err) => logger.error(`[HIST-REBUILD] resume error: ${err.message}`));
     });
   });
+}
+
+(async () => {
+  const boot = await runFirstRunInit();
+  if (!boot.ok) return blockStartup(boot);
+  if (boot.seed === 'failed') logger.warn('[STARTUP] baseline seed incomplete — application starting; seeding retries on next startup');
+  startApplication();
 })();
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────

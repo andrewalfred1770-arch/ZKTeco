@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
-import { Outlet, NavLink } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, CalendarDays, CalendarRange,
   DollarSign, Settings, FileText, BookOpen, Building2,
   ChevronRight, PanelLeftClose, ShieldCheck, UserSquare2,
   Sun, Moon, Monitor as MonitorIcon, Fingerprint, Trash2, SlidersHorizontal,
-  PlugZap,
+  PlugZap, Menu, X,
 } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { useCompanyBrand } from '../lib/branding';
@@ -157,16 +157,43 @@ function SideLink({ item, collapsed }) {
 // ─── Main Layout ──────────────────────────────────────────────────────────────
 export default function Layout() {
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const brand = useCompanyBrand();
   const { isLight } = useTheme();
+  const location = useLocation();
+
+  // Close the mobile drawer on every navigation — a drawer that stays open
+  // after tapping a nav item would just cover the page it navigated to.
+  useEffect(() => { setMobileOpen(false); }, [location.pathname]);
+
+  // Escape closes the drawer, matching standard off-canvas nav behavior.
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const onKey = (e) => { if (e.key === 'Escape') setMobileOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mobileOpen]);
 
   return (
     <div style={{ display:'flex', height:'100vh', overflow:'hidden', background:'var(--bg)' }} dir="rtl">
 
+      {/* Mobile-only backdrop — tapping it closes the drawer. Rules live in
+          index.css (.ps-sidebar-overlay), scoped to <768px only. */}
+      {mobileOpen && (
+        <div className="ps-sidebar-overlay md:hidden" onClick={() => setMobileOpen(false)} aria-hidden="true" />
+      )}
+
       {/* ═══ Sidebar — restored original PETSHROW Light Theme identity: the
           sidebar was always dark-navy chrome regardless of app theme; the
-          Dark Theme keeps its current tokenized styling untouched. ═══ */}
-      <aside style={{
+          Dark Theme keeps its current tokenized styling untouched.
+          .ps-sidebar / .is-open (index.css, <768px only) turn this into a
+          slide-in drawer on mobile — desktop's inline width/flex behavior
+          below is completely untouched at ≥768px. ═══ */}
+      <aside
+        className={`ps-sidebar${mobileOpen ? ' is-open' : ''}`}
+        role={mobileOpen ? 'dialog' : undefined}
+        aria-modal={mobileOpen ? 'true' : undefined}
+        style={{
         width: collapsed ? '58px' : '212px',
         background: isLight ? '#0b1220' : 'var(--sidebar-background)',
         borderLeft: '1px solid ' + (isLight ? 'rgba(255,255,255,0.06)' : 'var(--sidebar-border)'),
@@ -196,11 +223,27 @@ export default function Layout() {
               : brand.mark}
           </div>
           {!collapsed && (
-            <div style={{ lineHeight:1.25, minWidth:0 }}>
+            <div style={{ lineHeight:1.25, minWidth:0, flex:1 }}>
               <p style={{ color: isLight ? '#fff' : 'var(--sidebar-text-primary)', fontWeight:800, fontSize:16, letterSpacing:'0.04em', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{brand.name}</p>
               <p style={{ color: isLight ? 'rgba(148,163,184,0.75)' : 'var(--sidebar-text-muted)', fontSize:10.5, marginTop:1, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', direction:'ltr', textAlign:'left' }}>{brand.taglineEn}</p>
             </div>
           )}
+          {/* Mobile-only close button — Escape/overlay-tap both already close
+              the drawer, but a touchscreen has no Escape key, and the visible
+              overlay strip next to a near-full-width drawer is easy to miss.
+              A dedicated close affordance is the standard off-canvas pattern. */}
+          <button
+            onClick={() => setMobileOpen(false)}
+            className="touch-target flex md:hidden"
+            aria-label="إغلاق القائمة"
+            style={{
+              alignItems:'center', justifyContent:'center', flexShrink:0,
+              width:32, height:32, borderRadius:8, marginInlineStart:'auto',
+              background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.10)',
+              color: isLight ? 'rgba(255,255,255,0.75)' : 'var(--sidebar-text-secondary)', cursor:'pointer',
+            }}>
+            <X style={{ width:16, height:16 }} />
+          </button>
         </div>
 
         {/* Navigation */}
@@ -245,29 +288,41 @@ export default function Layout() {
             it settles near the enterprise ~72px target on typical desktop
             windows (Windows 10/11, macOS) without a Windows-specific
             magic number; content/OS font metrics can grow it further. */}
-        <header style={{
+        <header
+          className="px-3 py-2.5 md:px-[22px] md:py-[14px]"
+          style={{
           minHeight:64, display:'flex', alignItems:'center', justifyContent:'space-between',
-          padding:'14px 22px', flexShrink:0, background:'var(--surface)',
+          flexShrink:0, background:'var(--surface)',
           borderBottom:'1px solid var(--border)',
         }}>
-          <div style={{ display:'flex', alignItems:'center', gap:14 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:14, minWidth:0 }}>
+            {/* Mobile: hamburger opens the drawer. Desktop (≥768px): the
+                existing collapse-toggle takes over — the two are mutually
+                exclusive via Tailwind's md: breakpoint, never both visible. */}
+            <button onClick={() => setMobileOpen(true)}
+              className="touch-target md:hidden"
+              aria-label="فتح القائمة"
+              style={{ padding:9, borderRadius:8, border:'1px solid var(--border)', cursor:'pointer', background:'var(--surface-2)', color:'var(--text-2)', flexShrink:0 }}>
+              <Menu style={{ width:18, height:18 }} />
+            </button>
             <button onClick={() => setCollapsed(!collapsed)}
-              style={{ padding:9, borderRadius:8, border:'1px solid var(--border)', cursor:'pointer', background:'var(--surface-2)', color:'var(--text-2)', display:'flex' }}>
+              className="hidden md:inline-flex"
+              style={{ padding:9, borderRadius:8, border:'1px solid var(--border)', cursor:'pointer', background:'var(--surface-2)', color:'var(--text-2)', flexShrink:0 }}>
               {collapsed ? <ChevronRight style={{ width:18, height:18 }} /> : <PanelLeftClose style={{ width:18, height:18 }} />}
             </button>
-            <span style={{ fontSize:15, color:'var(--text-2)', fontWeight:500 }}>
+            <span className="hidden md:inline" style={{ fontSize:15, color:'var(--text-2)', fontWeight:500, whiteSpace:'nowrap' }}>
               {new Date().toLocaleDateString('ar-EG', { weekday:'long', year:'numeric', month:'long', day:'numeric' })}
             </span>
           </div>
 
-          <div style={{ display:'flex', alignItems:'center', gap:14 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:14, minWidth:0 }}>
             <ThemeSwitcher />
             <div style={{ display:'flex', alignItems:'center', gap:7, padding:'8px 14px', borderRadius:8, fontSize:14, fontWeight:700,
               background: isLight ? 'rgba(5,150,105,0.09)' : 'rgba(16,185,129,0.10)',
               border: isLight ? '1px solid rgba(5,150,105,0.30)' : '1px solid rgba(16,185,129,0.25)',
-              color: isLight ? '#065f46' : '#10b981' }}>
+              color: isLight ? '#065f46' : '#10b981', flexShrink:0 }}>
               <span style={{ width:8, height:8, borderRadius:'50%', background: isLight ? '#059669' : '#10b981', boxShadow:'0 0 5px rgba(16,185,129,0.6)', flexShrink:0 }} />
-              النظام يعمل
+              <span className="hidden md:inline">النظام يعمل</span>
             </div>
           </div>
         </header>

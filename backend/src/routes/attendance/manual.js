@@ -1,4 +1,6 @@
-const router = require('express').Router();
+const router = require('express').Router();
+const { sendError, numericIdParam } = require('../../utils/apiError');
+router.param('id', numericIdParam);
 const { getPrisma } = require('../../utils/prisma');
 const moment = require('moment');
 const { authorize } = require('../../middleware/auth');
@@ -250,7 +252,7 @@ router.put('/daily/:id', authorize('admin', 'hr'), async (req, res) => {
 
     res.json({ ...await buildDailyResponseRow(updated), payroll, payrollError, payrollProtected });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -398,7 +400,7 @@ router.put('/:id/manual-penalty', authorize('admin', 'hr'), async (req, res) => 
 
     res.json({ ...await buildDailyResponseRow(updated), payroll, payrollError, payrollProtected });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -484,7 +486,7 @@ router.put('/:id/absence-type', authorize('admin', 'hr'), async (req, res) => {
 
     res.json({ ...await buildDailyResponseRow(updated), payroll, payrollError, payrollProtected });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -633,7 +635,7 @@ router.post('/bulk-mark-unauthorized', authorize('admin', 'hr'), async (req, res
       payrollResults,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -646,7 +648,7 @@ router.get('/daily/:id/audit', authorize('admin', 'hr'), async (req, res) => {
     });
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -754,7 +756,7 @@ router.post('/daily/:id/preview', authorize('admin', 'hr'), async (req, res) => 
       },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -801,7 +803,7 @@ router.post('/daily/:id/restore-auto', authorize('admin', 'hr'), async (req, res
 
     res.json({ ...updated, payroll, payrollError, payrollProtected });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 

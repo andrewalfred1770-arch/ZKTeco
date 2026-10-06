@@ -446,7 +446,7 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
         aria-modal="true"
         aria-labelledby={titleId}
         style={{
-        position:'fixed', top:0, bottom:0, left:0, zIndex:70, width:'min(560px,100vw)',
+        position:'fixed', top:0, bottom:0, insetInlineEnd:0, zIndex:70, width:'min(560px,100vw)',
         background:'var(--bg)', borderRight:'1px solid var(--border)',
         boxShadow:'-8px 0 48px rgba(0,0,0,.4)', display:'flex', flexDirection:'column',
         animation:'slideIn .22s ease', outline:'none' }}>

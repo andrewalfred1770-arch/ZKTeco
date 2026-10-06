@@ -38,6 +38,21 @@ function initialState() {
   };
 }
 
+// Arabic message for a failed (non-connect) sync. Raw technical text stays in
+// the backend logs / audit trail; it is only appended for unclassified errors.
+function syncFailureMessage(r) {
+  switch (r?.errorKind) {
+    case 'DEVICE_DISCONNECTED':
+      return 'انقطع الاتصال بالجهاز أثناء سحب البصمات. تأكد من اتصال الجهاز بالشبكة ثم اضغط «إعادة المحاولة».';
+    case 'SYNC_TIMEOUT':
+      return 'استغرقت المزامنة وقتاً أطول من المسموح وتم إيقافها. اضغط «إعادة المحاولة».';
+    case 'SYNC_ERROR':
+      return `حدث خطأ غير متوقع أثناء المزامنة. اضغط «إعادة المحاولة» وإذا تكرر راجع المسؤول. (${r.error})`;
+    default:
+      return r?.error || r?.reason || 'تعذر الاتصال بالجهاز';
+  }
+}
+
 export function useFingerprintSyncWorkflow() {
   const [state, setState] = useState(initialState());
   const runningRef = useRef(false);
@@ -121,9 +136,14 @@ export function useFingerprintSyncWorkflow() {
       // was there to sync" when actually nothing was ATTEMPTED); this is
       // deliberately its own distinct outcome, not folded into partial/error.
       if (list.length > 0 && list.every((r) => r?.skipped)) {
+        // Two different reasons used to share one "busy" message: a disabled
+        // or missing device is not a running sync.
+        const allBusy = list.every((r) => r?.skipReason !== 'DEVICE_DISABLED');
         setState((s) => ({
           ...s, phase: 'error',
-          error: 'الجهاز مشغول بمزامنة أخرى قيد التنفيذ حالياً — حاول مرة أخرى بعد قليل',
+          error: allBusy
+            ? 'الجهاز مشغول بمزامنة أخرى قيد التنفيذ حالياً — حاول مرة أخرى بعد قليل'
+            : 'الجهاز غير مفعّل أو غير موجود — فعّل الجهاز ثم أعد المحاولة',
         }));
         return;
       }
@@ -134,7 +154,14 @@ export function useFingerprintSyncWorkflow() {
 
       if (allFailed) {
         const first = list.find((r) => r?.error) || list.find((r) => r?.reason);
-        setState((s) => ({ ...s, phase: 'error', error: first?.error || first?.reason || 'تعذر الاتصال بالجهاز' }));
+        // Connection-level failure: show a readable Arabic message with the
+        // configured address instead of the raw socket error (the raw text
+        // stays in the backend logs / DeviceSyncLog).
+        const refused = list.find((r) => r?.connectFailed);
+        const message = refused
+          ? `تعذر الاتصال بجهاز البصمة (${refused.ip}:${refused.port}). تأكد من تشغيل الجهاز واتصاله بالشبكة ثم اضغط «إعادة المحاولة».`
+          : syncFailureMessage(first);
+        setState((s) => ({ ...s, phase: 'error', error: message }));
         return;
       }
 

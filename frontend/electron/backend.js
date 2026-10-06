@@ -4,7 +4,7 @@ import { join } from 'path';
 import net from 'net';
 import http from 'http';
 import { app } from 'electron';
-import { BACKEND_PORT, IS_DEV } from './constants.js';
+import { BACKEND_PORT, IS_DEV, BACKEND_EXIT_STARTUP_BLOCKED } from './constants.js';
 import { isBenignPipeError } from './observability.js';
 import { state } from './state.js';
 
@@ -338,6 +338,16 @@ export function startBackend(paths, extraEnv = null) {
       setTimeout(() => {
         if (!app.isQuitting && !state.backendProcess) startBackend(paths, extraEnv);
       }, 1000);
+      return;
+    }
+
+    // The backend refused to start on purpose (migration failed / schema not
+    // verified): a restart would fail identically and re-run the migration every
+    // few seconds, so don't. /api/startup-status never reports ready, which
+    // surfaces as the renderer's "backend unreachable" state; the next app
+    // launch (or a manual relaunch) retries.
+    if (!app.isQuitting && c === BACKEND_EXIT_STARTUP_BLOCKED) {
+      console.error('[Backend] startup blocked (database/migration not verified) — NOT restarting; fix the database issue and relaunch');
       return;
     }
 

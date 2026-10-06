@@ -1,4 +1,5 @@
-const router = require('express').Router();
+const router = require('express').Router();
+const { sendError } = require('../../utils/apiError');
 const { getPrisma } = require('../../utils/prisma');
 const moment = require('moment');
 const { mergeEffectivePenalty } = require('../../engines/attendanceEngine');
@@ -7,6 +8,7 @@ const { monthRange, getEffectiveMonthEndDate } = require('../../utils/monthRange
 const { resolveVerifiedManualEditIds } = require('../../utils/manualEditAudit');
 const { buildAttendanceRow } = require('../../utils/attendanceRow');
 const { pLimit } = require('../../utils/pLimit');
+const { attendanceScopeWhere, monthPeriod } = require('../../utils/employmentEligibility');
 
 const prisma = getPrisma();
 
@@ -48,7 +50,7 @@ router.get('/monthly', async (req, res) => {
 
     const { startDate, endDate } = monthRange(y, m);
 
-    let empWhere = { status: true };
+    let empWhere = attendanceScopeWhere(monthPeriod(y, m));
     if (branchId) empWhere.branchId = parseInt(branchId);
     if (departmentId) empWhere.departmentId = parseInt(departmentId);
     // EP-014: optional narrowing for realtime single-row refresh — omitted by
@@ -126,7 +128,7 @@ router.get('/monthly', async (req, res) => {
 
     res.json(results);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -150,7 +152,7 @@ router.get('/monthly-detail', async (req, res) => {
     const { startDate } = monthRange(y, m);
     const endDate = getEffectiveMonthEndDate(y, m);
 
-    const empWhere = { status: true };
+    const empWhere = attendanceScopeWhere(monthPeriod(y, m));
     if (branchId)     empWhere.branchId     = parseInt(branchId);
     if (departmentId) empWhere.departmentId = parseInt(departmentId);
     // EP-014: optional narrowing for realtime single-row refresh — omitted by
@@ -213,7 +215,7 @@ router.get('/monthly-detail', async (req, res) => {
 
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -240,7 +242,7 @@ router.get('/employee/:id/monthly', async (req, res) => {
       workedHours: (r.workedMinutes / 60).toFixed(2),
     })));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 

@@ -18,6 +18,8 @@ import {
   Zap, Database, ShieldCheck, Sliders,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useIsNarrowViewport } from '../hooks/useIsNarrowViewport';
+import { useGridPagination } from '../hooks/useGridPagination';
 import api from '../lib/api';
 import { useTheme } from '../contexts/ThemeContext';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
@@ -25,6 +27,7 @@ import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS } from '../lib/gridDe
 import { fmtDate, formatDuration, westernDigits } from '../lib/formatters';
 import RuleDrawer, { CATEGORY_LABELS, CAT_COLOR, TYPE_LABELS, TYPE_ICONS } from '../components/RuleDrawer';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
+import { searchTokens, matchesTokens, rowHaystack } from '../lib/searchText';
 
 const ACTOR = 'مدير النظام';
 const CHIPS = ['all', ...Object.keys(CATEGORY_LABELS)];
@@ -254,7 +257,7 @@ export default function RulesPage() {
 
   // filtered
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const tokens = searchTokens(search);
     return rules.filter(r =>
       // INERT_KEYS (late_limit, overtime_rounding) are stored/validated rule rows
       // that no engine reads — see the "غير مُستخدم" badge below and
@@ -264,8 +267,7 @@ export default function RulesPage() {
       (showAdvanced || !INERT_KEYS.has(r.key)) &&
       (cat === 'all' || r.category === cat) &&
       (active === 'all' || (active === 'active' ? r.isActive : !r.isActive)) &&
-      (!q || r.name.toLowerCase().includes(q) || r.key.toLowerCase().includes(q) ||
-       (r.description || '').toLowerCase().includes(q))
+      (!tokens.length || matchesTokens(tokens, rowHaystack(r, [r.name, r.key, r.description])))
     );
   }, [rules, search, cat, active, showAdvanced]);
 
@@ -310,6 +312,14 @@ export default function RulesPage() {
   const exportExcel = () => gridRef.current?.api?.exportDataAsExcel({ fileName: `rules_${Date.now()}.xlsx` });
 
   const getRowId = useCallback(p => String(p.data.id), []);
+
+  // Pinned-right name column + pinned-left actions column never shrink and
+  // always keep their configured width — below ~480px their combined width
+  // exceeds the viewport and the two pinned groups visually overlap.
+  // Unpinning actions below that width lets it flow into the normal
+  // scrollable region instead (same fix as Payroll/Devices/Movement grids).
+  const isNarrow = useIsNarrowViewport(480);
+  const pagination = useGridPagination(50, [25, 50, 100]);
 
   // ── Column definitions ─────────────────────────────────────────────────────
   // Default view: only what an HR user needs to understand a rule at a glance.
@@ -383,7 +393,7 @@ export default function RulesPage() {
       ),
     };
     const actionsCol = {
-      headerName:'تعديل', width: showAdvanced ? 132 : 70, pinned:'left', sortable:false, filter:false,
+      headerName:'تعديل', width: showAdvanced ? 132 : 70, pinned: isNarrow ? undefined : 'left', sortable:false, filter:false,
       suppressMovable:true, resizable:false,
       cellRenderer: ({ data }) => (
         <div style={{ display:'flex', gap:5, alignItems:'center', justifyContent:'center', height:'100%' }}>
@@ -447,7 +457,7 @@ export default function RulesPage() {
       nameCol, keyCol, categoryCol, typeCol, valueCol, unitCol,
       priorityCol, descCol, statusCol, updatedCol, actionsCol,
     ];
-  }, [showAdvanced]);
+  }, [showAdvanced, isNarrow]);
 
   const defaultColDef = useMemo(() => ({
     ...ENTERPRISE_DEFAULT_COL_DEF,
@@ -473,7 +483,7 @@ export default function RulesPage() {
             قواعد قابلة للإنشاء والتعديل والتدقيق بالكامل · مرتبطة بمحركات الحضور والمرتبات
           </p>
         </div>
-        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
           {/* Stats */}
           <StatBadge label="إجمالي القواعد" value={rules.length} color='var(--text-2)' icon={Database} />
           <StatBadge label="مفعّلة" value={activeCount} color='#10b981' icon={CheckCircle2} />
@@ -580,8 +590,7 @@ export default function RulesPage() {
             suppressCellFocus={false}
             enableCellTextSelection
             pagination
-            paginationPageSize={50}
-            paginationPageSizeSelector={[25,50,100]}
+            {...pagination}
             overlayLoadingTemplate='<span style="font-family:Cairo,sans-serif;font-size:13px;color:#94a3b8">جاري تحميل القواعد...</span>'
             overlayNoRowsTemplate={rules.length === 0 && !loading
               ? '<div style="font-family:Cairo,sans-serif;text-align:center;padding:40px 20px"><p style="font-size:14px;color:#64748b;font-weight:700;margin:0 0 6px">لا توجد قواعد محملة</p><p style="font-size:12px;color:#94a3b8;margin:0">تأكد من تشغيل الخادم الخلفي وإعادة التحميل</p></div>'

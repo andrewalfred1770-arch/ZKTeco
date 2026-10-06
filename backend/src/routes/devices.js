@@ -20,11 +20,18 @@
  */
 
 const router = require('express').Router();
+const { sendError, numericIdParam } = require('../utils/apiError');
+router.param('id', numericIdParam);
 const { getPrisma } = require('../utils/prisma');
 const { pullLogs, pullAllDevices, testConnection, pingDevice, getDeviceUsers } = require('../services/zktecoService');
 const { relinkAttendanceLogs, getRelinkDiagnostics } = require('../services/relinkService');
 const realtimeListener = require('../services/realtimeListenerService');
 const { authenticate, authorize } = require('../middleware/auth');
+const { recordDeviceAudit, actorFromReq, pickDeviceFields, ACTION, RESULT } = require('../utils/deviceAudit');
+
+const deviceLogCounts = require('../services/deviceLogCounts');
+const { startOfDayParam, endOfDayParam } = require('../utils/dateParam');
+const { fmtDate } = require('../utils/fastDate');
 
 const prisma = getPrisma();
 router.use(authenticate);
@@ -51,26 +58,25 @@ router.get('/', authorize('admin', 'hr'), async (req, res) => {
       include: { branch: true },
       orderBy: { name: 'asc' },
     });
-    // Attach total raw-log count per device
-    const logCounts = await prisma.attendanceLog.groupBy({
-      by: ['deviceId'],
-      _count: { id: true },
-    });
-    const countMap = Object.fromEntries(logCounts.map(r => [r.deviceId, r._count.id]));
+    // Attach total raw-log count per device — served from the incrementally
+    // maintained cache (services/deviceLogCounts.js) instead of a groupBy over
+    // the whole attendance_logs table on every request.
+    const logCounts = await deviceLogCounts.getCounts();
+    const countMap = Object.fromEntries(logCounts);
 
     res.json(devices.map(d => formatDevice({
       ...d,
       rawLogCount: countMap[d.id] || 0,
     })));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
 // ── Aggregate stats for KPI cards ─────────────────────────────────────────────
 router.get('/stats', authorize('admin', 'hr'), async (req, res) => {
   try {
-    const devices = await prisma.device.findMany({ where: { isArchived: false }, select: { status: true, lastSync: true, totalLogsCount: true } });
+    const devices = await prisma.device.findMany({ where: { isArchived: false }, select: { status: true, lastSync: true, totalLogsCount: true, lastPullTotal: true } });
     const online   = devices.filter(d => d.status === 'online').length;
     const offline  = devices.filter(d => d.status === 'offline' || d.status === 'error').length;
     const syncing  = devices.filter(d => d.status === 'syncing').length;
@@ -78,6 +84,11 @@ router.get('/stats', authorize('admin', 'hr'), async (req, res) => {
       .filter(d => d.lastSync)
       .sort((a, b) => new Date(b.lastSync) - new Date(a.lastSync))[0]?.lastSync || null;
     const totalLogs = devices.reduce((s, d) => s + (d.totalLogsCount || 0), 0);
+    // Records currently stored ON the devices themselves: the device's own
+    // getInfo().logCounts, captured by each sync into lastPullTotal (no log
+    // download, no extra device traffic). null until a device has synced once.
+    const reported = devices.filter(d => d.lastPullTotal != null);
+    const deviceLogCount = reported.length ? reported.reduce((s, d) => s + d.lastPullTotal, 0) : null;
 
     // Last 24h sync count
     const yesterday = new Date(Date.now() - 86400000);
@@ -85,9 +96,36 @@ router.get('/stats', authorize('admin', 'hr'), async (req, res) => {
       where: { startedAt: { gte: yesterday }, status: 'success' },
     });
 
-    res.json({ total: devices.length, online, offline, syncing, lastSync, totalLogs, recentSyncs });
+    res.json({ total: devices.length, online, offline, syncing, lastSync, totalLogs, deviceLogCount, recentSyncs });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
+  }
+});
+
+// ── Device audit trail (read-only, survives device deletion) ─────────────────
+// Query: deviceId, action, result, actorId, from, to, page (1), limit (50, max 200)
+router.get('/audit-logs', authorize('admin', 'hr'), async (req, res) => {
+  try {
+    const { deviceId, action, result, actorId, from, to } = req.query;
+    const page  = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 200);
+    const where = {};
+    if (deviceId) where.deviceId = parseInt(deviceId);
+    if (action)   where.action   = String(action);
+    if (result)   where.result   = String(result);
+    if (actorId)  where.actorId  = parseInt(actorId);
+    if (from || to) {
+      where.createdAt = {};
+      if (from) where.createdAt.gte = startOfDayParam(from);
+      if (to)   where.createdAt.lte = endOfDayParam(to);
+    }
+    const [total, rows] = await Promise.all([
+      prisma.deviceAuditLog.count({ where }),
+      prisma.deviceAuditLog.findMany({ where, orderBy: { createdAt: 'desc' }, skip: (page - 1) * limit, take: limit }),
+    ]);
+    res.json({ total, page, pages: Math.ceil(total / limit), rows });
+  } catch (err) {
+    sendError(res, err);
   }
 });
 
@@ -102,7 +140,7 @@ router.get('/sync-logs/recent', authorize('admin', 'hr'), async (req, res) => {
     });
     res.json(logs);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -114,7 +152,7 @@ router.get('/relink-diagnostics', authorize('admin', 'hr'), async (req, res) => 
     const result = await getRelinkDiagnostics();
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -127,7 +165,7 @@ router.get('/realtime-status', authorize('admin', 'hr'), async (req, res) => {
       diagnostics: realtimeListener.getDiagnostics(),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -141,7 +179,7 @@ router.get('/:id', authorize('admin', 'hr'), async (req, res) => {
     if (!device) return res.status(404).json({ error: 'Device not found' });
     res.json(formatDevice(device));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -156,7 +194,7 @@ router.get('/:id/sync-logs', authorize('admin', 'hr'), async (req, res) => {
     });
     res.json(logs);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -191,10 +229,14 @@ router.get('/:id/recovery-diagnostics', authorize('admin', 'hr'), async (req, re
       where: { deviceId, timestamp: { gte: windowStart, lte: windowEnd } },
       select: { timestamp: true },
     });
-    const daysWithLogs = new Set(recentLogs.map(l => l.timestamp.toISOString().slice(0, 10)));
+    // Business (server-local) calendar days — toISOString() is UTC, so a punch at
+    // 00:30 Cairo time was filed under the PREVIOUS day and the report named the
+    // wrong day as missing. Same local-day key on both sides, stepped by calendar
+    // day (setDate, not +24h) so a DST change cannot skip or repeat a day.
+    const daysWithLogs = new Set(recentLogs.map(l => fmtDate(l.timestamp)));
     const missingDays = [];
-    for (let d = new Date(windowStart); d <= windowEnd; d.setUTCDate(d.getUTCDate() + 1)) {
-      const key = d.toISOString().slice(0, 10);
+    for (let d = new Date(windowStart); fmtDate(d) <= fmtDate(windowEnd); d.setDate(d.getDate() + 1)) {
+      const key = fmtDate(d);
       if (!daysWithLogs.has(key)) missingDays.push(key);
     }
 
@@ -218,7 +260,7 @@ router.get('/:id/recovery-diagnostics', authorize('admin', 'hr'), async (req, re
       missingDays,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -247,6 +289,11 @@ router.post('/', authorize('admin'), async (req, res) => {
 
     const dup = await findDuplicateEndpoint(ipAddress, portNum);
     if (dup) {
+      await recordDeviceAudit({
+        action: ACTION.DEVICE_CREATED, result: RESULT.BLOCKED, actor: actorFromReq(req),
+        deviceRef: { name, ipAddress, port: portNum }, errorCode: 'DUPLICATE_ENDPOINT',
+        errorMessage: `Endpoint already used by device #${dup.id}`, after: pickDeviceFields({ name, ipAddress, port: portNum }),
+      });
       return res.status(409).json({
         error: `يوجد جهاز نشط بنفس العنوان ${ipAddress}:${portNum} ("${dup.name}" #${dup.id}) — تكرار الجهاز يسبب ازدواج البصمات`,
       });
@@ -272,9 +319,18 @@ router.post('/', authorize('admin'), async (req, res) => {
       realtimeListener.startListener(device.id, req.io);
     }
 
+    await recordDeviceAudit({
+      action: ACTION.DEVICE_CREATED, result: RESULT.SUCCESS, actor: actorFromReq(req), device,
+      before: null, after: pickDeviceFields(device),
+    });
     res.status(201).json(formatDevice(device));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    await recordDeviceAudit({
+      action: ACTION.DEVICE_CREATED, result: RESULT.FAILED, actor: actorFromReq(req),
+      deviceRef: { name: req.body?.name, ipAddress: req.body?.ipAddress, port: parseInt(req.body?.port) || 4370 },
+      errorCode: 'DEVICE_CREATE_ERROR', errorMessage: err.message,
+    });
+    sendError(res, err);
   }
 });
 
@@ -285,8 +341,15 @@ router.put('/:id', authorize('admin'), async (req, res) => {
     const id = parseInt(req.params.id);
     const portNum = parseInt(port) || 4370;
 
+    const beforeDevice = await prisma.device.findUnique({ where: { id } });
     const dup = await findDuplicateEndpoint(ipAddress, portNum, id);
     if (dup) {
+      await recordDeviceAudit({
+        action: ACTION.DEVICE_UPDATED, result: RESULT.BLOCKED, actor: actorFromReq(req), device: beforeDevice,
+        deviceRef: { id, name, ipAddress, port: portNum }, errorCode: 'DUPLICATE_ENDPOINT',
+        errorMessage: `Endpoint already used by device #${dup.id}`,
+        before: pickDeviceFields(beforeDevice), after: pickDeviceFields({ name, ipAddress, port: portNum }),
+      });
       return res.status(409).json({
         error: `يوجد جهاز نشط آخر بنفس العنوان ${ipAddress}:${portNum} ("${dup.name}" #${dup.id}) — تكرار الجهاز يسبب ازدواج البصمات`,
       });
@@ -315,9 +378,18 @@ router.put('/:id', authorize('admin'), async (req, res) => {
       realtimeListener.stopListener(device.id);
     }
 
+    await recordDeviceAudit({
+      action: ACTION.DEVICE_UPDATED, result: RESULT.SUCCESS, actor: actorFromReq(req), device,
+      before: pickDeviceFields(beforeDevice), after: pickDeviceFields(device),
+    });
     res.json(formatDevice(device));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    await recordDeviceAudit({
+      action: ACTION.DEVICE_UPDATED, result: RESULT.FAILED, actor: actorFromReq(req),
+      deviceRef: { id: parseInt(req.params.id), name: req.body?.name, ipAddress: req.body?.ipAddress, port: parseInt(req.body?.port) || 4370 },
+      errorCode: 'DEVICE_UPDATE_ERROR', errorMessage: err.message,
+    });
+    sendError(res, err);
   }
 });
 
@@ -355,6 +427,10 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
         data: { isArchived: true, enabled: false, autoSync: false, status: 'offline' },
       });
       realtimeListener.stopListener(id); // DB confirmed archived — safe to stop now.
+      await recordDeviceAudit({
+        action: ACTION.DEVICE_DELETED, result: RESULT.SUCCESS, actor: actorFromReq(req), device,
+        before: pickDeviceFields(device), after: null, metadata: { mode: 'archived', preservedLogs: rawLogs },
+      });
       return res.json({ message: 'Device archived', mode: 'soft', preservedLogs: rawLogs });
     }
 
@@ -371,6 +447,10 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
       prisma.device.delete({ where: { id } }),
     ]);
     realtimeListener.stopListener(id); // DB confirmed deleted — safe to stop now.
+    await recordDeviceAudit({
+      action: ACTION.DEVICE_DELETED, result: RESULT.SUCCESS, actor: actorFromReq(req), device,
+      before: pickDeviceFields(device), after: null, metadata: { mode: 'deleted' },
+    });
     return res.json({ message: 'Device deleted', mode: 'hard' });
   } catch (err) {
     // Last-resort fallback: if the hard delete still hit an FK constraint, archive.
@@ -380,6 +460,10 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
         data: { isArchived: true, enabled: false, autoSync: false, status: 'offline' },
       });
       realtimeListener.stopListener(id); // DB confirmed archived — safe to stop now.
+      await recordDeviceAudit({
+        action: ACTION.DEVICE_DELETED, result: RESULT.SUCCESS, actor: actorFromReq(req), device,
+        before: pickDeviceFields(device), after: null, metadata: { mode: 'archived', reason: 'hard delete failed, archived instead' },
+      });
       return res.json({ message: 'Device archived', mode: 'soft-fallback' });
     } catch (err2) {
       // Neither the hard delete nor the fallback archive persisted anything —
@@ -387,7 +471,11 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
       // either, so DB state and in-memory state remain consistent (both
       // still "active") rather than reporting or half-applying a change that
       // never actually happened.
-      return res.status(500).json({ error: err2.message });
+      await recordDeviceAudit({
+        action: ACTION.DEVICE_DELETED, result: RESULT.FAILED, actor: actorFromReq(req), deviceRef: { id },
+        errorCode: 'DEVICE_DELETE_ERROR', errorMessage: err2.message,
+      });
+      return sendError(res, err2);
     }
   }
 });
@@ -396,21 +484,21 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
 router.post('/:id/sync', authorize('admin', 'hr'), async (req, res) => {
   try {
     const deviceId = parseInt(req.params.id);
-    const result   = await pullLogs(deviceId, req.io, 'manual');
+    const result   = await pullLogs(deviceId, req.io, 'manual', actorFromReq(req));
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
 // ── Sync all enabled devices ──────────────────────────────────────────────────
 router.post('/sync-all', authorize('admin', 'hr'), async (req, res) => {
   try {
-    const results = await pullAllDevices(req.io);
+    const results = await pullAllDevices(req.io, actorFromReq(req));
     const total   = results.reduce((s, r) => s + (r.count || 0), 0);
     res.json({ results, totalNewLogs: total });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -419,9 +507,16 @@ router.post('/test-connection', authorize('admin'), async (req, res) => {
   try {
     const { ipAddress, port } = req.body;
     const result = await testConnection(ipAddress, port);
+    await recordDeviceAudit({
+      action: result.success ? ACTION.DEVICE_CONNECT_SUCCEEDED : ACTION.DEVICE_CONNECT_FAILED,
+      result: result.success ? RESULT.SUCCESS : RESULT.FAILED, actor: actorFromReq(req),
+      deviceRef: { ipAddress, port: parseInt(port) || 4370 },
+      errorCode: result.success ? null : 'CONNECT_TEST_FAILED', errorMessage: result.success ? null : result.error,
+      metadata: { purpose: 'test-connection', latencyMs: result.latency },
+    });
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -431,7 +526,7 @@ router.post('/:id/ping', authorize('admin', 'hr'), async (req, res) => {
     const result = await pingDevice(parseInt(req.params.id));
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -440,9 +535,14 @@ router.post('/:id/realtime/restart', authorize('admin', 'hr'), async (req, res) 
   try {
     const deviceId = parseInt(req.params.id);
     realtimeListener.restartListener(deviceId, req.io);
+    const dev = await prisma.device.findUnique({ where: { id: deviceId } }).catch(() => null);
+    await recordDeviceAudit({
+      action: ACTION.REALTIME_LISTENER_RESTARTED, result: RESULT.SUCCESS, actor: actorFromReq(req),
+      device: dev, deviceRef: { id: deviceId },
+    });
     res.json({ message: 'Realtime listener restart requested', deviceId });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -455,7 +555,7 @@ router.post('/relink', authorize('admin', 'hr'), async (req, res) => {
     const result = await relinkAttendanceLogs({ io: req.io, reason: 'manual-relink' });
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -465,7 +565,7 @@ router.get('/:id/users', authorize('admin'), async (req, res) => {
     const users = await getDeviceUsers(parseInt(req.params.id));
     res.json(users);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 

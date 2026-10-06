@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api, { LONG_OP } from '../lib/api';
+import { todayStr } from '../lib/businessDate';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { validateAttendanceConfig } from '../lib/attendanceConfigValidator';
 
@@ -85,9 +86,9 @@ function RuleTable({ tiers, onChange, defaultTiers, label }) {
         {tiers.map((tier, i) => (
           <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 100px 36px', gap: '4px 8px', alignItems: 'center' }}>
             <input type="time" value={tier.fromTime} onChange={e => update(i, 'fromTime', e.target.value)}
-              className="input text-sm py-1" dir="ltr" />
+              className="input text-sm py-1" dir="ltr" style={{ minWidth: 0 }} />
             <input type="time" value={tier.toTime} onChange={e => update(i, 'toTime', e.target.value)}
-              className="input text-sm py-1" dir="ltr" />
+              className="input text-sm py-1" dir="ltr" style={{ minWidth: 0 }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <input type="number" min="0" max="10" step="0.5" value={tier.units}
                 onChange={e => update(i, 'units', Number(e.target.value))}
@@ -308,10 +309,9 @@ export default function AttendanceSettingsPage() {
 
   useEffect(() => {
     load();
-    const n = new Date();
-    const y = n.getFullYear(), m = String(n.getMonth()+1).padStart(2,'0');
-    setRecalcFrom(`${y}-${m}-01`);
-    setRecalcTo(n.toISOString().split('T')[0]);
+    const today = todayStr();
+    setRecalcFrom(`${today.slice(0, 7)}-01`);
+    setRecalcTo(today);
   }, [load]);
 
   useRulesLiveSync(load, { silent: true });
@@ -472,7 +472,7 @@ export default function AttendanceSettingsPage() {
         </Card>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(480px, 1fr))', gap: 16, alignItems: 'start' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(480px, 100%), 1fr))', gap: 16, alignItems: 'start' }}>
 
         {/* ── 1. Shift Timing — ONLY shift boundaries ────────────────── */}
         <Card title="توقيت الدوام" icon={Clock} accent="#1d4ed8" subtitle="الوقت الرسمي لبداية ونهاية الوردية"

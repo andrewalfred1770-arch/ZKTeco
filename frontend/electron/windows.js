@@ -35,6 +35,11 @@ export async function createMainWindow(paths) {
       preload:         join(FRONTEND_ROOT, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration:  false,
+      sandbox:          true,   // preload only needs contextBridge/ipcRenderer
+      webSecurity:      true,
+      allowRunningInsecureContent: false,
+      webviewTag:       false,
+      devTools:         IS_DEV, // no DevTools in packaged builds
       spellcheck:       false,
       // Force Western numerals — override Blink's locale shaping
       v8CacheOptions:   'bypassHeatCheck',

@@ -6,8 +6,11 @@ import { RefreshCw, Download, Printer } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../lib/api';
 import { useTheme } from '../contexts/ThemeContext';
+import { useIsNarrowViewport } from '../hooks/useIsNarrowViewport';
+import { useGridPagination } from '../hooks/useGridPagination';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import { fmtDateTime } from '../lib/formatters';
+import { todayStr } from '../lib/businessDate';
 import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS } from '../lib/gridDefaults';
 import PrintPreviewModal from '../components/PrintPreviewModal';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
@@ -22,16 +25,22 @@ export default function RawLogsPage() {
   const [total,     setTotal]     = useState(0);
   const [loading,   setLoading]   = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
-  const [from, setFrom] = useState(new Date().toISOString().split('T')[0]);
-  const [to,   setTo]   = useState(new Date().toISOString().split('T')[0]);
+  const [from, setFrom] = useState(todayStr());
+  const [to,   setTo]   = useState(todayStr());
   const gridRef = useRef();
+
+  // Pinned-right columns (ID + ZK ID + employee name) sum to ~345px,
+  // exceeding a narrow phone's viewport. Below ~480px, only the employee
+  // name stays pinned — the rest flow into the normal scrollable region.
+  const isNarrow = useIsNarrowViewport(480);
+  const pagination = useGridPagination(100, [50, 100, 200, 500]);
 
   const cols = useMemo(() => [
     {
-      field: 'id', headerName: 'ID', width: 80, sort: 'desc', pinned: 'right',
+      field: 'id', headerName: 'ID', width: 80, sort: 'desc', pinned: isNarrow ? undefined : 'right',
       cellStyle: { ...NUM, color: 'var(--c-muted)', fontSize: '11px', justifyContent: 'center' } },
     {
-      field: 'zkUserId', headerName: 'ZK ID', width: 75, pinned: 'right',
+      field: 'zkUserId', headerName: 'ZK ID', width: 75, pinned: isNarrow ? undefined : 'right',
       cellStyle: { fontFamily: 'Consolas, monospace', color: 'var(--c-code)', fontSize: '11px', textAlign: 'center', justifyContent: 'center' } },
     {
       field: 'employee.name', headerName: 'الموظف', width: 190, pinned: 'right',
@@ -56,7 +65,7 @@ export default function RawLogsPage() {
     {
       field: 'source', headerName: 'المصدر', width: 90,
       cellStyle: { ...NUM, fontSize: '11px', color: 'var(--c-muted)', textAlign: 'center', justifyContent: 'center' } },
-  ], []);
+  ], [isNarrow]);
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
   // Perf Fix #4: same stable-identity pattern as PayrollPage/AttendanceDailyPage/
@@ -101,7 +110,7 @@ export default function RawLogsPage() {
         </div>
       </div>
 
-      <div className="card p-3 flex items-center gap-4">
+      <div className="card p-3 flex items-center gap-4 flex-wrap">
         <div className="flex items-center gap-2 text-xs text-gray-400">
           <span>من</span>
           <input type="date" className="input w-auto text-xs py-1.5 font-mono" dir="ltr"
@@ -130,8 +139,7 @@ export default function RawLogsPage() {
             localeText={AG_GRID_LOCALE_AR}
             animateRows={false}
             pagination
-            paginationPageSize={100}
-            paginationPageSizeSelector={[50, 100, 200, 500]}
+            {...pagination}
             loading={loading}
             getRowId={getRowId}
           />

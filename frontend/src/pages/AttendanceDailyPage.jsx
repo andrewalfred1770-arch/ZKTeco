@@ -10,8 +10,11 @@ import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import api, { LONG_OP } from '../lib/api';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
+import { todayStr, addDays } from '../lib/businessDate';
 import { fmtTime, fmtOTHours, fmtWorkedHours, fmtPenaltyUnits, fmtOvertimeUnits, fmtEditableZero, timeToMinutes, STATUS_LABELS, manualOverrideTooltip } from '../lib/formatters';
 import { useTheme } from '../contexts/ThemeContext';
+import { useIsNarrowViewport } from '../hooks/useIsNarrowViewport';
+import { useGridPagination } from '../hooks/useGridPagination';
 import {
   NUM, CENTER, nameCell, codeCell, deptCell,
   otCell, penaltyCell, timeCell, rowNumCell, mutedCell } from '../lib/cellStyles';
@@ -25,6 +28,7 @@ import { useFingerprintSyncWorkflow } from '../hooks/useFingerprintSyncWorkflow'
 import { useKeyboardShortcut } from '../hooks/useKeyboardShortcut';
 import AbsenceTypeModal, { ABSENCE_TYPE_LABELS } from '../components/AbsenceTypeModal';
 import AttendanceFilterBar from '../components/AttendanceFilterBar';
+import { MobileActionsMenu } from '../components/ui';
 import { useAttendanceFilter } from '../hooks/useAttendanceFilter';
 import { ACTOR, HHMM_RE, OVERRIDE_FIELD_MAP, normalizeDailyUpdate, replaceAttendanceRow, replaceAttendanceRows, applyRowFieldUpdate } from '../lib/attendanceUtils';
 
@@ -35,6 +39,18 @@ function loadDailyFilters() {
   try { return JSON.parse(localStorage.getItem(DAILY_FILTER_KEY)) || {}; } catch { return {}; }
 }
 
+// Today's LOCAL calendar day as YYYY-MM-DD. (toISOString() is the UTC date, which
+// is still yesterday between 00:00 and 02:00/03:00 in Egypt.)
+const localToday = todayStr;
+
+// The page opens on today. A manually chosen date is only remembered for
+// navigating away and back on the SAME local day; a date saved on an earlier
+// day (or by a version that stored no day) is never restored, so the screen
+// can't open on a stale day.
+function initialDailyDate(saved) {
+  return saved.date && saved.savedOn === localToday() ? saved.date : localToday();
+}
+
 export default function AttendanceDailyPage() {
   const { agGridTheme } = useTheme();
   const navigate = useNavigate();
@@ -42,7 +58,7 @@ export default function AttendanceDailyPage() {
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(false);
   const [processing, setProc] = useState(false);
-  const [date, setDate]       = useState(_saved.date || new Date().toISOString().split('T')[0]);
+  const [date, setDate]       = useState(initialDailyDate(_saved));
   const [printOpen, setPrintOpen] = useState(false);
   const fpSync = useFingerprintSyncWorkflow();
   const syncing = fpSync.state.phase === 'running';
@@ -87,18 +103,26 @@ export default function AttendanceDailyPage() {
     return classes.join(' ');
   };
 
+  // Pinned-right columns (checkbox + # + code + name) sum to ~400px, which
+  // alone exceeds a narrow phone's entire viewport width, leaving no room
+  // for the scrollable data columns. Below ~480px, only the name column
+  // (the one identity anchor worth keeping visible while scrolling) stays
+  // pinned — the rest flow into the normal scrollable region instead.
+  const isNarrow = useIsNarrowViewport(480);
+  const pagination = useGridPagination(50, [25, 50, 100]);
+
   const cols = useMemo(() => [
     {
-      headerName:'', width:44, pinned:'right',
+      headerName:'', width:44, pinned: isNarrow ? undefined : 'right',
       sortable:false, filter:false, resizable:false,
       checkboxSelection: true, headerCheckboxSelection: true,
       headerCheckboxSelectionFilteredOnly: true },
     {
-      headerName:'#', valueGetter:'node.rowIndex + 1', width:50, pinned:'right',
+      headerName:'#', valueGetter:'node.rowIndex + 1', width:50, pinned: isNarrow ? undefined : 'right',
       sortable:false, filter:false, headerClass:'ag-header-center',
       cellStyle: rowNumCell() },
     {
-      field:'employeeCode', headerName:'كود', width:88, pinned:'right',
+      field:'employeeCode', headerName:'كود', width:88, pinned: isNarrow ? undefined : 'right',
       cellStyle: codeCell() },
     {
       field:'employeeName', headerName:'اسم الموظف', width:220, minWidth:180, pinned:'right',
@@ -254,7 +278,7 @@ export default function AttendanceDailyPage() {
           : 'transparent',
       }),
     },
-  ], []);
+  ], [isNarrow]);
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
 
@@ -272,7 +296,13 @@ export default function AttendanceDailyPage() {
     return { borderRight: `6px solid ${c}` };
   }, []);
 
-  const getRowId = useCallback(p => String(p.data.id), []);
+  // The API returns a placeholder row (id: null) for every employee that has no
+  // AttendanceDaily record on the selected date, so `String(id)` was the same
+  // "null" for ALL of them: AG Grid keyed them to one id and the grid ended up
+  // with ~2n-1 nodes for n employees (every employee listed twice, inflated
+  // pagination/selection/print counts). A placeholder is identified by its
+  // employee instead; the `e` prefix cannot collide with a numeric record id.
+  const getRowId = useCallback(p => (p.data.id != null ? String(p.data.id) : `e${p.data.employeeId}`), []);
 
   // Assigns a ref only — safe with an empty dependency array.
   const handleGridReady = useCallback((p) => { gridApiRef.current = p.api; }, [gridApiRef]);
@@ -330,9 +360,9 @@ export default function AttendanceDailyPage() {
   useRulesLiveSync(load, { isBusyRef: editCountRef });
   useDeviceLiveSync(load, { silent: true, isBusyRef: editCountRef, reloadOne: loadOne });
 
-  // Persist selected date across navigation
+  // Remember the selected date for navigating away/back on the same local day
   useEffect(() => {
-    localStorage.setItem(DAILY_FILTER_KEY, JSON.stringify({ date }));
+    localStorage.setItem(DAILY_FILTER_KEY, JSON.stringify({ date, savedOn: localToday() }));
   }, [date]);
 
   // Ctrl+Shift+R → refresh grid data
@@ -517,10 +547,7 @@ export default function AttendanceDailyPage() {
     api.forEachNodeAfterFilterAndSort(n => { if (n.data) visible.push(n.data); });
     return visible.length > 0 ? visible : rows;
   };
-  const shift = (d) => {
-    const nd = new Date(date); nd.setDate(nd.getDate()+d);
-    setDate(nd.toISOString().split('T')[0]);
-  };
+  const shift = (d) => setDate(addDays(date, d));
 
   const summary = useMemo(() => ({
     present: rows.filter(r => ['present','late','early_leave'].includes(r.status)).length,
@@ -540,16 +567,30 @@ export default function AttendanceDailyPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={exportCSV} className="btn-secondary text-xs py-1.5 px-3">
-            <Download className="w-3.5 h-3.5" /> CSV
-          </button>
-          <button onClick={() => setPrintOpen(true)} className="btn-secondary text-xs py-1.5 px-3">
-            <Printer className="w-3.5 h-3.5" /> طباعة
-          </button>
-          <button onClick={syncDevices} className="btn-secondary text-xs py-1.5 px-3" disabled={syncing}>
-            {syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Fingerprint className="w-3.5 h-3.5" />}
-            {syncing ? 'جاري سحب البصمات...' : 'سحب البصمات'}
-          </button>
+          {/* Secondary actions: full row on desktop, "⋮ المزيد" overflow on
+              mobile — same three actions, nothing removed. */}
+          <div className="hidden md:flex items-center gap-2">
+            <button onClick={exportCSV} className="btn-secondary text-xs py-1.5 px-3">
+              <Download className="w-3.5 h-3.5" /> CSV
+            </button>
+            <button onClick={() => setPrintOpen(true)} className="btn-secondary text-xs py-1.5 px-3">
+              <Printer className="w-3.5 h-3.5" /> طباعة
+            </button>
+            <button onClick={syncDevices} className="btn-secondary text-xs py-1.5 px-3" disabled={syncing}>
+              {syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Fingerprint className="w-3.5 h-3.5" />}
+              {syncing ? 'جاري سحب البصمات...' : 'سحب البصمات'}
+            </button>
+          </div>
+          <div className="md:hidden">
+            <MobileActionsMenu actions={[
+              { key: 'csv', label: 'CSV', icon: <Download style={{ width: 15, height: 15 }} />, onClick: exportCSV },
+              { key: 'print', label: 'طباعة', icon: <Printer style={{ width: 15, height: 15 }} />, onClick: () => setPrintOpen(true) },
+              { key: 'sync', label: syncing ? 'جاري سحب البصمات...' : 'سحب البصمات', disabled: syncing,
+                icon: syncing ? <Loader2 style={{ width: 15, height: 15 }} className="animate-spin" /> : <Fingerprint style={{ width: 15, height: 15 }} />,
+                onClick: syncDevices },
+            ]} />
+          </div>
+          {/* Primary action — always visible on every breakpoint */}
           <button onClick={process} className="btn-primary text-xs py-1.5 px-3" disabled={processing}
             title="إعادة تطبيق قواعد الحضور والانصراف على التاريخ المحدد">
             {processing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
@@ -565,7 +606,7 @@ export default function AttendanceDailyPage() {
           <input type="date" value={date} onChange={e => setDate(e.target.value)}
             className="input w-auto text-sm font-mono py-1.5 text-center" dir="ltr" />
           <button onClick={() => shift(1)} className="btn-ghost p-1.5 rounded-lg"><ChevronLeft className="w-4 h-4" /></button>
-          <button onClick={() => setDate(new Date().toISOString().split('T')[0])} className="btn-secondary text-xs py-1.5 px-3">اليوم</button>
+          <button onClick={() => setDate(localToday())} className="btn-secondary text-xs py-1.5 px-3">اليوم</button>
           <button onClick={() => load(true)} className="btn-ghost p-1.5 rounded-lg" title="تحديث البيانات (Ctrl+Shift+R)">
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           </button>
@@ -582,7 +623,11 @@ export default function AttendanceDailyPage() {
             {editMode ? 'وضع التعديل' : 'قراءة فقط'}
           </button>
         </div>
-        <div className="flex items-center gap-5 text-sm font-semibold">
+        {/* Secondary summary counts — already visible on the Dashboard KPIs;
+            hidden below md so the table (the actual reason to be on this
+            page) starts higher on a phone screen instead of competing with
+            redundant info. Nothing is removed, just deprioritized. */}
+        <div className="hidden md:flex items-center gap-5 text-sm font-semibold">
           <span className="flex items-center gap-1.5" style={{ color:'var(--c-green)' }}>
             <CheckCircle className="w-4 h-4" /> {summary.present} حاضر
           </span>
@@ -672,8 +717,7 @@ export default function AttendanceDailyPage() {
             rowSelection="multiple"
             suppressRowClickSelection
             enableCellTextSelection
-            pagination paginationPageSize={50}
-            paginationPageSizeSelector={[25,50,100]}
+            pagination {...pagination}
             loading={loading}
           />
         </div>

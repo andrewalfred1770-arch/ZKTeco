@@ -6,7 +6,9 @@
  * this build, so the audit actor comes from `changedByName` in the body
  * (defaults to "النظام").
  */
-const router = require('express').Router();
+const router = require('express').Router();
+const { sendError, numericIdParam } = require('../utils/apiError');
+router.param('id', numericIdParam);
 const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
 const { authenticate, authorize } = require('../middleware/auth');
@@ -118,7 +120,7 @@ router.get('/', async (req, res) => {
     // Attach the real-world impact (screens/engines) from the dependency map — drives
     // the "🔗 يؤثر على:" chip list in RuleDrawer so editors see actual wiring, not guesses.
     res.json(rules.map(r => ({ ...r, affects: ruleDependencyMap[r.key]?.affects || [] })));
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Category counts ──────────────────────────────────────────────────────────
@@ -131,7 +133,7 @@ router.get('/categories', async (_req, res) => {
       total, active,
       categories: grouped.map(g => ({ category: g.category, count: g._count._all })),
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Create ───────────────────────────────────────────────────────────────────
@@ -179,7 +181,7 @@ router.post('/', async (req, res) => {
     await audit(rule.id, rule.key, 'created', null, null, rule.value, actor(req));
     ruleChanged(req.io, { keys: [rule.key], action: 'created', scope: scopeFromRule(rule) });
     res.status(201).json(rule);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Update (per-field audit) ─────────────────────────────────────────────────
@@ -242,7 +244,7 @@ router.put('/:id', async (req, res) => {
       ruleStore.invalidate();
     }
     res.json(updated);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Quick enable/disable ─────────────────────────────────────────────────────
@@ -255,7 +257,7 @@ router.patch('/:id/toggle', async (req, res) => {
     await audit(id, existing.key, updated.isActive ? 'enabled' : 'disabled', 'isActive', existing.isActive, updated.isActive, actor(req));
     ruleChanged(req.io, { keys: [updated.key], action: updated.isActive ? 'enabled' : 'disabled', scope: scopeFromRule(updated) });
     res.json(updated);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Delete ───────────────────────────────────────────────────────────────────
@@ -267,7 +269,7 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
     if (existing) ruleChanged(req.io, { keys: [existing.key], action: 'deleted', scope: scopeFromRule(existing) });
     else ruleStore.invalidate();
     res.json({ message: 'Rule deleted' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Audit trail for a rule ───────────────────────────────────────────────────
@@ -278,7 +280,7 @@ router.get('/:id/audit', async (req, res) => {
       orderBy: { changedAt: 'desc' },
     });
     res.json(audits);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Manual full-history recalculation ("إعادة احتساب الفترة بالكامل") ────────
@@ -323,7 +325,7 @@ router.post('/recalculate-full', authorize('admin'), async (req, res) => {
       reason: `إعادة احتساب يدوية للفترة ${f.format('YYYY-MM-DD')} → ${t.format('YYYY-MM-DD')} (${actor(req)})`,
     });
     res.json({ message: 'تم إعادة الاحتساب', ...result });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

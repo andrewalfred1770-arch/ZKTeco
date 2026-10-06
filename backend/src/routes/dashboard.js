@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const { sendError } = require('../utils/apiError');
 const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
 const { applyApprovedAdjustment } = require('../engines/payrollEngine');
@@ -113,7 +114,7 @@ router.get('/', async (req, res) => {
       lastUpdated: new Date(),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 

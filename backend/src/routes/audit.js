@@ -1,13 +1,17 @@
 const express = require('express');
+const { sendError } = require('../utils/apiError');
 const { getPrisma } = require('../utils/prisma');
-const { authorize } = require('../middleware/auth');
+const { authenticate, authorize } = require('../middleware/auth');
+const { startOfDayParam, endOfDayParam } = require('../utils/dateParam');
 
 const router  = express.Router();
 const prisma  = getPrisma();
 
 // GET /api/audit-logs
 // Query: employeeId, from, to, field, source, page (default 1), limit (default 50)
-router.get('/', authorize('admin', 'hr'), async (req, res) => {
+// authenticate first: authorize() alone has no req.user to check, so with AUTH_ENABLED=true every
+// caller — admins included — was answered 401. (Both are no-ops when AUTH_ENABLED=false.)
+router.get('/', authenticate, authorize('admin', 'hr'), async (req, res) => {
   try {
     const { employeeId, from, to, field, source, page = 1, limit = 50 } = req.query;
 
@@ -17,8 +21,8 @@ router.get('/', authorize('admin', 'hr'), async (req, res) => {
     if (source)     where.source     = source;
     if (from || to) {
       where.createdAt = {};
-      if (from) where.createdAt.gte = new Date(from);
-      if (to)   where.createdAt.lte = new Date(new Date(to).setHours(23, 59, 59, 999));
+      if (from) where.createdAt.gte = startOfDayParam(from);
+      if (to)   where.createdAt.lte = endOfDayParam(to);
     }
 
     const skip  = (parseInt(page) - 1) * parseInt(limit);
@@ -57,7 +61,7 @@ router.get('/', authorize('admin', 'hr'), async (req, res) => {
       })),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 

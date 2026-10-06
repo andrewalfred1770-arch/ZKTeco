@@ -116,7 +116,7 @@ export default function ConnectionWizard() {
             onChange={(e) => { setServerUrl(e.target.value); setResult(null); }}
           />
           <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
-            مثال: http://192.168.1.145:5000 · أو https://erp.company.com
+            الأفضل استخدام اسم جهاز الخادم (مثال: http://SERVER-PC:5000) لأن رقم IP قد يتغير · أو http://192.168.1.145:5000 · أو https://erp.company.com
           </span>
         </div>
 

@@ -32,6 +32,7 @@ import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import { westernDigits, fmtDateTime } from '../lib/formatters';
 import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS } from '../lib/gridDefaults';
 import { useFocusTrap } from '../hooks/useFocusTrap';
+import { useIsNarrowViewport } from '../hooks/useIsNarrowViewport';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 const W = v => westernDigits(String(v ?? 0));
@@ -283,8 +284,8 @@ function DeviceDrawer({ open, onClose, onSaved, device, branches }) {
         aria-labelledby={titleId}
         dir="rtl"
         style={{
-          position: 'fixed', top: 0, right: 0, bottom: 0,
-          width: 420, zIndex: 9001,
+          position: 'fixed', top: 0, insetInlineStart: 0, bottom: 0,
+          width: 'min(420px, 100vw)', zIndex: 9001,
           background: surface,
           borderLeft: `2px solid ${border}`,
           display: 'flex', flexDirection: 'column',
@@ -579,7 +580,7 @@ function SyncLogsPanel({ deviceId, deviceName, isLight }) {
               لا توجد سجلات مزامنة بعد
             </div>
           ) : (
-            <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+            <div style={{ maxHeight: 260, overflowY: 'auto', overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, fontFamily: 'Cairo, sans-serif' }}>
                 <thead>
                   <tr style={{ background: isLight ? '#f1f5f9' : 'var(--surface-3)' }}>
@@ -697,7 +698,7 @@ function RelinkDiagnosticsPanel({ isLight, refreshKey }) {
               لا توجد بيانات بصمات بعد
             </div>
           ) : (
-            <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+            <div style={{ maxHeight: 320, overflowY: 'auto', overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, fontFamily: 'Cairo, sans-serif' }}>
                 <thead>
                   <tr style={{ background: isLight ? '#f1f5f9' : 'var(--surface-3)' }}>
@@ -1198,6 +1199,16 @@ export default function DevicesPage() {
   // ── AG Grid columns ───────────────────────────────────────────────────────
   const NUM = { textAlign: 'right', direction: 'ltr', justifyContent: 'flex-end', fontFamily: 'Consolas,monospace' };
 
+  // Pinned-right identity columns + the pinned-left actions column never
+  // shrink and always keep their configured width. This grid's actions
+  // column (250px) is wider than the equivalent on Payroll/Movement, so its
+  // pinned total (~490px) still visibly overlapped the center columns even
+  // at 1024px in testing (observed, not just a width-sum estimate). Rather
+  // than chase an exact per-width pixel cutoff, align with the tablet/
+  // desktop split used elsewhere in this pass (<1200px = not full desktop):
+  // only keep this specific column pinned at genuine desktop width.
+  const isNarrow = useIsNarrowViewport(1199);
+
   const cols = useMemo(() => [
     {
       headerName: '#', valueGetter: 'node.rowIndex + 1', width: 52,
@@ -1272,7 +1283,7 @@ export default function DevicesPage() {
       ),
     },
     {
-      headerName: 'إجراءات', width: 250, pinned: 'left',
+      headerName: 'إجراءات', width: 250, pinned: isNarrow ? undefined : 'left',
       sortable: false, filter: false,
       cellRenderer: ({ data, context }) => (
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, height: '100%' }}>
@@ -1343,8 +1354,9 @@ export default function DevicesPage() {
   // EP-014: no longer depends on the live-state maps — they're read from AG
   // Grid's `context` prop at render time (see cellRenderers above) and
   // repainted via refreshCells() in the effect below, so columnDefs itself
-  // never needs to change after mount.
-  ], []);
+  // never needs to change after mount. isNarrow is a new, deliberate
+  // dependency (mobile pinning fix above) — everything else is unchanged.
+  ], [isNarrow]);
 
   // Perf Fix #7: rowClassRules (unlike a getRowClass function) is checked
   // against the AG Grid `context` prop at evaluation time, exactly like the
@@ -1421,7 +1433,7 @@ export default function DevicesPage() {
             {devices.length} جهاز مسجل · مزامنة تلقائية كل {devices[0]?.syncInterval || 5} دقيقة
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <button
             onClick={loadAll}
             className="btn-ghost"
@@ -1463,8 +1475,8 @@ export default function DevicesPage() {
         </div>
       </div>
 
-      {/* ── KPI Cards ────────────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
+      {/* ── KPI Cards — 2 cols on mobile, 3 on tablet, 5 on desktop ────────── */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5" style={{ gap: 10 }}>
         <KpiCard label="إجمالي الأجهزة"  value={stats?.total}      icon={Server}   color={isLight ? '#3b82f6' : '#2F81F7'}  loading={statsLoad} />
         <KpiCard label="متصل"             value={stats?.online}     icon={Wifi}     color="#22c55e"  loading={statsLoad} sub="في الوقت الحالي" />
         <KpiCard label="غير متصل"         value={stats?.offline}    icon={WifiOff}  color="#ef4444"  loading={statsLoad} />
@@ -1477,12 +1489,12 @@ export default function DevicesPage() {
           sub={stats?.recentSyncs ? `${W(stats.recentSyncs)} مزامنة ناجحة (24س)` : ''}
         />
         <KpiCard
-          label="إجمالي السجلات الخام"
-          value={stats?.totalLogs}
+          label="إجمالي السجلات على الجهاز"
+          value={stats?.deviceLogCount ?? '—'}
           icon={Database}
           color="#a78bfa"
           loading={statsLoad}
-          sub="حركات بصمة محفوظة"
+          sub="عدد السجلات المخزنة في جهاز البصمة نفسه (آخر مزامنة)"
         />
       </div>
 
@@ -1592,6 +1604,7 @@ export default function DevicesPage() {
           style={{
             position: 'fixed', inset: 0, zIndex: 9500,
             background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 16,
           }}
           onClick={() => setDeleteId(null)}
         >
@@ -1604,7 +1617,7 @@ export default function DevicesPage() {
             dir="rtl"
             style={{
               background: surface, border: `1.5px solid ${border}`,
-              borderRadius: 14, padding: '24px 28px', width: 360,
+              borderRadius: 14, padding: '24px 28px', width: '100%', maxWidth: 360,
               boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
               outline: 'none',
             }}

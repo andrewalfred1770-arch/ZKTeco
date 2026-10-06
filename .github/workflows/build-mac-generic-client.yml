@@ -84,7 +84,9 @@ jobs:
           npx asar extract "$APP_DIR/Contents/Resources/app.asar" /tmp/asar-generic-client
           PKG_VERSION=$(node -e "console.log(require('/tmp/asar-generic-client/package.json').version)")
           echo "Packaged version: $PKG_VERSION"
-          [ "$PKG_VERSION" = "1.2.9" ] && echo "OK: version is 1.2.9" || { echo "FAIL: version is '$PKG_VERSION', expected 1.2.9"; exit 1; }
+          EXPECTED_VERSION=$(node -e "console.log(require('./package.json').version)")
+          echo "Expected version (from checked-out frontend/package.json): $EXPECTED_VERSION"
+          [ "$PKG_VERSION" = "$EXPECTED_VERSION" ] && echo "OK: version is $EXPECTED_VERSION" || { echo "FAIL: version is '$PKG_VERSION', expected '$EXPECTED_VERSION'"; exit 1; }
           echo "================ Monthly Attendance print/summary code present ================"
           grep -q "forEachNodeAfterFilter" $(find /tmp/asar-generic-client -iname "AttendanceMonthlyPage-*.js") && echo "OK: daily-detail print pipeline present" || { echo "FAIL: daily-detail print pipeline not found"; exit 1; }
           grep -q "attendance_monthly_summary" $(find /tmp/asar-generic-client -iname "PrintPreviewModal-*.js") && echo "OK: monthly aggregate summary report type present" || { echo "FAIL: attendance_monthly_summary not found"; exit 1; }

@@ -1,4 +1,5 @@
-import { app, ipcMain } from 'electron';
+import { app } from 'electron';
+import { secureHandle, asUpdaterPatch } from './security.js';
 import electronUpdater from 'electron-updater';
 import { IS_DEV } from './constants.js';
 import { state } from './state.js';
@@ -86,9 +87,9 @@ function schedulePeriodicCheck(settings) {
 }
 
 function registerIpc() {
-  ipcMain.handle('updater:check', async () => { await checkForUpdates(); return getStatePayload(); });
-  ipcMain.handle('updater:download', async () => { await startDownload(); return getStatePayload(); });
-  ipcMain.handle('updater:install', () => {
+  secureHandle('updater:check', async () => { await checkForUpdates(); return getStatePayload(); });
+  secureHandle('updater:download', async () => { await startDownload(); return getStatePayload(); });
+  secureHandle('updater:install', () => {
     if (!downloadedInfo) return { ok: false, error: 'no update downloaded yet' };
     log('Install Started');
     app.isQuitting = true;
@@ -96,10 +97,11 @@ function registerIpc() {
     setImmediate(() => autoUpdater.quitAndInstall(false, true));
     return { ok: true };
   });
-  ipcMain.handle('updater:get-state', () => getStatePayload());
-  ipcMain.handle('updater:get-settings', () => readSettings());
-  ipcMain.handle('updater:set-settings', (_e, patch) => {
-    const merged = writeSettings(patch || {});
+  secureHandle('updater:get-state', () => getStatePayload());
+  secureHandle('updater:get-settings', () => readSettings());
+  secureHandle('updater:set-settings', (_e, patch) => {
+    patch = asUpdaterPatch(patch || {});
+    const merged = writeSettings(patch);
     if (Object.prototype.hasOwnProperty.call(patch || {}, 'feedUrl')) {
       applyFeedUrl(merged);
     }

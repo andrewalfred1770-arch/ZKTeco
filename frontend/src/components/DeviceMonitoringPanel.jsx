@@ -160,10 +160,10 @@ function MiniKpi({ icon: Icon, label, value, tone, sub }) {
   );
 }
 
-export function FingerprintStatsGrid({ totalLogs = 0, importedToday = 0, failedToday = 0 }) {
+export function FingerprintStatsGrid({ totalLogs = null, importedToday = 0, failedToday = 0 }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-      <MiniKpi icon={Database} label="إجمالي البصمات" value={W(totalLogs)} />
+      <MiniKpi icon={Database} label="إجمالي البصمات على الجهاز" value={totalLogs == null ? '—' : W(totalLogs)} />
       {/* The device protocol layer this app uses doesn't report a count of
           fingerprints enrolled on the device but not yet imported — shown
           honestly as unavailable rather than approximated from an unrelated

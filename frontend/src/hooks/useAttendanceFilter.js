@@ -19,6 +19,7 @@
  * filter instantly.
  */
 import { useState, useCallback, useRef } from 'react';
+import { searchTokens, matchesTokens, rowHaystack } from '../lib/searchText';
 
 export const EMPTY_FILTERS = {
   search:        '',
@@ -90,15 +91,14 @@ export function useAttendanceFilter() {
     const f = filtersRef.current;
 
     // ── Global search ───────────────────────────────────────────────────────
-    if (f.search.trim()) {
-      const q = f.search.trim().toLowerCase();
-      const hit = [
-        row.employeeName,
-        String(row.employeeCode ?? ''),
-        row.department,
-        row.position,
-        row.jobTitle,
-      ].some(v => v?.toLowerCase().includes(q));
+    // Arabic/English-normalized, every word must match (lib/searchText.js); the
+    // row's normalized text is cached per row object, so a keystroke costs one
+    // substring test per word per row.
+    const tokens = searchTokens(f.search);
+    if (tokens.length) {
+      const hit = matchesTokens(tokens, rowHaystack(row, [
+        row.employeeName, row.employeeCode, row.department, row.position, row.jobTitle,
+      ]));
       if (!hit) return false;
     }
 
