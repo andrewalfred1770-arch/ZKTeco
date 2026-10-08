@@ -1,5 +1,6 @@
 const { getPrisma } = require('../utils/prisma');
 const ruleStore = require('../services/ruleStore');
+const logger = require('../utils/logger');
 const prisma = getPrisma();
 
 const DEFAULT_RULES = {
@@ -10,7 +11,7 @@ const DEFAULT_RULES = {
   checkin_window_end:   '12:00',
 
   // ── Grace / thresholds ────────────────────────────────────────────────────────
-  late_grace:        '0',   // minutes: no penalty below this lateness
+  late_grace:        '0',   // minutes: an arrival later than this is marked "late" (STATUS only — the penalty always comes from late_rules)
   // DEPRECATED — not read by attendanceEngine (see ruleDependencyMap.js: entry([], [])).
   // Kept seeded only so existing DB rows / audit history are unaffected.
   late_limit:        '0',
@@ -30,7 +31,7 @@ const DEFAULT_RULES = {
   early_rules: '',
 
   // ── Overtime ──────────────────────────────────────────────────────────────────
-  overtime_minimum:    '50',   // min OT minutes before counting any OT
+  overtime_minimum:    '50',   // minimum before any OT counts: weekday = rounded OT hours x 60; weekend/holiday = raw worked minutes (see attendanceEngine)
   overtime_multiplier: '1.5',  // pay multiplier for OT
   overtime_cap_hours:  '0',    // daily cap (0 = no cap)
   // friday_ot_multiplier / holiday_ot_multiplier: deliberately NOT defaulted here.
@@ -52,93 +53,58 @@ const DEFAULT_RULES = {
   friday_is_weekend:  'false', // true → Friday = non-working day
 
   // ── Absence ───────────────────────────────────────────────────────────────────
-  absence_deduct_days:    '1',   // default penalty days when no absenceType set
   late_penalty_per_minute:'0',   // legacy per-minute rate (superseded by tiers)
 };
 
-async function getRules(branchId, departmentId, employeeId) {
-  const rows = await prisma.attendanceRule.findMany({
-    where: {
-      OR: [
-        { branchId: null, departmentId: null, employeeId: null },
-        { branchId },
-        { departmentId },
-        ...(employeeId ? [{ employeeId }] : []),
-      ],
-    },
-    orderBy: { id: 'asc' },
-  });
+// Boolean rule values. ruleValidation.js (case 'boolean') accepts true/false/1/0/'' in any case, so every
+// engine reader must understand the SAME set — otherwise a value the validator accepted (e.g. '1')
+// would silently be read as false.
+function isRuleTrue(v) {
+  return ['true', '1'].includes(String(v ?? '').trim().toLowerCase());
+}
 
-  // Precedence: hardcoded defaults → Dynamic Rules Engine (DB) → legacy scoped overrides.
-  // The Dynamic Rules table is seeded with the same keys/values as DEFAULT_RULES, so
-  // results are unchanged until a rule is edited from the Rules page.
+// ─── Rules lookup ─────────────────────────────────────────────────────────────
+// D1 (approved): ALL rules are GLOBAL — there is no branch / department / employee scope.
+// Precedence is simply: hardcoded defaults → Dynamic Rules (the `rules` table, via ruleStore).
+//
+// R4 (approved): the legacy `attendance_rules` table used to add branch → department → employee overrides
+// here. Those scoped overrides are no longer applied, and legacy GLOBAL rows were already ignored, so the
+// legacy table has no effect on any calculation. (The two old lookups also disagreed about scope when a row
+// named several scopes; there is now nothing left to disagree about.) The table itself is untouched — see
+// backend/scripts/reconcile-legacy-attendance-rules.js for the read-only reconciliation report. The
+// (branchId, departmentId, employeeId) parameters are kept so every existing caller keeps working.
+//
+// One-time diagnostic: if scoped legacy rows exist in a database, say so in the log (they are IGNORED) so a
+// controlled migration can deal with them. Diagnostic only — it can never affect or fail a calculation.
+let legacyScopedCheck = null;
+function noteLegacyScopedRules() {
+  if (legacyScopedCheck) return;
+  legacyScopedCheck = (async () => {
+    try {
+      const n = await prisma.attendanceRule.count({
+        where: { OR: [{ branchId: { not: null } }, { departmentId: { not: null } }, { employeeId: { not: null } }] },
+      });
+      if (n > 0) logger.warn(`[RULES] ${n} legacy scoped attendance_rules row(s) exist and are IGNORED (rules are global-only). Run scripts/reconcile-legacy-attendance-rules.js and migrate them deliberately.`);
+    } catch { /* diagnostic only */ }
+  })();
+}
+
+async function getRules(_branchId, _departmentId, _employeeId) {
+  noteLegacyScopedRules();
   const dynamic = await ruleStore.getRuleMap().catch(() => ({}));
-  const rules = { ...DEFAULT_RULES, ...dynamic };
-
-  // The Dynamic Rules table is now the GLOBAL source of truth, so legacy global
-  // rows (no branch/dept/employee) are ignored here. Legacy rows are only used
-  // for branch → department → employee scoped overrides (most specific wins).
-  for (const row of rows.filter(r => r.branchId && !r.departmentId && !r.employeeId)) {
-    rules[row.ruleKey] = row.ruleValue;
-  }
-  for (const row of rows.filter(r => r.departmentId && !r.employeeId)) {
-    rules[row.ruleKey] = row.ruleValue;
-  }
-  for (const row of rows.filter(r => r.employeeId)) {
-    rules[row.ruleKey] = row.ruleValue;
-  }
-
-  return rules;
+  return { ...DEFAULT_RULES, ...dynamic };
 }
 
 // ─── Batched rules lookup (Perf Batch 1) ────────────────────────────────────
-// Same precedence and output as calling getRules(employee.branchId,
-// employee.departmentId, employee.id) once per employee, but issues ONE
-// attendanceRule query (+ one cached ruleStore lookup) for the whole batch
-// instead of one attendanceRule query per employee — the N+1 that Phase
-// 24.1's preload mechanism never covered (payrollEngine.computePayroll still
-// called getRules() per employee even when handed a preload). Returns a
-// Map<employeeId, rulesObject>; each entry is byte-for-byte identical to what
-// getRules() would have returned for that employee, including precedence
-// order (branch → department → employee, each applied in ascending row-id
-// order, exactly mirroring getRules()'s three sequential filter/apply loops).
+// Same output as calling getRules() once per employee, but with ONE cached ruleStore lookup for the whole
+// batch. Rules are global, so every employee gets (a fresh copy of) the same object. Returns a
+// Map<employeeId, rulesObject>.
 async function getRulesBatch(employees) {
-  const branchIds = [...new Set(employees.map(e => e.branchId).filter(v => v != null))];
-  const departmentIds = [...new Set(employees.map(e => e.departmentId).filter(v => v != null))];
-  const employeeIds = employees.map(e => e.id);
-
-  const rows = await prisma.attendanceRule.findMany({
-    where: {
-      OR: [
-        { branchId: null, departmentId: null, employeeId: null },
-        ...(branchIds.length ? [{ branchId: { in: branchIds }, departmentId: null, employeeId: null }] : []),
-        ...(departmentIds.length ? [{ departmentId: { in: departmentIds }, employeeId: null }] : []),
-        ...(employeeIds.length ? [{ employeeId: { in: employeeIds } }] : []),
-      ],
-    },
-    orderBy: { id: 'asc' },
-  });
-
+  noteLegacyScopedRules();
   const dynamic = await ruleStore.getRuleMap().catch(() => ({}));
   const baseRules = { ...DEFAULT_RULES, ...dynamic };
-
-  // Same three precedence tiers getRules() applies, pre-split once for the
-  // whole batch instead of per employee — legacy global rows (no
-  // branch/department/employee) are fetched (for query-shape parity with
-  // getRules()) but, just like getRules(), never applied: the Dynamic Rules
-  // table is the global source of truth.
-  const branchRows = rows.filter(r => r.branchId != null && r.departmentId == null && r.employeeId == null);
-  const deptRows   = rows.filter(r => r.departmentId != null && r.employeeId == null);
-  const empRows    = rows.filter(r => r.employeeId != null);
-
   const result = new Map();
-  for (const emp of employees) {
-    const rules = { ...baseRules };
-    for (const row of branchRows) if (row.branchId === emp.branchId) rules[row.ruleKey] = row.ruleValue;
-    for (const row of deptRows) if (row.departmentId === emp.departmentId) rules[row.ruleKey] = row.ruleValue;
-    for (const row of empRows) if (row.employeeId === emp.id) rules[row.ruleKey] = row.ruleValue;
-    result.set(emp.id, rules);
-  }
+  for (const emp of employees) result.set(emp.id, { ...baseRules });
   return result;
 }
 
@@ -152,11 +118,18 @@ function calcOvertimeHours(overtimeMinutes, rounding) {
   return Math.floor(overtimeMinutes / rounding);
 }
 
+// weekend_days is stored in two formats and BOTH must be understood:
+//   - numeric day indexes (legacy / seed): '5', '5,6'   (0=Sun .. 6=Sat)
+//   - day names written by the Attendance Settings page: 'fri', 'sat', 'fri,sat'
+// Before names were handled they went through Number() → NaN and silently never
+// matched, so choosing Friday/Saturday in the UI had no effect.
+const WEEKDAY_INDEX = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+
 function isWeekend(date, weekendDays) {
-  // '' (no automatic weekly off-day) must parse to [] — Number('') is 0, not NaN,
-  // so empty segments are dropped BEFORE the Number() conversion or '' would
-  // incorrectly become day 0 (Sunday).
-  const days = (weekendDays || '').split(',').map(s => s.trim()).filter(s => s !== '').map(Number);
+  // '' (no automatic weekly off-day) must parse to [] — empty segments are
+  // dropped first, or '' would incorrectly become day 0 (Sunday).
+  const days = (weekendDays || '').split(',').map(s => s.trim().toLowerCase()).filter(s => s !== '')
+    .map(s => (/^\d+$/.test(s) ? Number(s) : WEEKDAY_INDEX[s.slice(0, 3)]));
   return days.includes(date.getDay());
 }
 
@@ -178,4 +151,4 @@ async function isHoliday(date, branchId) {
   return !!holiday;
 }
 
-module.exports = { getRules, getRulesBatch, parseTime, calcOvertimeHours, isWeekend, isHoliday };
+module.exports = { getRules, getRulesBatch, parseTime, calcOvertimeHours, isWeekend, isHoliday, isRuleTrue };

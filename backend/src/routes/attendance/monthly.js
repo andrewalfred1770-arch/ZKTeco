@@ -93,8 +93,10 @@ router.get('/monthly', async (req, res) => {
 
       // Same filter as payrollEngine.js:124 — status-based, not isAbsent flag.
       // Fixes workDays discrepancy between /monthly route and payroll calculations.
-      const workDays = records.filter(r => ['present', 'late', 'early_leave'].includes(r.status)).length;
-      const absentDays = records.filter(r => r.isAbsent).length;
+      // Counted on the approved-adjustment-aware rows (effRecords), exactly like Payroll / Daily /
+      // Movement — an approved forcePresent must not still count as an absent day here.
+      const workDays = effRecords.filter(r => ['present', 'late', 'early_leave'].includes(r.status)).length;
+      const absentDays = effRecords.filter(r => r.isAbsent).length;
       const totalHours = records.reduce((s, r) => s + r.workedMinutes / 60, 0);
       const totalOT = records.reduce((s, r) => s + r.overtimeHours, 0);
       const totalLate = records.reduce((s, r) => s + r.lateMinutes, 0);

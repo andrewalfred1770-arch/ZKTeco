@@ -186,7 +186,6 @@ export default function SalaryCard({ data, showBorder = true }) {
     { label: 'الراتب الأساسي', value: earnings?.basicSalary },
     { label: `إضافي صباحي (${formatHours(attendance?.morningOT)})`, value: earnings?.morningOT?.amount },
     { label: `إضافي مسائي (${formatHours(attendance?.eveningOT)})`, value: earnings?.eveningOT?.amount },
-    { label: 'مكافأة / بدل', value: earnings?.bonus },
     { label: ' ', value: null },
   ];
   const deductionsRows = [
@@ -205,7 +204,7 @@ export default function SalaryCard({ data, showBorder = true }) {
     { label: `خصم الانصراف المبكر (${(deductions?.earlyPenalty ?? 0).toFixed(1)} ساعة)`, value: deductions?.earlyAmount },
     { label: 'خصم إداري', value: deductions?.manualDeductionAdjustment },
     // السلف (advances) intentionally NOT listed here: deductions.total
-    // (dedTotal below) deliberately excludes advances (net = basic+ot+bonus
+    // (dedTotal below) deliberately excludes advances (net = basic+ot
     // -deductions-advances), so including it in this table would make the
     // visible rows disagree with the printed total. Advances is instead
     // shown in its own dedicated card directly beneath this table — see the

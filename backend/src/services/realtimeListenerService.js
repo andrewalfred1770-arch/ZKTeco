@@ -98,33 +98,20 @@ function zkErrorMessage(err, fallback = 'unknown error') {
   return fallback;
 }
 
-// ─── Checkpoint advance ────────────────────────────────────────────────────
-// Realtime events become the source of truth for "newest seen" — advance
-// lastSuccessfulTimestamp forward only, never backward.
-async function advanceCheckpoint(deviceId, timestamp) {
-  // Defense-in-depth: a poisoned (future) checkpoint makes the incremental
-  // sync window skip every real record forever. Never advance with a
-  // timestamp that fails sanity validation.
-  if (!isValidPunchTimestamp(timestamp)) {
-    logger.warn(`[TS-INVALID] device=${deviceId} checkpoint advance REFUSED for invalid timestamp ${timestamp?.toISOString?.() ?? timestamp}`);
-    return;
-  }
-  try {
-    const device = await prisma.device.findUnique({
-      where: { id: deviceId },
-      select: { lastSuccessfulTimestamp: true },
-    });
-    if (!device) return;
-    if (!device.lastSuccessfulTimestamp || timestamp > device.lastSuccessfulTimestamp) {
-      await prisma.device.update({
-        where: { id: deviceId },
-        data: { lastSuccessfulTimestamp: timestamp },
-      });
-    }
-  } catch (err) {
-    logger.warn(`[RT] device=${deviceId} checkpoint advance failed: ${err.message}`);
-  }
-}
+// ─── Pull checkpoint — NOT advanced from here ───────────────────────────────
+// Device.lastSuccessfulTimestamp is the SYNC (recovery pull) checkpoint: after a
+// converged pull, zktecoService.pullLogs only re-processes buffer records newer
+// than (checkpoint − 24 h). It must therefore mean exactly "the newest record a
+// pull has confirmed it fully downloaded" — and only a converged pull can say so.
+//
+// A realtime punch is a single event, not a pull. Advancing the checkpoint from
+// here told the next pull "everything up to this punch is already synced" even
+// when older punches (offline gap, listener down, device unreachable) had never
+// been downloaded; once the gap exceeded the 24 h overlap those older punches
+// were silently skipped. Realtime therefore only stores the punch and reprocesses
+// attendance (below); the checkpoint moves solely in pullLogs() on a successful,
+// converged pull. Duplicates between the two paths stay harmless: the
+// (deviceId, zkUserId, timestamp) unique key makes every insert idempotent.
 
 // ─── Ingest a single realtime punch (exactly-once, retried) ───────────────
 async function ingestPunch(deviceId, io, zkUserId, timestamp, attempt = 1) {
@@ -183,8 +170,6 @@ async function ingestPunch(deviceId, io, zkUserId, timestamp, attempt = 1) {
           consecutiveErrors: 0,
         },
       }).catch(() => {});
-
-      await advanceCheckpoint(deviceId, timestamp);
     }
 
     emit(io, 'attendance:realtime', {

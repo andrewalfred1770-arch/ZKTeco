@@ -1,6 +1,6 @@
 const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
-const { getRules, parseTime, isWeekend, isHoliday } = require('./rulesEngine');
+const { getRules, parseTime, isWeekend, isHoliday, isRuleTrue } = require('./rulesEngine');
 const {
   calcMorningOT, calcEveningOT, calcLatePenalty, calcEarlyCheckout, calcOvertimeUnits,
   timeToMinutes, hoursWithTolerance,
@@ -66,6 +66,9 @@ async function isManuallyEdited(employeeId, dateStr) {
 async function processDateImpl(date, employeeId, opts = {}) {
   const dateStr = moment(date).format('YYYY-MM-DD');
   const manual = opts.manual || null;
+  // A manual edit passes its own transaction so the engine's row write commits (or rolls
+  // back) together with the numeric overrides and the audit rows (see PUT /attendance/daily/:id).
+  const writer = opts.tx || prisma;
 
   const employee = await prisma.employee.findUnique({
     where: { id: employeeId },
@@ -114,7 +117,7 @@ async function processDateImpl(date, employeeId, opts = {}) {
   // a special overtime workday, NOT a closed holiday — so this defaults to
   // false. Saturday has no special flag; it is governed purely by weekend_days
   // (default '' — no automatic weekly off-day).
-  const fridayIsWeekend = (legacyRules.friday_is_weekend ?? 'false') === 'true';
+  const fridayIsWeekend = isRuleTrue(legacyRules.friday_is_weekend);
   const configuredWeekend = isWeekend(dayDate, legacyRules.weekend_days);
   const weekend = configuredWeekend || (fridayIsWeekend && dayOfWeek === 5);
   const holiday = await isHoliday(dayDate, employee.branchId);
@@ -201,14 +204,54 @@ async function processDateImpl(date, employeeId, opts = {}) {
     }
   }
 
+  // Manual edit: the row exactly as it is NOW. This runs inside the per-employee-date lock
+  // (and the caller's transaction), so it already includes every edit committed before this one.
+  // It is (a) where a time the request did NOT name is taken from, and (b) returned to the
+  // caller as the true "before" image for the audit trail.
+  const before = manual
+    ? await writer.attendanceDaily.findUnique({ where: { employeeId_date: { employeeId, date: new Date(dateStr) } } })
+    : null;
+
   // Manual override takes precedence over log-derived punches. An explicitly
-  // provided key (even null) wins; an absent key falls back to the logs.
+  // provided key (even null) wins. An absent key keeps the CURRENT row's value (so a request
+  // that edits only the check-in can never write back a stale check-out read earlier by the
+  // caller); only when no row exists yet does it fall back to the logs.
   const effCheckIn = manual && 'checkIn' in manual
     ? manual.checkIn
-    : logCheckIn;
+    : (manual && before ? before.checkIn : logCheckIn);
   const effCheckOut = manual && 'checkOut' in manual
     ? manual.checkOut
-    : logCheckOut;
+    : (manual && before ? before.checkOut : logCheckOut);
+
+  const { punch, data } = await buildDayFields(employee, dateStr, {
+    checkIn: effCheckIn, checkOut: effCheckOut, weekend, holiday, dayOfWeek, manual, legacyRules,
+  });
+  await upsertDaily(employeeId, dateStr, {
+    ...data,
+    ...(manual ? { manualEdit: true } : {}),
+  }, writer);
+  if (manual) {
+    if (punch) {
+      logger.info(
+        `[MANUAL-EDIT] applied: employee=${employeeId} date=${dateStr} ` +
+        `checkIn=${toHHMM(effCheckIn) || '—'} checkOut=${toHHMM(effCheckOut) || '—'} status=${manual.status || data.status} — derived fields recomputed, row locked (manualEdit=true)`
+      );
+    } else {
+      logger.info(`[MANUAL-EDIT] applied (absent): employee=${employeeId} date=${dateStr}`);
+    }
+  }
+  return manual ? { before } : undefined;
+}
+
+// ─── Shared day derivation (pure — no DB write) ───────────────────────────────
+// ONE implementation of "effective punches + calendar context → the row data to
+// persist": the no-punch (absent / weekend / holiday) branch, the punch-implies-present
+// computation (computeDerivedFields) and the weekend/holiday zeroing. processDateImpl
+// persists exactly this object; the manual-edit PREVIEW (POST /attendance/daily/:id/preview)
+// calls it too, so a preview can never disagree with the row a save produces.
+// Returns { punch, data }: `data` is what upsertDaily() is given (before manualEdit is added).
+async function buildDayFields(employee, dateStr, { checkIn: effCheckIn, checkOut: effCheckOut, weekend, holiday, dayOfWeek, manual, legacyRules }) {
+  const employeeId = employee.id;
 
   // Absent ONLY when there is no punch at all (no checkIn AND no checkOut).
   // A single punch of either kind — checkIn-only or checkOut-only — means the
@@ -238,14 +281,14 @@ async function processDateImpl(date, employeeId, opts = {}) {
     if (!manual) {
       logger.info(`[RULE-MATCH] employee=${employeeId} date=${dateStr} → status=${absentStatus} (no punches)`);
     }
-    await upsertDaily(employeeId, dateStr, {
-      isAbsent: isAbsentFinal, status: finalStatus,
-      isWeekend: weekend, isHoliday: holiday,
-      totalDeductionUnits: 0,
-      ...(manual ? { manualEdit: true } : {}),
-    });
-    if (manual) logger.info(`[MANUAL-EDIT] applied (absent): employee=${employeeId} date=${dateStr}`);
-    return;
+    return {
+      punch: false,
+      data: {
+        isAbsent: isAbsentFinal, status: finalStatus,
+        isWeekend: weekend, isHoliday: holiday,
+        totalDeductionUnits: 0,
+      },
+    };
   }
 
   // ── Extract first/last punch (or manual overrides) ──────────────────────────
@@ -297,16 +340,7 @@ async function processDateImpl(date, employeeId, opts = {}) {
     fields.overtimeRulesUnits   = null; // fall back to overtimeHours in payroll
   }
 
-  await upsertDaily(employeeId, dateStr, {
-    ...fields,
-    ...(manual ? { manualEdit: true } : {}),
-  });
-  if (manual) {
-    logger.info(
-      `[MANUAL-EDIT] applied: employee=${employeeId} date=${dateStr} ` +
-      `checkIn=${toHHMM(checkIn) || '—'} checkOut=${toHHMM(checkOut) || '—'} status=${manual.status || fields.status} — derived fields recomputed, row locked (manualEdit=true)`
-    );
-  }
+  return { punch: true, data: fields };
 }
 
 // ─── Certification HIGH#6: per-employee-date serialization lock ────────────────
@@ -378,6 +412,9 @@ async function withEmployeeDateLock(employeeId, dateStr, fn) {
 // the ordering guarantee when two calls for the same employee+date overlap.
 async function processDate(date, employeeId, opts = {}) {
   const dateStr = moment(date).format('YYYY-MM-DD');
+  // opts.lockHeld: the caller already holds withEmployeeDateLock() for this employee+date
+  // (the manual-edit route keeps it across its whole transaction) — the lock is not re-entrant.
+  if (opts.lockHeld) return processDateImpl(date, employeeId, opts);
   return withEmployeeDateLock(employeeId, dateStr, () => processDateImpl(date, employeeId, opts));
 }
 
@@ -451,9 +488,14 @@ async function computeDerivedFields(employee, dateStr, { checkIn, checkOut, week
   const otMinimumMin = parseFloat(legacyRules.overtime_minimum || '0');
   if ((morningOT + eveningOT) * 60 < otMinimumMin) { morningOT = 0; eveningOT = 0; }
 
-  // overtime_cap_hours: clamp daily overtime at the configured ceiling (0 = no cap)
+  // overtime_cap_hours: clamp daily overtime at the configured ceiling (0 = no cap).
+  // The TOTAL (morning + evening) must never exceed the cap: evening is reduced first
+  // (as before), and morning is itself limited to the cap — previously only evening was
+  // clamped, so a morning-only (or morning-heavy) day could exceed the cap, unlike the
+  // weekend/holiday path which already caps the whole day.
   const otCapHours = parseFloat(legacyRules.overtime_cap_hours || '0');
   if (otCapHours > 0 && (morningOT + eveningOT) > otCapHours) {
+    morningOT = Math.min(morningOT, otCapHours);
     eveningOT = Math.max(0, otCapHours - morningOT);
   }
 
@@ -578,7 +620,7 @@ const DAILY_RESET = {
   status: 'present',
 };
 
-async function upsertDaily(employeeId, dateStr, data) {
+async function upsertDaily(employeeId, dateStr, data, client = prisma) {
   const date = new Date(dateStr);
   const full = { ...DAILY_RESET, ...data };
   // Fix 1: absent records must never have a null absenceType in the DB.
@@ -588,13 +630,13 @@ async function upsertDaily(employeeId, dateStr, data) {
   //   The WHERE absenceType=null guard ensures HR-set values (e.g. 'without_permission') are
   //   never silently overwritten by engine recomputes.
   const absenceDefault = (full.isAbsent && !full.absenceType) ? { absenceType: 'with_permission' } : {};
-  await prisma.attendanceDaily.upsert({
+  await client.attendanceDaily.upsert({
     where: { employeeId_date: { employeeId, date } },
     update: { ...full, updatedAt: new Date() },
     create: { employeeId, date, ...full, ...absenceDefault },
   });
   if (full.isAbsent) {
-    await prisma.attendanceDaily.updateMany({
+    await client.attendanceDaily.updateMany({
       where: { employeeId, date, absenceType: null },
       data:  { absenceType: 'with_permission' },
     });
@@ -705,4 +747,4 @@ function mergeEffectivePenalty(record) {
 // from a manually-corrected lateMinutes/earlyLeaveMinutes using the exact
 // same tier-parsing this module already uses internally — never a second,
 // duplicate implementation of "HH:MM tier JSON → absolute-minute tiers".
-module.exports = { processDate, processMonth, processToday, computeDerivedFields, mergeEffectivePenalty, parseTimeRules };
+module.exports = { processDate, processMonth, processToday, computeDerivedFields, buildDayFields, DAILY_RESET, mergeEffectivePenalty, parseTimeRules, withEmployeeDateLock };

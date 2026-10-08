@@ -30,9 +30,9 @@ function ResultRow({ label, state }) {
   );
 }
 
-export default function ConnectionWizard() {
+export default function ConnectionWizard({ initialUrl = '' }) {
   const { isLight } = useTheme();
-  const [serverUrl, setServerUrl] = useState('');
+  const [serverUrl, setServerUrl] = useState(initialUrl);
   const [testing, setTesting]     = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [result, setResult]       = useState(null);
@@ -64,8 +64,10 @@ export default function ConnectionWizard() {
       // immediately rather than trying to hot-swap api.js/socket.js's
       // already-resolved backendBaseUrl.
       window.electron.relaunch();
-    } catch {
-      setError('فشل حفظ إعدادات الاتصال');
+    } catch (err) {
+      setError(String(err?.message || '').includes('SELF_POINTING_SERVER_URL')
+        ? 'هذا العنوان يشير إلى هذا الجهاز نفسه — أدخل عنوان جهاز الخادم على الشبكة'
+        : 'فشل حفظ إعدادات الاتصال');
       setConnecting(false);
     }
   };

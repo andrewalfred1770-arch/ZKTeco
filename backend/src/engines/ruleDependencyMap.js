@@ -55,10 +55,8 @@ module.exports = {
 
   // ── Deductions ────────────────────────────────────────────────────────────
   late_penalty_per_minute: entry(['payroll'], PAYROLL_SCREENS),
-  absence_deduct_days:     entry(['payroll'], PAYROLL_SCREENS),
   early_leave_penalty:     entry(['payroll'], PAYROLL_SCREENS),
   // half_day_deduction removed 2026-06-22
-  advance_max_percent:     entry(['payroll'], ['السلف', ...PAYROLL_SCREENS]),
 
   // ── Payroll ───────────────────────────────────────────────────────────────
   month_days:               entry(['payroll'], PAYROLL_SCREENS),

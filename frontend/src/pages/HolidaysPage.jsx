@@ -27,7 +27,7 @@ export default function HolidaysPage() {
       await api.post('/holidays', form);
       toast.success('تم إضافة الإجازة');
       setModal(false); setForm({ name:'', date:'', type:'public' }); load();
-    } catch { toast.error('فشل الحفظ'); }
+    } catch (err) { toast.error(err?.response?.data?.error || 'فشل الحفظ'); }
     finally { setSaving(false); }
   };
 

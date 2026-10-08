@@ -7,7 +7,7 @@
  * `isActive` are preserved.
  *
  * Engine keys (work_start, late_grace, overtime_rounding, overtime_multiplier,
- * weekend_days, min_work_hours, absence_deduct_days, overtime_cap_hours,
+ * weekend_days, min_work_hours, overtime_cap_hours,
  * early_leave_grace, late_penalty_per_minute) mirror today's DEFAULT_RULES in
  * rulesEngine.js so payroll/attendance behaviour is unchanged after seeding.
  *
@@ -42,10 +42,8 @@ const RULES = [
 
   // ── Deductions ─────────────────────────────────────────────────────────────
   ['late_penalty_per_minute', 'خصم التأخير',          'deductions', 'number', '0',   'لكل دقيقة', 40, 'all', 'قيمة الخصم عن كل دقيقة تأخير (0 = بلا خصم)'],
-  ['absence_deduct_days',     'خصم الغياب',           'deductions', 'number', '1',   'يوم',       40, 'all', 'عدد الأيام المخصومة عن كل يوم غياب'],
   ['early_leave_penalty',     'خصم الانصراف المبكر',  'deductions', 'number', '1',   'وحدة/ساعة', 30, 'all', 'عدد وحدات الخصم عن كل ساعة انصراف مبكر'],
   ['half_day_deduction',      'خصم نصف يوم',          'deductions', 'number', '0.5', 'يوم',       20, 'all', 'قيمة خصم نصف اليوم'],
-  ['advance_max_percent',     'أقصى نسبة سلفة',       'deductions', 'percentage', '50','%',       20, 'all', 'أقصى نسبة سلفة مسموح بها من الراتب الأساسي'],
 
   // ── Payroll ────────────────────────────────────────────────────────────────
   ['month_days',             'عدد أيام الشهر',        'payroll', 'number',  '30',  'يوم',   40, 'all', 'عدد الأيام المستخدم في حساب أجر اليوم'],

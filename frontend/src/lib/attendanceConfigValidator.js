@@ -17,29 +17,54 @@ const timeToMin = (t) => { const [h, m] = t.split(':').map(Number); return h * 6
 
 const MAX_TIER_UNITS = 24;
 
+// Keep in step with backend/src/utils/ruleValidation.js (WEEKDAY_TOKENS / validateWeekendDays).
+const WEEKDAY_TOKENS = new Set([
+  '0', '1', '2', '3', '4', '5', '6',
+  'sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat',
+  'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday',
+]);
+
+const DAY_END_MIN = 23 * 60 + 59;
+const minToTime = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+
+// D6 / R1 (final business decision) — identical to backend ruleValidation.js lateCoverageErrors():
+// late_rules must cover work_start → 23:59 with no gap. Never extended / defaulted automatically.
+function lateCoverageErrors(label, sortedTiers, workStartMin) {
+  const errs = [];
+  const first = sortedTiers[0];
+  const lastTier = sortedTiers.reduce((a, t) => (timeToMin(t.toTime) >= timeToMin(a.toTime) ? t : a), sortedTiers[0]);
+  if (timeToMin(first.fromTime) > workStartMin) {
+    errs.push(`${label}: يجب أن تبدأ التغطية عند بداية الدوام (${minToTime(workStartMin)}) أو قبلها — أول شريحة تبدأ عند ${first.fromTime} والوقت بينهما بلا قاعدة تأخير`);
+  }
+  if (timeToMin(lastTier.toTime) < DAY_END_MIN) {
+    errs.push(`${label}: يجب أن تستمر التغطية حتى 23:59 — آخر شريحة تنتهي عند ${lastTier.toTime} والحضور بعدها بلا قاعدة تأخير`);
+  }
+  return errs;
+}
+
 function validateTierList(label, tiers, { errors, warnings }) {
   if (!Array.isArray(tiers) || tiers.length === 0) {
-    errors.push(`${label}: القائمة فارغة — أضف شريحة واحدة على الأقل`);
+    errors.push(`${label}: القائمة فارغة — أضف شريحة واحدة على الأقل أو عطّل القاعدة بدلاً من حفظ قائمة فارغة`);
     return null;
   }
   let structuralOk = true;
   tiers.forEach((t, i) => {
     const n = i + 1;
-    if (!TIME_RE.test(t?.fromTime || '')) { errors.push(`${label} — شريحة ${n}: وقت البداية "${t?.fromTime ?? ''}" غير صالح (HH:MM)`); structuralOk = false; }
-    if (!TIME_RE.test(t?.toTime || ''))   { errors.push(`${label} — شريحة ${n}: وقت النهاية "${t?.toTime ?? ''}" غير صالح (HH:MM)`); structuralOk = false; }
+    if (!TIME_RE.test(t?.fromTime || '')) { errors.push(`${label} — شريحة ${n}: وقت البداية "${t?.fromTime ?? ''}" غير صالح (المطلوب HH:MM بين 00:00 و 23:59)`); structuralOk = false; }
+    if (!TIME_RE.test(t?.toTime || ''))   { errors.push(`${label} — شريحة ${n}: وقت النهاية "${t?.toTime ?? ''}" غير صالح (المطلوب HH:MM بين 00:00 و 23:59)`); structuralOk = false; }
     const u = Number(t?.units);
     if (t?.units == null || t?.units === '' || !Number.isFinite(u)) { errors.push(`${label} — شريحة ${n}: عدد الوحدات مفقود أو غير رقمي`); structuralOk = false; }
     else {
-      if (!Number.isInteger(u)) { errors.push(`${label} — شريحة ${n}: الوحدات (${u}) يجب أن تكون عدداً صحيحاً`); structuralOk = false; }
-      if (u < 0) { errors.push(`${label} — شريحة ${n}: وحدات سالبة (${u}) غير مسموحة — خصم سالب يعني إضافة راتب`); structuralOk = false; }
-      if (u > MAX_TIER_UNITS) { errors.push(`${label} — شريحة ${n}: الوحدات (${u}) تتجاوز الحد الأقصى (${MAX_TIER_UNITS})`); structuralOk = false; }
+      if (!Number.isInteger(u)) { errors.push(`${label} — شريحة ${n}: عدد الوحدات (${u}) يجب أن يكون عدداً صحيحاً`); structuralOk = false; }
+      if (u < 0) { errors.push(`${label} — شريحة ${n}: عدد الوحدات (${u}) لا يمكن أن يكون سالباً — قيمة سالبة تعني إضافة راتب بدل خصم`); structuralOk = false; }
+      if (u > MAX_TIER_UNITS) { errors.push(`${label} — شريحة ${n}: عدد الوحدات (${u}) يتجاوز الحد الأقصى المعقول (${MAX_TIER_UNITS})`); structuralOk = false; }
     }
   });
   if (!structuralOk) return null;
 
   tiers.forEach((t, i) => {
     const n = i + 1, from = timeToMin(t.fromTime), to = timeToMin(t.toTime);
-    if (from > to) { errors.push(`${label} — شريحة ${n}: البداية (${t.fromTime}) بعد النهاية (${t.toTime})`); structuralOk = false; }
+    if (from > to) { errors.push(`${label} — شريحة ${n}: البداية (${t.fromTime}) بعد النهاية (${t.toTime}) — صحّح ترتيب الوقتين`); structuralOk = false; }
     else if (from === to) { errors.push(`${label} — شريحة ${n}: البداية والنهاية متطابقتان (${t.fromTime}) — الشريحة لا تغطي أي وقت`); structuralOk = false; }
   });
   if (!structuralOk) return null;
@@ -48,12 +73,11 @@ function validateTierList(label, tiers, { errors, warnings }) {
   for (let i = 1; i < sorted.length; i++) {
     const prev = sorted[i - 1], cur = sorted[i];
     const prevTo = timeToMin(prev.toTime), curFrom = timeToMin(cur.fromTime);
-    if (curFrom === timeToMin(prev.fromTime) && timeToMin(cur.toTime) === prevTo) {
-      errors.push(`${label}: شريحة مكررة (${cur.fromTime} → ${cur.toTime})`);
-    } else if (curFrom <= prevTo) {
-      errors.push(`${label}: الشريحة (${cur.fromTime} → ${cur.toTime}) تتداخل مع (${prev.fromTime} → ${prev.toTime}) — يجب أن تبدأ بعد نهاية السابقة بدقيقة`);
+    if (curFrom <= prevTo) {
+      const word = (curFrom === timeToMin(prev.fromTime) && timeToMin(cur.toTime) === prevTo) ? 'مكررة مع' : 'تتداخل مع';
+      errors.push(`${label}: الشريحة (${cur.fromTime} → ${cur.toTime}) ${word} الشريحة (${prev.fromTime} → ${prev.toTime}) — يجب أن تبدأ كل شريحة بعد نهاية السابقة بدقيقة على الأقل`);
     } else if (curFrom > prevTo + 1) {
-      errors.push(`${label}: فجوة بين ${prev.toTime} و ${cur.fromTime} — الوقت داخل الفجوة بلا خصم`);
+      errors.push(`${label}: فجوة بين نهاية الشريحة (${prev.toTime}) وبداية الشريحة (${cur.fromTime}) — الوقت داخل الفجوة لن يُطبَّق عليه أي خصم`);
     }
   }
   return sorted;
@@ -79,18 +103,31 @@ export function validateAttendanceConfig({ vals, lateTiers, earlyTiers }) {
   }
 
   // ── Scalar numeric fields ───────────────────────────────────────────────
-  const numRanges = {
-    late_grace: [0, 480], early_leave_grace: [0, 480],
-    overtime_minimum: [0, 1440], overtime_multiplier: [0, 10],
-    overtime_cap_hours: [0, 24], friday_ot_multiplier: [0, 10],
-    holiday_ot_multiplier: [0, 10], absence_deduct_days: [0, 30],
+  // Exactly the backend's rules (ruleValidation.js): same bounds, same wording. `positive` = must be
+  // greater than zero (D7 — the overtime multipliers can never be 0); `min` = inclusive minimum.
+  const numRules = {
+    late_grace:            { max: 480 },
+    early_leave_grace:     { max: 480 },
+    overtime_minimum:      { max: 1440 },
+    overtime_cap_hours:    { max: 24 },
+    overtime_multiplier:   { max: 10, positive: true },
+    friday_ot_multiplier:  { max: 10, positive: true },
+    holiday_ot_multiplier: { max: 10, positive: true },
   };
-  for (const [key, [lo, hi]] of Object.entries(numRanges)) {
+  for (const [key, { min, max, positive }] of Object.entries(numRules)) {
     const v = String(vals[key] ?? '').trim();
     const n = Number(v);
     if (v === '' || !Number.isFinite(n)) errors.push(`${labelOf(key)}: "${v}" ليس رقماً صالحاً`);
-    else if (n < lo) errors.push(`${labelOf(key)}: القيمة (${n}) لا يمكن أن تكون أقل من ${lo}`);
-    else if (n > hi) errors.push(`${labelOf(key)}: القيمة (${n}) تتجاوز الحد الأقصى المعقول (${hi})`);
+    else if (n < 0) errors.push(`${labelOf(key)}: القيمة (${n}) لا يمكن أن تكون سالبة`);
+    else if (positive && n <= 0) errors.push(`${labelOf(key)}: القيمة (${n}) يجب أن تكون أكبر من صفر — مضاعف الإضافي لا يمكن أن يكون صفراً (المعيار 1.5)`);
+    else if (min != null && n < min) errors.push(`${labelOf(key)}: القيمة (${n}) أقل من الحد الأدنى المسموح (${min})`);
+    else if (n > max) errors.push(`${labelOf(key)}: القيمة (${n}) تتجاوز الحد الأقصى المعقول (${max})`);
+  }
+  // weekend_days (E9): a value the engine would silently ignore is rejected, like the backend does.
+  {
+    const bad = String(vals.weekend_days ?? '').split(',').map(s => s.trim()).filter(s => s !== '')
+      .filter(s => !WEEKDAY_TOKENS.has(s.toLowerCase()));
+    if (bad.length) errors.push(`أيام الإجازة الأسبوعية: القيمة "${bad.join('، ')}" غير صالحة — المسموح: أرقام الأيام 0-6 (0=الأحد … 6=السبت) أو أسماء الأيام (sun, mon, tue, wed, thu, fri, sat) مفصولة بفواصل، أو فارغ لعدم وجود إجازة أسبوعية ثابتة`);
   }
   // grace vs shift length
   if (times.work_start != null && times.work_end != null) {
@@ -105,20 +142,11 @@ export function validateAttendanceConfig({ vals, lateTiers, earlyTiers }) {
   const lateSorted  = validateTierList('قواعد التأخير', lateTiers, ctx);
   const earlySorted = validateTierList('قواعد الانصراف المبكر', earlyTiers, ctx);
 
-  // ── Cross-field: reachability + coverage ────────────────────────────────
-  if (lateSorted && times.checkin_window_end != null) {
-    lateSorted.forEach(t => {
-      if (timeToMin(t.fromTime) > times.checkin_window_end) {
-        errors.push(`قواعد التأخير: الشريحة (${t.fromTime} → ${t.toTime}) غير قابلة للتحقق — نافذة الحضور تنتهي عند ${vals.checkin_window_end}؛ عدّل النافذة أو احذف الشريحة`);
-      }
-    });
-    const lastTo = timeToMin(lateSorted[lateSorted.length - 1].toTime);
-    if (lastTo < times.checkin_window_end) {
-      warnings.push(`قواعد التأخير تنتهي عند ${lateSorted[lateSorted.length - 1].toTime} بينما نافذة الحضور تمتد حتى ${vals.checkin_window_end} — الحضور بينهما بلا خصم`);
-    }
-    if (times.work_start != null && timeToMin(lateSorted[0].fromTime) > times.work_start) {
-      warnings.push(`قواعد التأخير تبدأ عند ${lateSorted[0].fromTime} بعد بداية الدوام (${vals.work_start}) — الفترة بينهما بلا قاعدة`);
-    }
+  // ── Cross-field: late-rule coverage (D6/R1) — a hard ERROR (blocks Save), same as the backend ──
+  // (The former "tier after the check-in window is unreachable" error is gone: coverage through 23:59 now
+  //  REQUIRES tiers after the window — they price manually entered check-ins.)
+  if (lateSorted && times.work_start != null) {
+    errors.push(...lateCoverageErrors('قواعد التأخير', lateSorted, times.work_start));
   }
   if (earlySorted && times.work_end != null) {
     earlySorted.forEach(t => {
@@ -142,6 +170,6 @@ function labelOf(key) {
     late_grace: 'فترة السماح للتأخير', early_leave_grace: 'فترة السماح للانصراف المبكر',
     overtime_minimum: 'الحد الأدنى للأوفرتايم', overtime_multiplier: 'معامل الأوفرتايم',
     overtime_cap_hours: 'سقف الأوفرتايم اليومي', friday_ot_multiplier: 'معامل أوفرتايم الجمعة',
-    holiday_ot_multiplier: 'معامل أوفرتايم العطلات', absence_deduct_days: 'خصم الغياب (أيام)',
+    holiday_ot_multiplier: 'معامل أوفرتايم العطلات',
   }[key] || key;
 }

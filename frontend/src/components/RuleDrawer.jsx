@@ -60,7 +60,6 @@ const VARS = [
   { key:'hourly_rate',            ar:'أجر الساعة',         sample:28.8 },
   { key:'overtime_hours',         ar:'ساعات الإضافي',      sample:10   },
   { key:'overtime_rate',          ar:'معامل الإضافي',      sample:1.5  },
-  { key:'bonus',                  ar:'المكافأة',           sample:500  },
   { key:'deductions',             ar:'الجزاءات والخصومات', sample:200  },
   { key:'absent_days',            ar:'أيام الغياب',        sample:2    },
 ];
@@ -314,7 +313,7 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
     value:      rule?.value       ?? '',
     unit:       rule?.unit        || '',
     priority:   rule?.priority    ?? 0,
-    appliesTo:  rule?.appliesTo   || 'all',
+    appliesTo:  'all',   // D1: rules are GLOBAL — there is no branch / department / employee scope
     isActive:   rule?.isActive    ?? true,
     description:rule?.description || '',
   });
@@ -351,6 +350,7 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
     setSaving(true);
     const payload = {
       ...form,
+      appliesTo: 'all',   // D1: explicit global contract (the API rejects any other value)
       priority: parseInt(form.priority) || 0,
       changedByName: actor,
     };
@@ -577,14 +577,6 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
                     onChange={e => set('priority', e.target.value)} />
                 </Field>
               )}
-              <Field label="تطبَّق على" hint="تحدد الفئة التي تُطبَّق عليها القاعدة (الكل أو فرع/إدارة محددة).">
-                <select className="input w-full" value={form.appliesTo} onChange={e => set('appliesTo', e.target.value)}>
-                  <option value="all">جميع الموظفين</option>
-                  <option value="branch">فرع محدّد</option>
-                  <option value="department">إدارة محدّدة</option>
-                  <option value="employee">موظف محدّد</option>
-                </select>
-              </Field>
               <div style={{ display:'flex', alignItems:'center', gap:12, padding:'12px',
                 borderRadius:9, background:'var(--surface)', border:'1px solid var(--border)' }}>
                 <Toggle checked={form.isActive} onChange={v => set('isActive', v)} />

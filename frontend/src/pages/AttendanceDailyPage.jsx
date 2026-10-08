@@ -5,7 +5,7 @@ import 'ag-grid-community/styles/ag-theme-quartz.css';
 import {
   RefreshCw, Download, ChevronRight, ChevronLeft,
   CheckCircle, XCircle, Clock, TrendingUp, Loader2, Play, Printer,
-  Fingerprint, Pencil, Lock, UserX } from 'lucide-react';
+  Fingerprint, Pencil, Lock, UserX, Copy, ClipboardPaste } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import api, { LONG_OP } from '../lib/api';
@@ -27,10 +27,11 @@ import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
 import { useFingerprintSyncWorkflow } from '../hooks/useFingerprintSyncWorkflow';
 import { useKeyboardShortcut } from '../hooks/useKeyboardShortcut';
 import AbsenceTypeModal, { ABSENCE_TYPE_LABELS } from '../components/AbsenceTypeModal';
+import PasteAttendanceModal from '../components/PasteAttendanceModal';
 import AttendanceFilterBar from '../components/AttendanceFilterBar';
 import { MobileActionsMenu } from '../components/ui';
 import { useAttendanceFilter } from '../hooks/useAttendanceFilter';
-import { ACTOR, HHMM_RE, OVERRIDE_FIELD_MAP, normalizeDailyUpdate, replaceAttendanceRow, replaceAttendanceRows, applyRowFieldUpdate } from '../lib/attendanceUtils';
+import { ACTOR, HHMM_RE, OVERRIDE_FIELD_MAP, toHHMM, normalizeDailyUpdate, replaceAttendanceRow, replaceAttendanceRows, applyRowFieldUpdate } from '../lib/attendanceUtils';
 
 const INLINE_REASON = 'تعديل مباشر من الجدول (Inline Grid)';
 
@@ -68,6 +69,11 @@ export default function AttendanceDailyPage() {
   const [absenceSaving, setAbsenceSaving] = useState(false);
   const [selectedRows, setSelectedRows] = useState([]);
   const [bulkSaving, setBulkSaving] = useState(false);
+  // Copy/paste of a manual attendance entry. The clipboard is plain page state
+  // holding ONLY the pasteable values (never an employee id or audit data).
+  const [attClipboard, setAttClipboard] = useState(null);
+  const [pasteTarget, setPasteTarget]   = useState(null);
+  const [pasteSaving, setPasteSaving]   = useState(false);
   const gridRef = useRef();
   // per-cell "saving" affordance
   const savingCellsRef = useRef(new Set());
@@ -75,6 +81,44 @@ export default function AttendanceDailyPage() {
   const editCountRef   = useRef(0);
   // set to true when a background reload was skipped; cleared + fired on counter-zero
   const pendingReloadRef = useRef(false);
+
+  // ── Stale-GET protection ───────────────────────────────────────────────────
+  // load()/loadOne() responses can arrive AFTER a newer manual save was already
+  // applied (a background refresh that started before the PUT committed). Without
+  // a guard, setRows() would put that older snapshot over the saved edit.
+  // A logical clock orders everything: each request records the clock value at
+  // which it STARTED, and each row remembers the clock value of the data it
+  // currently shows (originRef). A response row replaces the shown row only if
+  // its request started no earlier than that row's origin, and never while that
+  // employee has an edit in flight. A save stamps its row when it is applied, so
+  // every request that began before the save is ignored for that row — while the
+  // rest of the same response still refreshes normally (no refresh is blocked).
+  const dateRef         = useRef(date);
+  dateRef.current       = date;
+  const clockRef        = useRef(0);
+  const originRef       = useRef(new Map());   // employeeId -> clock of the data on screen
+  const editingEmpRef   = useRef(new Map());   // employeeId -> edits currently in flight
+  const loadSeqRef      = useRef(0);           // full-grid load start counter
+  const appliedLoadRef  = useRef(0);           // newest full load already applied
+  const beginRowEdit = useCallback((ids) => {
+    for (const id of ids) editingEmpRef.current.set(id, (editingEmpRef.current.get(id) || 0) + 1);
+  }, []);
+  const endRowEdit = useCallback((ids) => {
+    for (const id of ids) {
+      const n = (editingEmpRef.current.get(id) || 0) - 1;
+      if (n > 0) editingEmpRef.current.set(id, n); else editingEmpRef.current.delete(id);
+    }
+  }, []);
+  const markRowsFresh = useCallback((ids) => {
+    const c = ++clockRef.current;
+    for (const id of ids) if (id != null) originRef.current.set(id, c);
+  }, []);
+  const isRowStale = useCallback(
+    (employeeId, startClock) =>
+      (editingEmpRef.current.get(employeeId) || 0) > 0 ||
+      startClock < (originRef.current.get(employeeId) ?? 0),
+    [],
+  );
 
   // ── Filter system ─────────────────────────────────────────────────────────
   const {
@@ -258,6 +302,7 @@ export default function AttendanceDailyPage() {
         if (!data?.id || !data.isAbsent) return;
         setAbsenceModal({
           id: data.id,
+          employeeId: data.employeeId,
           employeeName: data.employeeName,
           dateLabel: data.date,
           initialType: data.absenceType || null,
@@ -321,15 +366,32 @@ export default function AttendanceDailyPage() {
   // than a carve-out for "the user asked for it".
   const load = useCallback(async (showLoading = false) => {
     if (editCountRef.current > 0) { pendingReloadRef.current = true; return; }
+    const seq = ++loadSeqRef.current;
+    const startClock = ++clockRef.current;
+    const reqDate = date;
     if (showLoading) setLoading(true);
     try {
       const { data: r } = await api.get('/attendance/daily', { params: { date } });
-      setRows(r);
+      // Superseded: the date changed, or a later-started load already applied.
+      if (dateRef.current !== reqDate || seq < appliedLoadRef.current) return;
+      appliedLoadRef.current = seq;
+      // Rows saved/refreshed after this request started keep their newer state.
+      const keep = new Set();
+      for (const row of r) {
+        if (isRowStale(row.employeeId, startClock)) keep.add(row.employeeId);
+        else originRef.current.set(row.employeeId, startClock);
+      }
+      setRows(prev => {
+        if (!keep.size) return r;
+        const prevByEmp = new Map(prev.map(x => [x.employeeId, x]));
+        return r.map(row => (keep.has(row.employeeId) && prevByEmp.has(row.employeeId)
+          ? prevByEmp.get(row.employeeId) : row));
+      });
       const deptNames = [...new Set(r.map(x => x.department).filter(Boolean))].sort();
       setDepts(deptNames);
     } catch { toast.error('تعذر تحميل بيانات الحضور'); }
     finally { if (showLoading) setLoading(false); }
-  }, [date]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [date, isRowStale]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // EP-014: targeted refresh for realtime events that name a single employee
   // (attendance:realtime/processed) — fetches just that employee's row for
@@ -339,13 +401,19 @@ export default function AttendanceDailyPage() {
   // Same deferral behavior as load() while an edit is in flight, handled by
   // useDeviceLiveSync's own guard — this callback only runs once idle.
   const loadOne = useCallback(async (employeeIds) => {
+    const startClock = ++clockRef.current;
+    const reqDate = date;
     try {
       const fetched = await Promise.all(employeeIds.map(id =>
         api.get('/attendance/daily', { params: { date, employeeId: id } }).then(r => r.data[0]).catch(() => null)
       ));
+      if (dateRef.current !== reqDate) return;
+      // Drop any row a newer save / refresh has already superseded; stamp the rest.
+      const usable = fetched.filter(row => row && !isRowStale(row.employeeId, startClock));
+      for (const row of usable) originRef.current.set(row.employeeId, startClock);
       setRows(rs => {
         let next = rs;
-        for (const row of fetched) {
+        for (const row of usable) {
           if (!row) continue;
           next = next.some(r => r.employeeId === row.employeeId)
             ? next.map(r => (r.employeeId === row.employeeId ? row : r))
@@ -354,7 +422,7 @@ export default function AttendanceDailyPage() {
         return next;
       });
     } catch { /* silent — next full reload (rules/device event) will catch up */ }
-  }, [date]);
+  }, [date, isRowStale]);
 
   useEffect(() => { load(true); }, [load]);
   useRulesLiveSync(load, { isBusyRef: editCountRef });
@@ -409,6 +477,7 @@ export default function AttendanceDailyPage() {
 
     editCountRef.current++;
     markSaving(data.id, field, node, true);
+    beginRowEdit([data.employeeId]);
     try {
       let updated;
       if (field === 'workedMinutes') {
@@ -439,11 +508,13 @@ export default function AttendanceDailyPage() {
       const hasOtherFieldsInFlight = Array.from(savingCellsRef.current)
         .some(k => k.startsWith(rowKeyPrefix) && k !== `${rowKeyPrefix}${field}`);
       if (hasOtherFieldsInFlight) pendingReloadRef.current = true;
+      markRowsFresh([data.employeeId]);   // the PUT result is now the newest data for this row
       setRows(rs => applyRowFieldUpdate(rs, updated, field, hasOtherFieldsInFlight));
     } catch (err) {
       toast.error(err?.response?.data?.error || 'فشل التحديث');
       node.setDataValue(field, oldValue);
     } finally {
+      endRowEdit([data.employeeId]);
       editCountRef.current--;
       markSaving(data.id, field, node, false);
       if (editCountRef.current === 0 && pendingReloadRef.current) {
@@ -456,22 +527,26 @@ export default function AttendanceDailyPage() {
   const handleAbsenceSave = useCallback(async ({ absenceType, penaltyDays, absenceReason }) => {
     if (!absenceModal?.id) return;
     editCountRef.current++;
+    const absenceEmpIds = [absenceModal.employeeId];
+    beginRowEdit(absenceEmpIds);
     setAbsenceSaving(true);
     try {
       const { data: updated } = await api.put(`/attendance/${absenceModal.id}/absence-type`, {
         absenceType, penaltyDays, absenceReason, modifiedByName: ACTOR,
       });
+      markRowsFresh(absenceEmpIds);
       setRows(rs => replaceAttendanceRow(rs, updated));
       toast.success('تم تحديث نوع الغياب');
       setAbsenceModal(null);
     } catch (err) {
       toast.error(err?.response?.data?.error || 'فشل تحديث نوع الغياب');
     } finally {
+      endRowEdit(absenceEmpIds);
       editCountRef.current--;
       setAbsenceSaving(false);
       if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }
     }
-  }, [absenceModal, load]);
+  }, [absenceModal, load, beginRowEdit, endRowEdit, markRowsFresh]);
 
   const handleSelectionChanged = useCallback(() => {
     setSelectedRows(gridRef.current?.api?.getSelectedRows() ?? []);
@@ -497,6 +572,8 @@ export default function AttendanceDailyPage() {
     if (!confirmed) return;
 
     editCountRef.current++;
+    const bulkEmpIds = selectedAbsent.map(r => r.employeeId);
+    beginRowEdit(bulkEmpIds);
     setBulkSaving(true);
     try {
       const { data } = await api.post('/attendance/bulk-mark-unauthorized', {
@@ -505,6 +582,7 @@ export default function AttendanceDailyPage() {
         source: 'bulk-unauthorized-absence',
       });
       const normalized = (data.updated || []).map(normalizeDailyUpdate);
+      markRowsFresh(normalized.map(r => r.employeeId));
       setRows(rs => replaceAttendanceRows(rs, normalized));
       if (data.updatedCount) {
         toast.success(`تم تحديث ${data.updatedCount} موظف بنجاح`);
@@ -516,11 +594,100 @@ export default function AttendanceDailyPage() {
     } catch (err) {
       toast.error(err?.response?.data?.error || 'فشل تحديث الغياب بدون إذن');
     } finally {
+      endRowEdit(bulkEmpIds);
       editCountRef.current--;
       setBulkSaving(false);
       if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }
     }
-  }, [selectedAbsent, clearSelection, load]);
+  }, [selectedAbsent, clearSelection, load, beginRowEdit, endRowEdit, markRowsFresh]);
+
+  // ── Copy / paste a manual attendance entry ────────────────────────────────
+  // A shortcut for typing the same values by hand: pasting saves through the
+  // exact endpoints (and server-side validation + audit) the inline grid uses —
+  // PUT /attendance/daily/:id for time/status/worked minutes and
+  // PUT /attendance/:id/manual-penalty for the late/early/overtime overrides.
+  const singleSelected = selectedRows.length === 1 ? selectedRows[0] : null;
+  const canCopy  = !!singleSelected;
+  const canPaste = !!attClipboard && editMode && !!singleSelected?.id;
+
+  const handleCopyRow = () => {
+    const r = singleSelected;
+    if (!r) return;
+    setAttClipboard({
+      sourceName: r.employeeName,
+      sourceCode: r.employeeCode,
+      sourceDate: date,
+      checkIn: toHHMM(r.checkIn),
+      checkOut: toHHMM(r.checkOut),
+      status: r.status,
+      workedMinutes: r.workedMinutes ?? 0,
+      effectiveLatePenalty: r.effectiveLatePenalty ?? 0,
+      effectiveEarlyPenalty: r.effectiveEarlyPenalty ?? 0,
+      effectiveOvertimeUnits: r.effectiveOvertimeUnits ?? 0,
+    });
+    toast.success(`تم نسخ حركة ${r.employeeName}`);
+  };
+
+  const handlePasteOpen = () => { if (canPaste) setPasteTarget(singleSelected); };
+
+  const handlePasteApply = async (keys) => {
+    const t = pasteTarget;
+    const clip = attClipboard;
+    if (!t?.id || !clip || !keys.length) return;
+    const picked = new Set(keys);
+    const reason = `نسخ/لصق حركة يدوية من ${clip.sourceName} (${clip.sourceDate})`;
+
+    const dailyBody = {};
+    if (picked.has('checkIn'))       dailyBody.checkIn  = clip.checkIn  || '';
+    if (picked.has('checkOut'))      dailyBody.checkOut = clip.checkOut || '';
+    if (picked.has('status'))        dailyBody.status   = clip.status;
+    if (picked.has('workedMinutes')) dailyBody.workedMinutes = clip.workedMinutes;
+    const penaltyBody = {};
+    for (const [field, overrideKey] of Object.entries(OVERRIDE_FIELD_MAP)) {
+      if (picked.has(field)) penaltyBody[overrideKey] = Number(clip[field]) || 0;
+    }
+
+    // Same client-side check the grid applies before it calls the API.
+    for (const k of ['checkIn', 'checkOut']) {
+      if (dailyBody[k] && !HHMM_RE.test(dailyBody[k])) { toast.error('صيغة الوقت غير صحيحة (HH:mm)'); return; }
+    }
+
+    // Same in-flight guards a normal cell save uses (see handleCellEdit).
+    editCountRef.current++;
+    beginRowEdit([t.employeeId]);
+    setPasteSaving(true);
+    let updated = null;
+    try {
+      if (Object.keys(dailyBody).length) {
+        const res = await api.put(`/attendance/daily/${t.id}`, {
+          ...dailyBody, reason, modifiedByName: ACTOR, source: 'inline-grid',
+        });
+        updated = normalizeDailyUpdate(res.data);
+      }
+      if (Object.keys(penaltyBody).length) {
+        const res = await api.put(`/attendance/${t.id}/manual-penalty`, {
+          ...penaltyBody, overrideReason: reason, modifiedByName: ACTOR, source: 'inline-grid',
+        });
+        updated = normalizeDailyUpdate(res.data);
+      }
+      toast.success('تم لصق الحركة');
+      setPasteTarget(null);
+    } catch (err) {
+      // The server's own validation message, exactly like a rejected cell edit.
+      toast.error(err?.response?.data?.error || 'فشل لصق الحركة');
+    } finally {
+      // If the first request succeeded and the second failed, the row still
+      // shows what the server actually saved.
+      if (updated) {
+        markRowsFresh([t.employeeId]);
+        setRows(rs => replaceAttendanceRow(rs, updated));
+      }
+      endRowEdit([t.employeeId]);
+      editCountRef.current--;
+      setPasteSaving(false);
+      if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }
+    }
+  };
 
   const process = async () => {
     setProc(true);
@@ -570,6 +737,25 @@ export default function AttendanceDailyPage() {
           {/* Secondary actions: full row on desktop, "⋮ المزيد" overflow on
               mobile — same three actions, nothing removed. */}
           <div className="hidden md:flex items-center gap-2">
+            <button
+              onClick={handleCopyRow}
+              disabled={!canCopy}
+              className="btn-secondary text-xs py-1.5 px-3"
+              title={canCopy ? 'نسخ قيم الحركة المحددة' : 'حدّد حركة واحدة لنسخها'}
+            >
+              <Copy className="w-3.5 h-3.5" /> نسخ الحركة
+            </button>
+            <button
+              onClick={handlePasteOpen}
+              disabled={!canPaste}
+              className="btn-secondary text-xs py-1.5 px-3"
+              title={!attClipboard ? 'لا توجد حركة منسوخة'
+                : !editMode ? 'وضع القراءة فقط'
+                : !singleSelected?.id ? 'حدّد حركة واحدة لها سجل للصق عليها'
+                : `لصق حركة ${attClipboard.sourceName} (${attClipboard.sourceDate})`}
+            >
+              <ClipboardPaste className="w-3.5 h-3.5" /> لصق الحركة
+            </button>
             <button onClick={exportCSV} className="btn-secondary text-xs py-1.5 px-3">
               <Download className="w-3.5 h-3.5" /> CSV
             </button>
@@ -583,6 +769,10 @@ export default function AttendanceDailyPage() {
           </div>
           <div className="md:hidden">
             <MobileActionsMenu actions={[
+              { key: 'copy-row', label: 'نسخ الحركة', disabled: !canCopy,
+                icon: <Copy style={{ width: 15, height: 15 }} />, onClick: handleCopyRow },
+              { key: 'paste-row', label: 'لصق الحركة', disabled: !canPaste,
+                icon: <ClipboardPaste style={{ width: 15, height: 15 }} />, onClick: handlePasteOpen },
               { key: 'csv', label: 'CSV', icon: <Download style={{ width: 15, height: 15 }} />, onClick: exportCSV },
               { key: 'print', label: 'طباعة', icon: <Printer style={{ width: 15, height: 15 }} />, onClick: () => setPrintOpen(true) },
               { key: 'sync', label: syncing ? 'جاري سحب البصمات...' : 'سحب البصمات', disabled: syncing,
@@ -737,6 +927,15 @@ export default function AttendanceDailyPage() {
         onClose={fpSync.close}
         onRetry={fpSync.retry}
         onViewLogs={() => { fpSync.close(); navigate('/attendance/logs'); }}
+      />
+
+      <PasteAttendanceModal
+        open={!!pasteTarget}
+        onClose={() => { if (!pasteSaving) setPasteTarget(null); }}
+        onApply={handlePasteApply}
+        saving={pasteSaving}
+        clip={attClipboard}
+        target={pasteTarget}
       />
 
       {absenceModal && (

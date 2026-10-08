@@ -278,8 +278,7 @@ function Card({ d, monthLabel, year }) {
   const admDed  = displayNetSalary(ded.earlyAmount) + displayNetSalary(ded.manualDeductionAdjustment);
   // EF-019.1: "الصافي" is the ONE shared displayNetSalary() helper applied to
   // this card's own canonical `netSalary` field — not re-derived from the
-  // rows above (which, notably, never included `bonus` in the old formula
-  // here — a latent bug this also fixes). Identical to every other payroll
+  // rows above. Identical to every other payroll
   // consumer (Payroll Grid, Salary Card, Final Salary Modal, Print/PDF/Excel).
   const net = displayNetSalary(d.netSalary);
   // ──────────────────────────────────

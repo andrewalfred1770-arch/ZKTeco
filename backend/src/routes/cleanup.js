@@ -15,6 +15,7 @@ const router = require('express').Router();
 const { sendError } = require('../utils/apiError');
 const deviceLogCounts = require('../services/deviceLogCounts');
 const { getPrisma } = require('../utils/prisma');
+const { resolveActor } = require('../utils/auditActor');
 const moment = require('moment');
 const XLSX = require('xlsx');
 const fs = require('fs');
@@ -235,9 +236,11 @@ router.post('/execute', authorize('admin'), async (req, res) => {
   const startedAt = Date.now();
   try {
     const {
-      from, to, types = {}, backupFirst = true, executedByName, confirmText,
+      from, to, types = {}, backupFirst = true, confirmText,
       confirmCurrentPeriod = false, confirmFinalizedPayroll = false,
     } = req.body;
+    // F-10: with auth on, the executor is the authenticated user, never a body-claimed name.
+    const executedByName = req.user ? resolveActor(req).name : req.body.executedByName;
 
     if (!executedByName || !String(executedByName).trim()) {
       return res.status(400).json({ error: 'اسم منفّذ العملية مطلوب لسجل التدقيق' });
@@ -421,7 +424,7 @@ router.post('/execute', authorize('admin'), async (req, res) => {
             dataTypes: JSON.stringify(req.body?.types || {}),
             status: 'failed',
             durationMs: Date.now() - startedAt,
-            executedByName: String(req.body?.executedByName || '—').trim(),
+            executedByName: String((req.user ? resolveActor(req).name : req.body?.executedByName) || '—').trim(),
             notes: `فشل التنفيذ: ${err.message}`,
           },
         });

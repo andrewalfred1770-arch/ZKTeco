@@ -10,7 +10,7 @@ import { createMainWindow } from './windows.js';
 import { buildDebugMenu, createTray } from './tray.js';
 import { initUpdater } from './updater.js';
 import { readConnectionSettings, getEffectiveBackendBaseUrl, isSelfPointingServerUrl } from './connectionSettings.js';
-import { isStandalone } from './edition.js';
+import { isStandalone, isManager } from './edition.js';
 import { ensureDataDir, startMysql, waitForReady as waitForMysqlReady, getConnectionEnv, requestMysqlShutdown } from './mysqlManager.js';
 import { createBackup, shouldRunScheduledBackup } from './standaloneBackup.js';
 
@@ -74,7 +74,7 @@ app.on('ready', async () => {
   const modes = reads.map((r) => r.mode);
   const unanimousServer = modes.every((m) => m === 'server');
   if (!unanimousServer && modes.some((m) => m === 'server')) {
-    console.warn(`[Startup] connection mode disagreement across reads (${modes.join(', ')}) — forcing local (safe default)`);
+    console.warn(`[Startup] connection mode disagreement across reads (${modes.join(', ')}) — forcing ${isManager ? 'server (Manager has no local backend)' : 'local (safe default)'}`);
   }
   const resolvedSettings = unanimousServer ? reads[reads.length - 1] : { ...reads[reads.length - 1], mode: 'local' };
 
@@ -83,7 +83,15 @@ app.on('ready', async () => {
   // work — this instance never spawns a backend in Server Mode, so it would
   // just poll a URL nothing is listening on. Force local instead, which does
   // spawn one. Must run before the spawn-skip decision below.
-  if (resolvedSettings.mode === 'server' && isSelfPointingServerUrl(resolvedSettings.serverUrl)) {
+  // Manager clients have no local backend to fall back to: they are ALWAYS Server
+  // Mode, and a saved address is never dropped just because one read was
+  // incoherent — take the first non-empty address any read returned.
+  if (isManager) {
+    resolvedSettings.mode = 'server';
+    resolvedSettings.serverUrl = reads.map((r) => r.serverUrl).find(Boolean) || '';
+  }
+
+  if (!isManager && resolvedSettings.mode === 'server' && isSelfPointingServerUrl(resolvedSettings.serverUrl)) {
     console.warn(`[Startup] Server Mode serverUrl (${resolvedSettings.serverUrl}) points at this machine — forcing local mode`);
     resolvedSettings.mode = 'local';
   }
@@ -222,10 +230,28 @@ console.log("AFTER createMainWindow");
   const UNREACHABLE_TIMEOUT_MS = 20000;
   const POLL_MS = 300;
   let backendNotified = false, realtimeNotified = false, deviceNotified = false, unreachableNotified = false;
+  let splashReleasedEarly = false;
+  // Server Mode talks to a remote host over the LAN/Wi-Fi: a 400ms budget (fine
+  // for loopback) would read ordinary jitter as "down", so give the remote probe
+  // a realistic timeout. Local Mode keeps the original 400ms.
+  const statusTimeoutMs = () => (state.connectionMode === 'server' ? 3000 : 400);
 
   const pollReadiness = async () => {
     const elapsed = Date.now() - t0;
-    const status = await fetchStartupStatus(400, state.backendBaseUrl);
+
+    // Server Mode: the backend is a remote, already-running service this
+    // instance neither spawns nor owns, so the splash has nothing to wait for
+    // beyond the main window's own first paint. Release it as soon as the
+    // renderer has loaded; the readiness polling below (and the renderer's
+    // non-blocking connection banner) carry on in the background exactly as
+    // before. Local Mode is untouched — it still waits for its own backend.
+    if (state.connectionMode === 'server' && !splashReleasedEarly && isSplashStepDone(0)) {
+      splashReleasedEarly = true;
+      console.log('[Startup] Server Mode — releasing splash early, readiness continues in background');
+      notifyRenderer('system-ready');
+      closeSplash();
+    }
+    const status = await fetchStartupStatus(statusTimeoutMs(), state.backendBaseUrl);
 
     if (status) {
       if (status.dbConnected) markSplashStep(1, true);
@@ -276,9 +302,11 @@ console.log("AFTER createMainWindow");
           pollUntilBackendReady();
         }
       }
-      console.log('[Startup] releasing renderer bootstrap');
-      notifyRenderer('system-ready');
-      closeSplash();
+      if (!splashReleasedEarly) {
+        console.log('[Startup] releasing renderer bootstrap');
+        notifyRenderer('system-ready');
+        closeSplash();
+      }
       console.log(`[Electron] Total startup: ${Date.now() - t0}ms`);
       return;
     }
@@ -295,9 +323,11 @@ console.log("AFTER createMainWindow");
   // and even then polling continues forever afterward so a backend that
   // finally comes up later still auto-resolves to 'backend-ready'.
   const BACKGROUND_POLL_MS = 1000;
+  const BACKGROUND_POLL_MAX_MS = 10000;   // Server Mode backoff ceiling
+  let backgroundPolls = 0;
   const pollUntilBackendReady = async () => {
     if (backendNotified) return;
-    const status = await fetchStartupStatus(400, state.backendBaseUrl);
+    const status = await fetchStartupStatus(statusTimeoutMs(), state.backendBaseUrl);
     if (status?.dbConnected) {
       backendNotified = true;
       state.backendReady = true;
@@ -320,7 +350,13 @@ console.log("AFTER createMainWindow");
       }
     }
 
-    setTimeout(pollUntilBackendReady, BACKGROUND_POLL_MS);
+    // Server Mode: back off (1s → 10s) so a long outage costs almost nothing,
+    // yet it still polls forever and recovers on its own the moment the server
+    // answers. Local Mode keeps the fixed 1s interval.
+    const nextDelay = state.connectionMode === 'server'
+      ? Math.min(BACKGROUND_POLL_MS * Math.pow(1.5, backgroundPolls++), BACKGROUND_POLL_MAX_MS)
+      : BACKGROUND_POLL_MS;
+    setTimeout(pollUntilBackendReady, nextDelay);
   };
 
   console.log('[Startup] waiting for health');

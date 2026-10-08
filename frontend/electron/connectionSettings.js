@@ -1,5 +1,5 @@
 import { app } from 'electron';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import os from 'os';
 import { BACKEND_PORT } from './constants.js';
@@ -68,10 +68,22 @@ export function writeConnectionSettings(patch) {
     return { ...DEFAULTS };
   }
   const merged = { ...readConnectionSettings(), ...patch };
+  const file = settingsFile();
+  const tmp = `${file}.${process.pid}.tmp`;
   try {
-    writeFileSync(settingsFile(), JSON.stringify(merged, null, 2), 'utf8');
+    // Atomic replace: write the full JSON to a temp file in the same directory,
+    // then rename it over the real one. An interrupted write (crash, power loss)
+    // can then only ever leave the OLD complete file or the NEW complete file —
+    // never a truncated/empty connection-settings.json that would read back as
+    // "no server configured".
+    writeFileSync(tmp, JSON.stringify(merged, null, 2), 'utf8');
+    renameSync(tmp, file);
   } catch (err) {
+    try { unlinkSync(tmp); } catch { /* temp may not exist */ }
+    // Propagate: a caller that is about to relaunch onto the new address must
+    // know the save failed, instead of silently restarting onto the OLD one.
     console.warn('[Connection] settings write failed:', err.message);
+    throw err;
   }
   return merged;
 }

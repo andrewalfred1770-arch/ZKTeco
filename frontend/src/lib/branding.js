@@ -22,8 +22,8 @@ export const BRAND = {
   module:      'الحضور والرواتب',
 
   // Meta
-  version:     '10.0.0',
-  buildMarker: 'BUILD: 2026-10-05-release-10.0.0-tasks-1-8-final',
+  version:     '10.0.1',
+  buildMarker: 'BUILD: 2026-10-08-release-10.0.1',
   copyright:   `© ${new Date().getFullYear()} PETSHROW ERP`,
 
   // Brand colors (kept in sync with the enterprise palette in index.css)

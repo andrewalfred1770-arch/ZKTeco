@@ -62,8 +62,13 @@ api.interceptors.response.use(
     // intentional server responses that the caller must handle).
     const isNetworkError = !err.response;
     const retryCount = config._retryCount ?? 0;
+    // Only idempotent reads are replayed. A write that failed with no response
+    // (e.g. a timeout) may already have been applied by the server, so
+    // re-sending it automatically could create a duplicate — the caller/user
+    // decides instead.
+    const isIdempotent = ['get', 'head', 'options'].includes((config.method || 'get').toLowerCase());
 
-    if (isNetworkError && retryCount < MAX_RETRIES && !config._noRetry) {
+    if (isNetworkError && isIdempotent && retryCount < MAX_RETRIES && !config._noRetry) {
       config._retryCount = retryCount + 1;
       await new Promise(r => setTimeout(r, RETRY_DELAY_MS * config._retryCount));
       return api(config);

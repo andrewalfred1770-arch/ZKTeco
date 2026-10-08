@@ -2,6 +2,7 @@ const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
 const { getRules, getRulesBatch, parseTime } = require('./rulesEngine');
 const { mergeEffectivePenalty } = require('./attendanceEngine');
+const { effectiveAbsencePenaltyDays } = require('../utils/absencePolicy');
 const { monthRange } = require('../utils/monthRange');
 const logger = require('../utils/logger');
 
@@ -139,26 +140,27 @@ async function computePayroll(employeeId, month, year, opts = {}) {
         approvalStatus: 'approved',
       },
     }),
-    // Existing row is fetched to PRESERVE manual `bonus` and
-    // `manualDeductionAdjustment` fields across recalculations — both are
-    // HR-entered, never derived, and must survive every engine recalc.
+    // Existing row is fetched to PRESERVE the manual `manualDeductionAdjustment`
+    // field across recalculations — it is HR-entered, never derived, and must
+    // survive every engine recalc.
     client.payroll.findUnique({
       where: { employeeId_month_year: { employeeId, month, year } },
-      select: { bonus: true, manualDeductionAdjustment: true },
+      select: { manualDeductionAdjustment: true },
     }),
   ]);
 
   const adjByDailyId = new Map(monthAdjustments.map(a => [a.attendanceDailyId, a]));
-  let records = rawRecords.map(r => applyApprovedAdjustment(r, adjByDailyId.get(r.id)));
+  // Preview support: overlay a proposed (not-yet-persisted) edit onto its RAW row, BEFORE the
+  // approved-adjustment overlay and mergeEffectivePenalty() derive the effective* fields — exactly
+  // the order a persisted edit goes through. (Overlaying after the merge left effectiveLatePenalty /
+  // effectiveEarlyPenalty / effectiveOvertimeUnits stale, so a preview ignored late/early/overtime
+  // changes.) Only the manual-edit preview passes recordsOverride; every other caller is unaffected.
+  const sourceRecords = (recordsOverride && recordsOverride.id != null)
+    ? rawRecords.map(r => (r.id === recordsOverride.id ? { ...r, ...recordsOverride.fields } : r))
+    : rawRecords;
+  let records = sourceRecords.map(r => applyApprovedAdjustment(r, adjByDailyId.get(r.id)));
   records = records.map(r => mergeEffectivePenalty(r));
   const appliedAdjustments = rawRecords.filter(r => adjByDailyId.has(r.id)).length;
-
-  // Preview support: overlay a proposed (not-yet-persisted) edit onto its row.
-  if (recordsOverride && recordsOverride.id != null) {
-    records = records.map(r => r.id === recordsOverride.id
-      ? { ...r, ...recordsOverride.fields }
-      : r);
-  }
 
   const basicSalary = employee.salary || 0;
 
@@ -264,12 +266,12 @@ async function computePayroll(employeeId, month, year, opts = {}) {
   // ── Deductions ───────────────────────────────────────────────────────────────
   // Use HR-entered penaltyDays when set (absence permission system).
   // penaltyDays=1 → 1-day deduction (with permission), =2 → 2-day (without permission),
-  // custom → any number. Explicit AttendanceDaily.penaltyDays always wins;
-  // only when it's null does the configured absence_deduct_days rule apply.
-  const defaultAbsenceDeductDays = parseFloat(rules.absence_deduct_days ?? '1') || 1;
+  // custom → any number (an explicit 0 is a real value). Explicit AttendanceDaily.penaltyDays always wins.
+  // D5 (approved): an absent day with NO penaltyDays (no punch, no HR-assigned type) is an automatic
+  // "with permission" absence with a FIXED 1-day deduction (no configurable default exists any more).
   const totalAbsencePenaltyDays = records
     .filter(r => r.isAbsent)
-    .reduce((sum, r) => sum + (r.penaltyDays != null ? r.penaltyDays : defaultAbsenceDeductDays), 0);
+    .reduce((sum, r) => sum + effectiveAbsencePenaltyDays(r), 0);
   const absentDeduction = totalAbsencePenaltyDays * dailyRate;
 
   // Canonical late/early-leave penalty: Policy Engine deduction units
@@ -297,13 +299,13 @@ async function computePayroll(employeeId, month, year, opts = {}) {
   // it is byte-for-byte identical to previous behavior.
   const advancesList = preload?.advancesList !== undefined
     ? preload.advancesList
-    : await prisma.advance.findMany({
+    : await client.advance.findMany({    // F-04/F-07: the caller's tx, like every other read here — an advance created earlier in the same transaction (grid edit) must be visible
       where: { employeeId, month, year },
     });
   const totalAdvances = advancesList.reduce((sum, a) => sum + a.amount, 0);
 
   // manualDeductionAdjustment: HR-entered additive deduction, preserved across
-  // recalcs exactly like `bonus` — never derived by the engine.
+  // recalcs — never derived by the engine.
   const manualDeductionAdjustment = existingPayroll?.manualDeductionAdjustment || 0;
 
   // ONE implementation of "total deductions" — shared with routes/payroll.js's
@@ -319,21 +321,19 @@ async function computePayroll(employeeId, month, year, opts = {}) {
   const deductions = breakdown.total;
 
   // ── THE authoritative net-salary formula ────────────────────────────────────
-  //   net = basic + overtime + bonus − deductions − advances
-  // Identical to PUT /payroll/:id. `bonus` is a manual HR field — preserved
-  // from the existing row (engine never derives or resets it).
-  const bonus = existingPayroll?.bonus || 0;
+  //   net = basic + overtime − deductions − advances
+  // Identical to PUT /payroll/:id. There is no bonus component in this system.
   // F-04: floored at 0 — this system has no "employee owes the company"
   // concept anywhere (no receivable ledger, no negative-pay UI/print
   // affordance; CompactSalarySheet's print formatter explicitly documents
   // "no negative-value use case"), so an uncapped combination of manual
   // deductions/absences/advances against a low-or-zero basic salary must not
   // silently produce a negative payable amount. Every component of this
-  // formula (basicSalary, overtimeAmount, bonus, deductions, advances) is
+  // formula (basicSalary, overtimeAmount, deductions, advances) is
   // still persisted unrounded on the Payroll row exactly as before, so the
   // pre-floor shortfall stays fully auditable/reconstructible from those
   // fields — nothing is discarded, only the final payable figure is clamped.
-  const netSalary = Math.max(0, basicSalary + overtimeAmount + bonus - deductions - totalAdvances);
+  const netSalary = Math.max(0, basicSalary + overtimeAmount - deductions - totalAdvances);
 
   return {
     basicSalary,
@@ -359,7 +359,6 @@ async function computePayroll(employeeId, month, year, opts = {}) {
     // themselves; they only ever display these two fields.
     morningOTAmount,
     eveningOTAmount,
-    bonus,
     advances: totalAdvances,
     manualDeductionAdjustment,
     deductions,
@@ -394,7 +393,7 @@ function computeDeductionsBreakdown({ absentAmount, lateAmount, earlyAmount, man
 // (attendance manual edit, adjustments, payroll edit, advances, realtime
 // listener, historical rebuild, scheduler, ...) with no coordination. Two
 // concurrent calls for the SAME employeeId+month+year each independently
-// read the existing Payroll row (to preserve HR-entered bonus/
+// read the existing Payroll row (to preserve HR-entered
 // manualDeductionAdjustment), compute, and upsert — whichever upsert commits
 // last silently overwrites the other's preserved values with no error.
 // Same in-process queue-and-wait mutex pattern as attendanceEngine.js's
@@ -402,7 +401,15 @@ function computeDeductionsBreakdown({ absentAmount, lateAmount, earlyAmount, man
 // single-process deployment topology.
 const payrollKeyLocks = new Map(); // "employeeId|month|year" -> { tail: Promise, token: object }
 const PAYROLL_LOCK_ACQUIRE_TIMEOUT_MS = 15000;
+const PAYROLL_LOCK_TIMEOUT_CODE = 'PAYROLL_LOCK_TIMEOUT';
+const PAYROLL_LOCK_TIMEOUT_MESSAGE = 'تعذّر الحصول على قفل مرتب هذا الموظف لهذا الشهر لأن عملية أخرى ما زالت قيد التنفيذ. لم يتم تنفيذ هذه العملية ولم يُحفظ أي تغيير — أعد المحاولة بعد لحظات.';
 
+// Fail CLOSED. The lock exists so that a payroll recalculation can never overwrite a
+// concurrent edit with a stale snapshot. If the previous holder is still running after
+// PAYROLL_LOCK_ACQUIRE_TIMEOUT_MS we must NOT run `fn` unserialized (that re-opens exactly
+// that lost-update race: a stalled recalculation later wrote its old manual-deduction
+// value over an admin edit that had already been reported as saved). Instead the caller
+// gets a typed, retryable error (HTTP 409 via utils/apiError) and `fn` never runs.
 async function withPayrollKeyLock(employeeId, month, year, fn) {
   const key = `${employeeId}|${month}|${year}`;
   const entry = payrollKeyLocks.get(key);
@@ -410,17 +417,37 @@ async function withPayrollKeyLock(employeeId, month, year, fn) {
 
   let markDone;
   const ourCompletion = new Promise((resolve) => { markDone = resolve; });
+  // ourTail settles only AFTER the real previous holder has finished AND we have released.
+  // That is what keeps later waiters behind the real holder even if we give up early.
   const ourTail = previousTail.then(() => ourCompletion, () => ourCompletion);
   const token = {};
   payrollKeyLocks.set(key, { tail: ourTail, token });
 
-  let timedOut = false;
-  await Promise.race([
-    previousTail.catch(() => {}),
-    new Promise((resolve) => setTimeout(() => { timedOut = true; resolve(); }, PAYROLL_LOCK_ACQUIRE_TIMEOUT_MS)),
-  ]);
-  if (timedOut) {
-    logger.error(`[PAYROLL-LOCK] timeout after ${PAYROLL_LOCK_ACQUIRE_TIMEOUT_MS}ms waiting for employee=${employeeId} ${month}/${year} — proceeding without serialization (fail-open)`);
+  let acquired = false;
+  let timer;
+  const prevDone = previousTail.then(() => { acquired = true; }, () => { acquired = true; });
+  const timeout = new Promise((resolve) => { timer = setTimeout(resolve, PAYROLL_LOCK_ACQUIRE_TIMEOUT_MS); });
+  try {
+    await Promise.race([prevDone, timeout]);
+  } finally {
+    clearTimeout(timer);                 // no 15 s timer left behind on a normal acquisition
+  }
+
+  if (!acquired) {
+    logger.error(`[PAYROLL-LOCK] timeout after ${PAYROLL_LOCK_ACQUIRE_TIMEOUT_MS}ms waiting for employee=${employeeId} ${month}/${year} — operation REJECTED (fail-closed), nothing executed`);
+    // Give up our slot WITHOUT touching the real holder's: ourTail still waits for the
+    // previous tail, so anyone queued behind us keeps waiting for the real holder. The map
+    // entry is removed only once ourTail has settled (i.e. the real holder is done), never
+    // earlier — deleting it now would let a brand-new caller skip the still-running holder.
+    markDone();
+    ourTail.then(() => {
+      const current = payrollKeyLocks.get(key);
+      if (current && current.token === token) payrollKeyLocks.delete(key);
+    });
+    const err = new Error(PAYROLL_LOCK_TIMEOUT_MESSAGE);
+    err.code = PAYROLL_LOCK_TIMEOUT_CODE;
+    err.statusCode = 409;                // retryable client-visible conflict (utils/apiError passes 4xx through)
+    throw err;
   }
 
   try {
@@ -454,21 +481,56 @@ async function calculatePayroll(employeeId, month, year, opts = {}) {
 // second engine, no formula change, computePayroll()'s math is untouched.
 async function calculatePayrollImpl(employeeId, month, year, opts = {}) {
   const client = opts.tx || prisma;
+
+  // Stale-preload guard. A bulk caller (calculateMonthlyPayroll / recalcScope)
+  // builds its preload ONCE, then walks employees one by one under the
+  // per-employee-month lock — so by the time this employee's turn comes, a manual
+  // attendance / deduction / advance edit may have been committed (and its
+  // own payroll recalculated) since the snapshot was taken. Writing the snapshot's
+  // attendance rows, existing Payroll row (manualDeductionAdjustment),
+  // advances or employee row over that would silently revert the edit. We are
+  // inside the lock here, so re-read exactly those volatile inputs for THIS
+  // employee/month right before computing + writing. Rules (config, and the
+  // reason a recalc runs at all) stay preloaded. Callers that pass no preload
+  // already read fresh data and are unaffected.
+  let preload = opts.preload;
+  // F-01: `opts.precomputed` is a computePayroll() result the caller already
+  // obtained (syncStoredPayroll, under this same lock) — persist exactly that
+  // object so the stored row can never differ from what was just displayed.
+  if (preload && !opts.precomputed) {
+    const { startDate, endDate } = monthRange(year, month);
+    const [employee, rawRecords, monthAdjustments, existingPayroll, advancesList] = await Promise.all([
+      client.employee.findUnique({ where: { id: employeeId } }),
+      client.attendanceDaily.findMany({
+        where: { employeeId, date: { gte: startDate, lte: endDate } },
+      }),
+      client.attendanceAdjustment.findMany({
+        where: { employeeId, date: { gte: startDate, lte: endDate }, approvalStatus: 'approved' },
+      }),
+      client.payroll.findUnique({
+        where: { employeeId_month_year: { employeeId, month, year } },
+        select: { manualDeductionAdjustment: true },
+      }),
+      client.advance.findMany({ where: { employeeId, month, year } }),
+    ]);
+    preload = { ...preload, employee, rawRecords, monthAdjustments, existingPayroll, advancesList };
+  }
+
   // Forward tx AND preload into computePayroll — otherwise its
   // employee/attendance reads would go through the shared singleton (missing
   // an in-flight transaction's uncommitted writes) or re-issue the very
   // per-employee queries opts.preload exists to skip.
-  const computed = await computePayroll(employeeId, month, year, { tx: opts.tx, preload: opts.preload });
+  const computed = opts.precomputed || await computePayroll(employeeId, month, year, { tx: opts.tx, preload });
   const {
     basicSalary, hourlyRate, workDays, absentDays, latePenalty,
     penaltyUnits, penaltyAmount,
-    overtimeHours, overtimeAmount, bonus, advances, manualDeductionAdjustment,
+    overtimeHours, overtimeAmount, advances, manualDeductionAdjustment,
     deductions, netSalary, appliedAdjustments,
   } = computed;
 
   logger.info(
     `[PAYROLL] [PAYROLL-RECALC] recalc emp=${employeeId} ${month}/${year}: basic=${basicSalary} ot=${overtimeAmount} ` +
-    `bonus=${bonus}${bonus ? ' (preserved)' : ''} manualDeductionAdj=${manualDeductionAdjustment} ` +
+    `manualDeductionAdj=${manualDeductionAdjustment} ` +
     `deductions=${deductions.toFixed(2)} advances=${advances} ` +
     `net=${netSalary.toFixed(2)} adjustmentsApplied=${appliedAdjustments}`
   );
@@ -485,7 +547,6 @@ async function calculatePayrollImpl(employeeId, month, year, opts = {}) {
       penaltyAmount,
       overtimeHours,
       overtimeAmount,
-      bonus,
       advances,
       manualDeductionAdjustment,
       deductions,
@@ -505,7 +566,6 @@ async function calculatePayrollImpl(employeeId, month, year, opts = {}) {
       penaltyAmount,
       overtimeHours,
       overtimeAmount,
-      bonus,
       advances,
       manualDeductionAdjustment,
       deductions,
@@ -514,6 +574,48 @@ async function calculatePayrollImpl(employeeId, month, year, opts = {}) {
   });
 
   return payroll;
+}
+
+// ─── F-01 Final Salary / Payroll single source of truth ─────────────────────
+// Every money figure shown to the user (Payroll list, Final Salary sheet) is
+// produced by computePayroll(). The stored Payroll row is only a snapshot and
+// goes stale when an allowed change (salary edit, or any edit on a finalized/
+// paid row, which indirect cascades deliberately skip) triggers no recalc.
+// syncStoredPayroll computes ONCE under the payroll lock and, if a stored row
+// exists and differs, persists that SAME computed object — so the displayed
+// value and the stored value are identical by construction. No second formula.
+// Never creates a row, never changes status/notes (the upsert update-branch
+// does not touch them), so finalized/paid semantics and edit rights are intact.
+const SYNC_FIELDS = ['basicSalary', 'workDays', 'absentDays', 'latePenalty', 'penaltyAmount', 'overtimeAmount', 'advances', 'manualDeductionAdjustment', 'deductions', 'netSalary'];
+function payrollSnapshotDiffers(stored, computed) {
+  return SYNC_FIELDS.some(k => Math.abs((Number(stored[k]) || 0) - (Number(computed[k]) || 0)) > 0.005);
+}
+async function syncStoredPayroll(employeeId, month, year, opts = {}) {
+  try {
+    return await syncStoredPayrollLocked(employeeId, month, year, opts);
+  } catch (err) {
+    if (!err || err.code !== PAYROLL_LOCK_TIMEOUT_CODE) throw err;
+    // The lock is busy: skip the write-through (the stored row is only a snapshot and the next
+    // read repairs it) but still answer with the freshly computed canonical figures. Nothing
+    // is written, so this cannot overwrite anything.
+    const computed = await computePayroll(employeeId, month, year, opts.preload ? { preload: opts.preload } : {});
+    const stored = await prisma.payroll.findUnique({ where: { employeeId_month_year: { employeeId, month, year } } });
+    return { computed, stored, synced: false, lockTimeout: true };
+  }
+}
+async function syncStoredPayrollLocked(employeeId, month, year, opts = {}) {
+  return withPayrollKeyLock(employeeId, month, year, async () => {
+    const computed = await computePayroll(employeeId, month, year, opts.preload ? { preload: opts.preload } : {});
+    let stored = await prisma.payroll.findUnique({ where: { employeeId_month_year: { employeeId, month, year } } });
+    let synced = false;
+    if (stored && payrollSnapshotDiffers(stored, computed)) {
+      const before = stored.netSalary;
+      stored = await calculatePayrollImpl(employeeId, month, year, { precomputed: computed });
+      synced = true;
+      logger.info(`[PAYROLL-SYNC] emp=${employeeId} ${month}/${year} status=${stored.status} stored net ${before} -> ${stored.netSalary}`);
+    }
+    return { computed, stored, synced };
+  });
 }
 
 // ─── C1 canonical safety boundary ──────────────────────────────────────────
@@ -629,7 +731,7 @@ async function buildPayrollPreloadMap(targets, employees) {
       }),
       prisma.payroll.findMany({
         where: { employeeId: { in: empIds }, month, year },
-        select: { employeeId: true, bonus: true, manualDeductionAdjustment: true },
+        select: { employeeId: true, manualDeductionAdjustment: true },
       }),
       prisma.advance.findMany({ where: { employeeId: { in: empIds }, month, year } }),
     ]);
@@ -695,4 +797,4 @@ async function calculateMonthlyPayroll(month, year, branchId) {
   return { results, protectedTargets };
 }
 
-module.exports = { calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, computeDeductionsBreakdown, withPayrollKeyLock, calculatePayrollImpl, selectOvertimeMultiplier, computeRates, filterProtectedPayrollTargets, buildPayrollPreloadMap };
+module.exports = { calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, computeDeductionsBreakdown, withPayrollKeyLock, calculatePayrollImpl, syncStoredPayroll, payrollSnapshotDiffers, PAYROLL_LOCK_ACQUIRE_TIMEOUT_MS, PAYROLL_LOCK_TIMEOUT_CODE, selectOvertimeMultiplier, computeRates, filterProtectedPayrollTargets, buildPayrollPreloadMap };

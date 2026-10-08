@@ -57,7 +57,8 @@ router.get('/', async (req, res) => {
       buildAttendanceRow({ employee: emp, merged: effByEmployeeId.get(emp.id) || null, dateStr }).isAbsent
     ).length;
 
-    const present  = todayRecords.filter(r =>
+    // Same adjustment-aware rows as `absent` above (an approved forcePresent day is present here AND not absent).
+    const present  = effTodayRecords.filter(r =>
       ['present', 'late', 'early_leave'].includes(r.status)
     ).length;
     const late     = effTodayRecords.filter(r => (r.effectiveLatePenalty || 0) > 0).length;
@@ -66,15 +67,23 @@ router.get('/', async (req, res) => {
 
     // Weekly data — count present and absent per day (last 7 days)
     const weekStart = moment().subtract(6, 'days').startOf('day').toDate();
-    const weekRecords = await prisma.attendanceDaily.findMany({
+    const weekRecordsRaw = await prisma.attendanceDaily.findMany({
       where: {
         date: { gte: weekStart, lte: today },
         employee: empWhere,
         isWeekend: false,
         isHoliday: false,
       },
-      select: { date: true, isAbsent: true, status: true },
+      select: { id: true, date: true, isAbsent: true, status: true },
     });
+    // Approved adjustments applied here too, so the weekly present/absent series agrees with the KPI cards.
+    const weekAdjustments = weekRecordsRaw.length
+      ? await prisma.attendanceAdjustment.findMany({
+          where: { attendanceDailyId: { in: weekRecordsRaw.map(r => r.id) }, approvalStatus: 'approved' },
+        })
+      : [];
+    const weekAdjByDailyId = new Map(weekAdjustments.map(a => [a.attendanceDailyId, a]));
+    const weekRecords = weekRecordsRaw.map(r => applyApprovedAdjustment(r, weekAdjByDailyId.get(r.id)));
 
     const weeklyData = [];
     for (let i = 6; i >= 0; i--) {

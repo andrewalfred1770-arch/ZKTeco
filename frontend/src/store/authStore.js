@@ -36,7 +36,10 @@ const useAuthStore = create((set, get) => ({
   /** Probes the connected server's /api/auth/me — tells us if login is required at all. */
   async checkAuthRequired() {
     try {
-      const { data } = await api.get('/auth/me');
+      // Short, non-retried probe: an unreachable server must fail fast (the
+      // caller's background loop retries with backoff) instead of holding the
+      // UI on the default 15s timeout x 3 attempts.
+      const { data } = await api.get('/auth/me', { timeout: 5000, _noRetry: true });
       set({ authEnabled: !!data.authEnabled, user: data.user || null });
     } catch (err) {
       if (err.response?.status === 401) {

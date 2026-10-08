@@ -23,6 +23,7 @@ import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_MEDIUM, tabToNextCell, safeRefreshCells as sharedSafeRefreshCells, isAbsentRow, attendanceRowClass } from '../lib/gridDefaults';
 import { nameCell, codeCell } from '../lib/cellStyles';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
+import { useStaleGuard, keepCurrentRows } from '../lib/staleGuard';
 import TimeCellEditor from '../components/grid/TimeCellEditor';
 import AbsenceTypeModal, { ABSENCE_TYPE_LABELS } from '../components/AbsenceTypeModal';
 import AttendanceFilterBar from '../components/AttendanceFilterBar';
@@ -136,9 +137,10 @@ function computeSummaryFromDays(days, prevSummary) {
     !d.isWeekend && !d.isHoliday && d.isAbsent
   ).length;
   // EP-024.2: mirrors backend summarizeMovementDays' totalPenaltyDays — sums
-  // only explicit penaltyDays values (matches what the "أيام الخصم" column
-  // itself displays; a null penaltyDays row shows blank, so it contributes 0
-  // here too, keeping the footer an exact SUM of the visible grid column).
+  // the penaltyDays each absent row carries (matches what the "أيام الخصم"
+  // column itself displays). D5: the backend now resolves an unclassified
+  // absent day to its fixed automatic 1 day (utils/absencePolicy.js), so the
+  // column, this footer and the payroll deduction all agree.
   const totalPenaltyDays = days
     .filter(d => !d.isWeekend && !d.isHoliday && d.isAbsent)
     .reduce((s, d) => s + (d.penaltyDays || 0), 0);
@@ -326,8 +328,14 @@ export default function EmployeeMovementPage() {
 
   // Guarded regardless of trigger (background live-sync OR manual refresh
   // button) — either can replace rowData mid-edit otherwise.
+  // Stale-response protection (see lib/staleGuard.js): an older GET must never
+  // overwrite the employee/month/filters the user switched to, or a row saved since.
+  const screenKey = `${empId}|${month}|${branchId}|${departmentId}`;
+  const guard = useStaleGuard(screenKey);
+
   const load = useCallback(async (showLoading = false) => {
     if (editCountRef.current > 0) { pendingReloadRef.current = true; return; }
+    const t = guard.start(screenKey);
     if (showLoading) setLoading(true);
     try {
       const { data: raw } = await api.get('/attendance/movement', {
@@ -338,10 +346,27 @@ export default function EmployeeMovementPage() {
           departmentId: departmentId || undefined,
         },
       });
+      // Dropped when the employee/month/filters changed meanwhile, or a later load already applied.
+      if (!guard.accept(t)) return;
       const processed = processData(raw);
-      setData(processed);
-      setGridRows(processed?.days || []);
-    } catch { toast.error('تعذر تحميل كشف الحضور'); }
+      const days = processed?.days || [];
+      // Rows saved (or being edited) after this request started keep their newer version.
+      const keep = guard.claim(days, t);
+      // This load carries a fresh money summary: money refreshes started earlier are obsolete.
+      moneyRefreshTokenRef.current++;
+      if (keep.size === 0) {
+        setData(processed);
+        setGridRows(days);
+      } else {
+        setGridRows(prev => keepCurrentRows(prev, days, keep));
+        setData(prev => {
+          const mergedDays = keepCurrentRows(prev?.days || [], days, keep);
+          return { ...processed, days: mergedDays, summary: computeSummaryFromDays(mergedDays, processed.summary) };
+        });
+      }
+    } catch {
+      if (guard.keyMatches(t)) toast.error('تعذر تحميل كشف الحضور');
+    }
     finally { if (showLoading) setLoading(false); }
   }, [empId, month, branchId, departmentId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -753,6 +778,7 @@ export default function EmployeeMovementPage() {
   // (the "التاريخ"/day-name/day-number columns), not an identity concern.
   const applyUpdate = useCallback((updatedFields, originalRow, field) => {
     if (!updatedFields || !originalRow?.id) return;
+    guard.markFresh([originalRow.id]);   // this save result is now the newest data for the row
     const newRow = {
       ...updatedFields,
       date: originalRow.date,
@@ -795,6 +821,7 @@ export default function EmployeeMovementPage() {
     // unchanged staleness protection, just now guarding one request instead
     // of many.
     if (moneyRefreshDebounceRef.current) clearTimeout(moneyRefreshDebounceRef.current);
+    const keyAtEdit = guard.getKey();   // what the screen showed when this edit happened
     const timerId = setTimeout(() => {
       pendingTimersRef.current.delete(timerId);
       moneyRefreshDebounceRef.current = null;
@@ -805,7 +832,9 @@ export default function EmployeeMovementPage() {
           branchId: branchId || undefined, departmentId: departmentId || undefined,
         },
       }).then(({ data: raw }) => {
-        if (!raw?.summary || myToken !== moneyRefreshTokenRef.current) return;
+        // Also dropped when the user moved to another employee/month/filters meanwhile —
+        // otherwise this response's otAmount/effectiveNetEffect would land on the NEW screen.
+        if (!raw?.summary || myToken !== moneyRefreshTokenRef.current || guard.getKey() !== keyAtEdit) return;
         setData(prev => prev ? {
           ...prev,
           summary: { ...prev.summary, otAmount: raw.summary.otAmount, effectiveNetEffect: raw.summary.effectiveNetEffect },
@@ -872,6 +901,7 @@ export default function EmployeeMovementPage() {
 
     // Save primary row — block background reloads for the duration of the PUT
     editCountRef.current++;
+    guard.beginEdit([rowData.id]);
     performance.mark('refreshCells-start'); // Chromium tracing: observational only, see trace-capture investigation
     markSaving(rowData.id, field, node, true);
     let primaryOk = false;
@@ -900,6 +930,7 @@ export default function EmployeeMovementPage() {
       revertField(rowData.id, field, oldValue);
       markError(rowData.id, field, node);
     } finally {
+      guard.endEdit([rowData.id]);
       editCountRef.current--;
       performance.mark('refreshCells-end'); // Chromium tracing: observational only
       markSaving(rowData.id, field, node, false);
@@ -918,6 +949,7 @@ export default function EmployeeMovementPage() {
     }
 
     editCountRef.current += otherNodes.length;
+    guard.beginEdit(otherNodes.map(n => n.data.id));
     let bulkCount = 1;
     await Promise.all(otherNodes.map(async n => {
       markSaving(n.data.id, field, n, true);
@@ -931,6 +963,7 @@ export default function EmployeeMovementPage() {
       } catch {
         markSaving(n.data.id, field, n, false);
       } finally {
+        guard.endEdit([n.data.id]);
         editCountRef.current--;
         markSaving(n.data.id, field, n, false);
         if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }
@@ -942,6 +975,7 @@ export default function EmployeeMovementPage() {
   const handleAbsenceSave = useCallback(async ({ absenceType, penaltyDays, absenceReason }) => {
     if (!absenceModal?.id) return;
     editCountRef.current++;
+    guard.beginEdit([absenceModal.id]);
     setAbsenceSaving(true);
     try {
       const { data: updated } = await api.put(`/attendance/${absenceModal.id}/absence-type`, {
@@ -954,6 +988,7 @@ export default function EmployeeMovementPage() {
     } catch (err) {
       toast.error(err?.response?.data?.error || 'فشل تحديث نوع الغياب');
     } finally {
+      guard.endEdit([absenceModal.id]);
       editCountRef.current--;
       setAbsenceSaving(false);
       if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }

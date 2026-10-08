@@ -1,5 +1,6 @@
 const { fmtDate, fmtTime } = require('./fastDate');
 const { hasVerifiedManualEdit } = require('./manualEditAudit');
+const { effectiveAbsencePenaltyDays, effectiveAbsenceType } = require('./absencePolicy');
 
 // ─── Canonical Attendance Row Builder (Phase 12.1) ────────────────────────────
 // Consolidates three previously independent row-shaping implementations that
@@ -31,6 +32,7 @@ function buildAttendanceRow({ employee, merged, dateStr, verifiedManualIds, adj 
   const manualEdit = merged
     ? hasVerifiedManualEdit(merged, verifiedManualIds || new Set(), !!adj)
     : false;
+  const rowIsAbsent = isWeekendOrHoliday ? false : (merged ? (merged.isAbsent ?? (merged.status === 'absent')) : true);
 
   return {
     id: merged?.id ?? null,
@@ -71,12 +73,14 @@ function buildAttendanceRow({ employee, merged, dateStr, verifiedManualIds, adj 
     manualPenaltyByName: merged?.manualPenaltyByName ?? null,
     manualPenaltyAt: merged?.manualPenaltyAt ?? null,
     status: merged?.status || 'absent',
-    isAbsent: isWeekendOrHoliday ? false : (merged ? (merged.isAbsent ?? (merged.status === 'absent')) : true),
+    isAbsent: rowIsAbsent,
     isWeekend: merged?.isWeekend ?? false,
     isHoliday: merged?.isHoliday ?? false,
     manualEdit,
-    absenceType: isWeekendOrHoliday ? null : (merged?.absenceType || null),
-    penaltyDays: isWeekendOrHoliday ? null : (merged?.penaltyDays ?? null),
+    // D5: an absent day nobody classified is an automatic "with permission" absence of exactly 1 day —
+    // show what payroll will deduct (utils/absencePolicy.js), not a blank that payroll then prices differently.
+    absenceType: isWeekendOrHoliday ? null : (merged && rowIsAbsent ? effectiveAbsenceType(merged) : (merged?.absenceType || null)),
+    penaltyDays: isWeekendOrHoliday ? null : (merged && rowIsAbsent ? effectiveAbsencePenaltyDays(merged) : (merged?.penaltyDays ?? null)),
     absenceReason: isWeekendOrHoliday ? null : (merged?.absenceReason || null),
     absenceSetBy: merged?.absenceSetBy || null,
     absenceSetAt: merged?.absenceSetAt ?? null,

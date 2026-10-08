@@ -37,12 +37,54 @@ router.get('/', async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
+// F-09: a "logical holiday" is one calendar date within one scope (a branch, or
+// 0 = all branches). The same date+scope twice would be a duplicate row that
+// every holiday lookup then has to tolerate. Check first (clear 409), serialise
+// concurrent creates for the same key inside this process, and let the DB unique
+// index (date, scopeKey) be the last line of defence where it could be created.
+const createLocks = new Map();
+async function withKeyLock(key, fn) {
+  const prev = createLocks.get(key) || Promise.resolve();
+  let release; const mine = new Promise((resolve) => { release = resolve; });
+  const tail = prev.then(() => mine, () => mine);
+  createLocks.set(key, tail);
+  await prev.catch(() => {});
+  try { return await fn(); } finally { release(); if (createLocks.get(key) === tail) createLocks.delete(key); }
+}
+const DUPLICATE_HOLIDAY = { error: 'يوجد إجازة مسجلة بالفعل في نفس التاريخ لنفس الفرع', code: 'HOLIDAY_DUPLICATE' };
+
 router.post('/', authorize('admin', 'hr'), async (req, res) => {
   try {
-    const { name, date, branchId, type } = req.body;
-    const holiday = await prisma.holiday.create({
-      data: { name, date: new Date(date), branchId: branchId ? parseInt(branchId) : null, type: type || 'public' },
+    const { name, date, branchId, type } = req.body || {};
+    const cleanName = typeof name === 'string' ? name.trim() : '';
+    if (!cleanName) return res.status(400).json({ error: 'اسم الإجازة مطلوب', code: 'INVALID_INPUT' });
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(date || ''));
+    const day = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
+    if (!day || Number.isNaN(day.getTime()) || day.getUTCMonth() !== +m[2] - 1) {
+      return res.status(400).json({ error: 'تاريخ الإجازة غير صالح', code: 'INVALID_INPUT' });
+    }
+    let branch = null;
+    if (branchId !== undefined && branchId !== null && branchId !== '') {
+      if (!/^\d{1,10}$/.test(String(branchId)) || parseInt(branchId) < 1) {
+        return res.status(400).json({ error: 'معرّف الفرع غير صالح', code: 'INVALID_ID' });
+      }
+      branch = parseInt(branchId);
+    }
+    const scopeKey = branch || 0;
+
+    const holiday = await withKeyLock(`${day.toISOString().slice(0, 10)}|${scopeKey}`, async () => {
+      const dup = await prisma.holiday.findFirst({ where: { date: day, scopeKey } });
+      if (dup) return null;
+      try {
+        return await prisma.holiday.create({
+          data: { name: cleanName, date: day, branchId: branch, scopeKey, type: type || 'public' },
+        });
+      } catch (e) {
+        if (e && e.code === 'P2002') return null;   // lost a race against another process
+        throw e;
+      }
     });
+    if (!holiday) return res.status(409).json(DUPLICATE_HOLIDAY);
     recalcHolidayMonth(holiday, req.io, `إضافة عطلة "${holiday.name}"`);
     res.status(201).json(holiday);
   } catch (err) { sendError(res, err); }

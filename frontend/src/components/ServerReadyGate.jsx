@@ -26,13 +26,21 @@ import React, { useEffect, useState } from 'react';
 export default function ServerReadyGate({ children }) {
   const isElectron = !!window.electron?.isElectron;
   const [status, setStatus] = useState(isElectron ? 'checking' : 'ready');
+  // 'server' once the main process reports Server Mode (remote backend that this
+  // instance never spawns) — the app is then shown immediately and readiness is
+  // surfaced as a non-blocking banner instead of a full-screen overlay.
+  const [mode, setMode] = useState(null);
 
   useEffect(() => {
     if (!isElectron) return;
     let cancelled = false;
 
     window.electron.getReadyState?.()
-      .then((s) => { if (!cancelled && s?.ready) setStatus('ready'); })
+      .then((s) => {
+        if (cancelled) return;
+        if (s?.mode) setMode(s.mode);
+        if (s?.ready) setStatus('ready');
+      })
       .catch(() => {});
 
     const unsubscribe = window.electron.onMessage((msg) => {
@@ -51,7 +59,44 @@ export default function ServerReadyGate({ children }) {
       .catch(() => setStatus('unreachable'));
   };
 
-  if (status === 'ready') return children;
+  // Server Mode: never hold the app behind the gate — it is rendered at once and
+  // the connection state shows in a slim banner. Children stay at the same tree
+  // position in every state, so they are never remounted when readiness flips.
+  const showApp = status === 'ready' || mode === 'server';
+
+  if (showApp) {
+    return (
+      <>
+        {children}
+        {status !== 'ready' && (
+          <div style={{
+            position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
+            padding: '6px 16px', fontSize: 12, direction: 'rtl',
+            background: status === 'unreachable' ? 'rgba(239,68,68,0.95)' : 'rgba(37,99,235,0.95)',
+            color: '#fff',
+          }}>
+            <span>
+              {status === 'unreachable'
+                ? 'تعذر الوصول إلى الخادم — لا يزال البرنامج يحاول الاتصال في الخلفية (تحقّق من إعدادات الاتصال)'
+                : 'جاري الاتصال بالخادم...'}
+            </span>
+            {status === 'unreachable' && (
+              <button
+                onClick={recheck}
+                style={{
+                  padding: '2px 12px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.7)',
+                  background: 'transparent', color: '#fff', fontSize: 12, cursor: 'pointer',
+                }}
+              >
+                إعادة المحاولة الآن
+              </button>
+            )}
+          </div>
+        )}
+      </>
+    );
+  }
 
   return (
     <div style={{

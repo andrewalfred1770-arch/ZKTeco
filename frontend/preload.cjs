@@ -50,7 +50,11 @@ contextBridge.exposeInMainWorld('electron', {
   exportPDF:   (payload) => ipcRenderer.invoke('pdf:export', payload),
   // Send HTML to the native Windows printer dialog (bypasses window.open() which is blocked)
   printHTML:   (payload) => ipcRenderer.invoke('print:html', payload),
-  onMessage:   (cb) => ipcRenderer.on('main:message', (_e, msg) => cb(msg)),
+  onMessage:   (cb) => {
+    const listener = (_e, msg) => cb(msg);
+    ipcRenderer.on('main:message', listener);
+    return () => ipcRenderer.removeListener('main:message', listener);
+  },
   getReadyState: () => ipcRenderer.invoke('system:get-ready-state'),
   // Chromium trace capture — observational only, evidence collection for the
   // AG Grid blank-cell rendering investigation. Not wired to any UI; invoke

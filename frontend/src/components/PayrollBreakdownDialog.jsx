@@ -22,7 +22,7 @@
  * Month comparison (Phase 20.7): fetches the SAME final-sheet endpoint for
  * month-1, nothing new on the backend.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, Loader2, History, Lock, FileSpreadsheet, CalendarDays } from 'lucide-react';
 import api from '../lib/api';
 import Dialog from './ui/Dialog';
@@ -61,28 +61,38 @@ export default function PayrollBreakdownDialog({ row, month, year, open, onClose
   const [statementOpen, setStatementOpen] = useState(false); // Phase 20.1
 
   const empId = row?.employeeId || row?.employee?.id;
+  // What the dialog is showing right now — a late comparison response for another
+  // employee/month must not be applied to it.
+  const shownRef = useRef('');
+  shownRef.current = `${empId}|${month}|${year}`;
 
   useEffect(() => {
-    if (!open || !empId) return;
+    if (!open || !empId) return undefined;
+    // A response for a previous employee/month (or a previous open) must not land on
+    // the one being shown now.
+    let cancelled = false;
     setLoading(true);
     setSheet(null);
     setPrevSheet(null);
     setShowCompare(false);
     api.get('/payroll/final-sheet', { params: { employeeId: empId, month, year } })
-      .then((r) => setSheet(r.data))
-      .catch(() => setSheet(null))
-      .finally(() => setLoading(false));
+      .then((r) => { if (!cancelled) setSheet(r.data); })
+      .catch(() => { if (!cancelled) setSheet(null); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [open, empId, month, year]);
 
   const loadComparison = () => {
     if (prevSheet || prevLoading) { setShowCompare((s) => !s); return; }
     let pm = month - 1, py = year;
     if (pm < 1) { pm = 12; py -= 1; }
+    const requestedFor = shownRef.current;
+    const stillShown = () => shownRef.current === requestedFor;
     setPrevLoading(true);
     api.get('/payroll/final-sheet', { params: { employeeId: empId, month: pm, year: py } })
-      .then((r) => setPrevSheet(r.data))
-      .catch(() => setPrevSheet(false)) // false = "requested, unavailable" (distinct from null = "not yet requested")
-      .finally(() => { setPrevLoading(false); setShowCompare(true); });
+      .then((r) => { if (stillShown()) setPrevSheet(r.data); })
+      .catch(() => { if (stillShown()) setPrevSheet(false); }) // false = "requested, unavailable" (distinct from null = "not yet requested")
+      .finally(() => { if (stillShown()) { setPrevLoading(false); setShowCompare(true); } });
   };
 
   if (!open) return null;
@@ -91,7 +101,7 @@ export default function PayrollBreakdownDialog({ row, month, year, open, onClose
   const badge = STATUS_BADGE[status] || { label: status, cls: 'badge-gray' };
   const isLocked = status === 'finalized' || status === 'paid';
 
-  const earningsTotal = sheet ? (sheet.earnings?.basicSalary || 0) + (sheet.earnings?.overtimeAmount || 0) + (sheet.earnings?.bonus || 0) : 0;
+  const earningsTotal = sheet ? (sheet.earnings?.basicSalary || 0) + (sheet.earnings?.overtimeAmount || 0) : 0;
   const deductionsTotal = sheet ? (sheet.deductions?.total || 0) + (sheet.deductions?.advances || 0) : 0;
 
   let diff = null, diffPct = null;
@@ -160,7 +170,6 @@ export default function PayrollBreakdownDialog({ row, month, year, open, onClose
               <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.04em' }}>المستحقات</p>
               <Row label="الراتب الأساسي" value={sheet.earnings?.basicSalary} />
               {(sheet.earnings?.overtimeAmount || 0) > 0 && <Row label="الإضافي" value={sheet.earnings.overtimeAmount} />}
-              {(sheet.earnings?.bonus || 0) > 0 && <Row label="مكافأة / بدل" value={sheet.earnings.bonus} />}
               <div style={{ borderTop: '1px dashed var(--border)', margin: '4px 0' }} />
               <Row label="إجمالي المستحقات" value={earningsTotal} emphasis />
             </div>

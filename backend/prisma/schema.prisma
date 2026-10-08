@@ -393,9 +393,13 @@ model Holiday {
   name      String
   date      DateTime @db.Date
   branchId  Int?
+  /// branchId, or 0 for an all-branches holiday — a NULL-free key so the unique
+  /// index below also covers the global scope (MySQL treats NULLs as distinct).
+  scopeKey  Int      @default(0)
   type      String   @default("public")
   createdAt DateTime @default(now())
 
+  @@unique([date, scopeKey], map: "holidays_date_scopeKey_key")
   @@map("holidays")
 }
 
@@ -435,7 +439,6 @@ model Payroll {
   latePenalty               Float    @default(0)
   overtimeHours             Float    @default(0)
   overtimeAmount            Float    @default(0)
-  bonus                     Float    @default(0)
   advances                  Float    @default(0)
   deductions                Float    @default(0)
   netSalary                 Float

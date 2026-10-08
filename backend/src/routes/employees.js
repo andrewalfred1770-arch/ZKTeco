@@ -2,9 +2,13 @@ const router = require('express').Router();
 const { sendError, numericIdParam } = require('../utils/apiError');
 router.param('id', numericIdParam);
 const { getPrisma } = require('../utils/prisma');
+const { resolveActor } = require('../utils/auditActor');
+const { writeAudit } = require('../utils/manualEditAudit');
+const actorOf = (req) => resolveActor(req, {}, { name: 'مدير النظام', role: 'admin' });
 const bcrypt = require('bcryptjs');
 const { authenticate, authorize } = require('../middleware/auth');
 const { relinkAttendanceLogs } = require('../services/relinkService');
+const { syncStoredPayroll } = require('../engines/payrollEngine');
 const { deleteDeviceUser } = require('../services/zktecoService');
 const { actorFromReq } = require('../utils/deviceAudit');
 const logger = require('../utils/logger');
@@ -197,6 +201,24 @@ async function assertActiveNumberAvailable(tx, value, excludeId = null, { number
   }
 }
 
+// F-12: two requests racing for the same number serialize on the FOR UPDATE gap
+// locks above; InnoDB resolves that by aborting one of them with a deadlock /
+// lock-wait error, which used to surface as HTTP 500. The loser is simply retried
+// — by then the winner has committed, so assertActiveNumberAvailable answers with
+// the normal 409. A unique-index violation (P2002) is the same conflict.
+const NUMBER_CONFLICT_MSG = 'كود الموظف مستخدم بالفعل، أو تعذّر حفظه بسبب تعارض متزامن على نفس الكود. يرجى مراجعة الكود والمحاولة مرة أخرى';
+const isTxConflict = (e) => !!e && (e.code === 'P2034' || /deadlock|lock wait timeout|1213|1205/i.test(String(e.message || '')));
+async function withNumberRetry(fn) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await fn(); } catch (e) {
+      if (e && e.code === 'P2002') { const err = new Error(NUMBER_CONFLICT_MSG); err.statusCode = 409; throw err; }
+      if (!isTxConflict(e)) throw e;
+      if (attempt >= 5) { const err = new Error(NUMBER_CONFLICT_MSG); err.statusCode = 409; throw err; }
+      await new Promise(r => setTimeout(r, 20 * attempt + Math.floor(Math.random() * 30)));
+    }
+  }
+}
+
 router.post('/', authorize('admin', 'hr'), async (req, res) => {
   try {
     const { name, zkUserId, code, phone, email, nationalId, position, hireDate,
@@ -223,7 +245,7 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
 
     let emp;
     try {
-      emp = await prisma.$transaction(async (tx) => {
+      emp = await withNumberRetry(() => prisma.$transaction(async (tx) => {
         await assertActiveNumberAvailable(tx, identity.value);
         return tx.employee.create({
           data: {
@@ -239,9 +261,12 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
           },
           include: inc,
         });
-      });
+      }));
     } catch (err) {
-      if (err.statusCode === 409) return res.status(409).json({ error: err.message });
+      // The login account created above must not outlive a failed employee insert
+      // (it would block the retry with a "username taken" error).
+      if (userId) await prisma.user.delete({ where: { id: userId } }).catch(() => {});
+      if (err.statusCode === 409) return res.status(409).json({ error: err.message, code: 'EMPLOYEE_NUMBER_CONFLICT' });
       throw err;
     }
     res.status(201).json(emp);
@@ -320,15 +345,28 @@ router.put('/:id', authorize('admin', 'hr'), async (req, res) => {
     const effectiveValue = unifiedValue !== undefined ? unifiedValue : before?.code;
 
     let emp;
+    let salaryChanged = false;
     try {
-      emp = await prisma.$transaction(async (tx) => {
+      emp = await withNumberRetry(() => prisma.$transaction(async (tx) => {
         const numberIsNew = unifiedValue !== undefined
           && unifiedValue !== before?.zkUserId && unifiedValue !== before?.code;
         if (effectiveValue && (effectiveStatus === true || numberIsNew)) {
           await assertActiveNumberAvailable(tx, effectiveValue, parseInt(req.params.id),
             { numberIsNew, willBeActive: effectiveStatus === true });
         }
-        return tx.employee.update({
+        // F-05: audit a salary change from the value actually committed. The employee
+        // row is locked (FOR UPDATE) BEFORE it is read, so two concurrent salary edits
+        // (from here, or from the Payroll grid) are applied one after the other and each
+        // audit row is old = the previous committed value -> new. Only a real change is
+        // audited. No salary history / effective dates: just this audit trail.
+        let salaryChange = null;
+        salaryChanged = false;
+        if (salary !== undefined) {
+          const newSalary = parseFloat(salary) || 0;
+          const rows = await tx.$queryRaw`SELECT salary FROM employees WHERE id = ${parseInt(req.params.id)} FOR UPDATE`;
+          if (rows.length && Number(rows[0].salary) !== newSalary) salaryChange = { oldValue: rows[0].salary, newValue: newSalary };
+        }
+        const updatedEmployee = await tx.employee.update({
           where: { id: parseInt(req.params.id) },
           data: {
             name:       name       !== undefined ? name : undefined,
@@ -350,10 +388,38 @@ router.put('/:id', authorize('admin', 'hr'), async (req, res) => {
           },
           include: inc,
         });
-      });
+        if (salaryChange) {
+          salaryChanged = true;
+          const actor = actorOf(req);
+          await writeAudit({
+            employeeId: updatedEmployee.id, fieldName: 'basicSalary',
+            oldValue: salaryChange.oldValue, newValue: salaryChange.newValue,
+            reason: 'تعديل الراتب من صفحة الموظفين',
+            userId: actor.id, userName: actor.name, userRole: actor.role,
+            source: 'employees-page', tx,
+          });
+        }
+        return updatedEmployee;
+      }));
     } catch (err) {
-      if (err.statusCode === 409) return res.status(409).json({ error: err.message });
+      if (err.statusCode === 409) return res.status(409).json({ error: err.message, code: 'EMPLOYEE_NUMBER_CONFLICT' });
       throw err;
+    }
+
+    // Finding #1: Employee.salary feeds every payroll computation, but this route used to leave the
+    // employee's stored DRAFT payroll rows holding the old salary until some later read repaired them
+    // (Final Salary / list were always right because they compute fresh). Bring the stored draft rows in
+    // line with the canonical figures before answering. This is the existing write-through
+    // (syncStoredPayroll: one computation under the employee-month payroll lock, writes only if something
+    // differs, never touches status). Finalized/paid rows are NOT touched here (they keep the existing
+    // policy: repaired on read). Best-effort: a failure never fails the salary edit that already committed.
+    if (salaryChanged) {
+      try {
+        const drafts = await prisma.payroll.findMany({ where: { employeeId: emp.id, status: 'draft' }, select: { month: true, year: true } });
+        for (const d of drafts) await syncStoredPayroll(emp.id, d.month, d.year);
+      } catch (err) {
+        logger.error(`[PAYROLL-SYNC] salary edit emp=${emp.id}: stored draft payroll sync failed (${err.message}) — the next read repairs it`);
+      }
     }
     res.json(emp);
 
@@ -494,8 +560,10 @@ router.post('/:id/delete-confirm', authorize('admin'), async (req, res) => {
           oldValue:       'active',
           newValue:       'archived',
           reason:         `حذف الموظف "${emp.name}" (${emp.code || ''}) من صفحة الموظفين`,
-          modifiedByName: 'مدير النظام',
-          modifiedByRole: 'admin',
+          // F-10: the real authenticated user when auth is on; the desktop build's fixed label otherwise.
+          modifiedBy:     actorOf(req).id,
+          modifiedByName: actorOf(req).name,
+          modifiedByRole: actorOf(req).role,
           source:         'employees-page',
         },
       });

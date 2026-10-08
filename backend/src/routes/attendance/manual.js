@@ -2,11 +2,12 @@ const router = require('express').Router();
 const { sendError, numericIdParam } = require('../../utils/apiError');
 router.param('id', numericIdParam);
 const { getPrisma } = require('../../utils/prisma');
+const { modifier } = require('../../utils/auditActor');
 const moment = require('moment');
 const { authorize } = require('../../middleware/auth');
-const { processDate, computeDerivedFields, mergeEffectivePenalty, parseTimeRules } = require('../../engines/attendanceEngine');
+const { processDate, buildDayFields, DAILY_RESET, mergeEffectivePenalty, parseTimeRules, withEmployeeDateLock } = require('../../engines/attendanceEngine');
 const { calculatePayroll, computePayroll, applyApprovedAdjustment, filterProtectedPayrollTargets } = require('../../engines/payrollEngine');
-const { getRules, isWeekend, isHoliday } = require('../../engines/rulesEngine');
+const { getRules, isWeekend, isHoliday, isRuleTrue } = require('../../engines/rulesEngine');
 const { calcLatePenalty, calcEarlyCheckout, timeToMinutes } = require('../../engines/policyEngine');
 const { writeAudit, resolveVerifiedManualEditIds } = require('../../utils/manualEditAudit');
 const { buildAttendanceRow } = require('../../utils/attendanceRow');
@@ -69,6 +70,92 @@ async function buildDailyResponseRow(rec) {
   return buildAttendanceRow({ employee: emp, merged, verifiedManualIds, adj });
 }
 
+// ─── Helpers shared by Save (PUT /daily/:id) and Preview (POST /daily/:id/preview) ────────
+// The preview must show exactly what a save would persist, so everything that decides the
+// outcome lives here (or in attendanceEngine.buildDayFields) and is called by BOTH routes.
+const ABSENT_WITH_PUNCH_ERROR = 'لا يمكن تصنيف يوم به بصمة حضور أو انصراف كـ"غائب" — الموظف حاضر ببصمة واحدة على الأقل';
+
+// ABSOLUTE POLICY: a day with a punch can never be 'absent'. `manual` holds only the keys the
+// request named; an unnamed time is the current row's value (`rec`).
+function absentWithPunch(manual, rec) {
+  const pendingCheckIn  = 'checkIn'  in manual ? manual.checkIn  : rec.checkIn;
+  const pendingCheckOut = 'checkOut' in manual ? manual.checkOut : rec.checkOut;
+  return manual.status === 'absent' && !!(pendingCheckIn || pendingCheckOut);
+}
+
+// Explicit numeric overrides — applied on top of the engine recompute. `rules` is only needed
+// (and only read) when lateMinutes/earlyLeaveMinutes is given; `current` is the row as the engine
+// left it (post-engine state), used for the total when only one of late/early is overridden.
+//
+// Certification HIGH#4: a manual lateMinutes/earlyLeaveMinutes correction must also recompute the
+// penalty-UNIT fields (latePenaltyUnits/earlyCheckoutUnits) that mergeEffectivePenalty() actually
+// reads for payroll money — using the exact same tier-lookup formula
+// attendanceEngine.computeDerivedFields() uses (calcLatePenalty/calcEarlyCheckout), never a second
+// implementation.
+function buildNumericOverrides({ workedMinutes, lateMinutes, earlyLeaveMinutes, overtimeMinutes }, rules, current) {
+  const overrideData = {};
+  if (workedMinutes !== undefined) overrideData.workedMinutes = parseInt(workedMinutes) || 0;
+
+  if (lateMinutes !== undefined || earlyLeaveMinutes !== undefined) {
+    const workStartMin = timeToMinutes(rules.work_start || '09:00');
+    const workEndMin   = timeToMinutes(rules.work_end   || '17:00');
+    const lateAbsRules  = parseTimeRules(rules.late_rules)  || [];
+    const earlyAbsRules = parseTimeRules(rules.early_rules) || [];
+
+    if (lateMinutes !== undefined) {
+      const newLateMinutes = parseInt(lateMinutes) || 0;
+      overrideData.lateMinutes = newLateMinutes;
+      // Inverse of computeDerivedFields' `lateMinutes = max(0, checkInMin - workStartMin)`.
+      overrideData.latePenaltyUnits = newLateMinutes > 0
+        ? calcLatePenalty(workStartMin + newLateMinutes, lateAbsRules)
+        : 0;
+    }
+    if (earlyLeaveMinutes !== undefined) {
+      const newEarlyLeaveMinutes = parseInt(earlyLeaveMinutes) || 0;
+      overrideData.earlyLeaveMinutes = newEarlyLeaveMinutes;
+      const earlyLeaveGraceMin = parseInt(rules.early_leave_grace) || 0;
+      // Inverse of `earlyLeaveMinutes = workEndMin - checkOutMin`; grace gates the penalty
+      // lookup exactly like the automatic engine does.
+      overrideData.earlyCheckoutUnits = (newEarlyLeaveMinutes > 0 && newEarlyLeaveMinutes > earlyLeaveGraceMin)
+        ? calcEarlyCheckout(workEndMin - newEarlyLeaveMinutes, earlyAbsRules)
+        : 0;
+    }
+    // EF-003.2a: fall back to the row's post-engine state, not a pre-recompute snapshot.
+    overrideData.totalDeductionUnits =
+      (overrideData.latePenaltyUnits  ?? current.latePenaltyUnits  ?? 0) +
+      (overrideData.earlyCheckoutUnits ?? current.earlyCheckoutUnits ?? 0);
+  }
+
+  if (overtimeMinutes !== undefined) {
+    const ot = parseInt(overtimeMinutes) || 0;
+    overrideData.overtimeMinutes = ot;
+    overrideData.overtimeHours = ot / 60;
+  }
+  return overrideData;
+}
+
+// Bounded concurrency for manual-edit transactions. The edit's interactive transaction holds ONE
+// database connection for its whole life, while the engine's own reads (employee, rules, holidays,
+// punch logs) go through the shared client and each need a connection of their own. If many saves
+// start at once (e.g. "apply to selected rows"), transactions could occupy every pooled connection
+// while all of them wait for one more to read with — a pool deadlock until the pool timeout. With at
+// most MANUAL_EDIT_MAX_TX transactions open (Prisma's pool is never smaller than 3), a free
+// connection always remains for those reads, so every queued save makes progress.
+const MANUAL_EDIT_MAX_TX = 2;
+let manualEditActive = 0;
+const manualEditWaiters = [];
+async function withManualEditSlot(fn) {
+  if (manualEditActive >= MANUAL_EDIT_MAX_TX) await new Promise((resolve) => manualEditWaiters.push(resolve));
+  else manualEditActive++;
+  try {
+    return await fn();
+  } finally {
+    const next = manualEditWaiters.shift();
+    if (next) next();               // hand the slot straight to the next waiting save
+    else manualEditActive--;
+  }
+}
+
 // Manual edit — runs the SAME policy math as automatic processing, but with
 // the HR-provided times as authoritative input, then locks the row
 // (manualEdit=true) so no cron/sync/recalc path can silently revert it, and
@@ -81,8 +168,9 @@ router.put('/daily/:id', authorize('admin', 'hr'), async (req, res) => {
     const {
       checkIn, checkOut, status,
       workedMinutes, lateMinutes, earlyLeaveMinutes, overtimeMinutes,
-      reason, modifiedBy, modifiedByName, modifiedByRole, source,
+      reason, source,
     } = req.body;
+    const { modifiedBy, modifiedByName, modifiedByRole } = modifier(req);
     const rec = await prisma.attendanceDaily.findUnique({ where: { id: parseInt(req.params.id) } });
     if (!rec) return res.status(404).json({ error: 'Record not found' });
     // EF-005.4 Phase 2: a day that hasn't occurred yet has no attendance to edit.
@@ -115,80 +203,44 @@ router.put('/daily/:id', authorize('admin', 'hr'), async (req, res) => {
       return res.status(400).json({ error: 'صيغة وقت الانصراف غير صحيحة (HH:mm)' });
     }
 
-    const before = { ...rec };
-
     const dateStr = moment(rec.date).format('YYYY-MM-DD');
+    // Only the fields this request actually names are manual input. An untouched time is NOT
+    // copied from the `rec` read above (that copy can be stale when another save of the same
+    // row — e.g. the next cell of an Excel-style Tab edit — commits first and would be silently
+    // reverted): the engine takes it from the row as it is at write time, inside the lock.
     const manual = {
-      checkIn:  checkIn  !== undefined ? (checkIn  ? new Date(`${dateStr}T${checkIn}`)  : null) : rec.checkIn,
-      checkOut: checkOut !== undefined ? (checkOut ? new Date(`${dateStr}T${checkOut}`) : null) : rec.checkOut,
+      ...(checkIn  !== undefined ? { checkIn:  checkIn  ? new Date(`${dateStr}T${checkIn}`)  : null } : {}),
+      ...(checkOut !== undefined ? { checkOut: checkOut ? new Date(`${dateStr}T${checkOut}`) : null } : {}),
       ...(status ? { status } : {}),
     };
     // ABSOLUTE POLICY, no exceptions: reject outright rather than let the
     // engine's clamp silently reinterpret it — see manual-penalty above.
-    if (manual.status === 'absent' && (manual.checkIn || manual.checkOut)) {
-      return res.status(400).json({ error: 'لا يمكن تصنيف يوم به بصمة حضور أو انصراف كـ"غائب" — الموظف حاضر ببصمة واحدة على الأقل' });
+    if (absentWithPunch(manual, rec)) {
+      return res.status(400).json({ error: ABSENT_WITH_PUNCH_ERROR });
     }
 
-    await processDate(rec.date, rec.employeeId, { manual });
+    // ONE atomic unit, serialized per employee+day: the engine's row write, the numeric
+    // overrides and the audit rows commit together or not at all (previously the engine wrote
+    // first and a failure in the second step left a half-saved, unaudited edit behind while the
+    // request reported an error). The date lock is held until commit so a concurrent save of
+    // the same row can only start from this edit's committed result.
+    const { updated, auditEntries, before } = await withManualEditSlot(() => withEmployeeDateLock(rec.employeeId, dateStr, () => prisma.$transaction(async (tx) => {
+    const engineResult = await processDate(rec.date, rec.employeeId, { manual, tx, lockHeld: true });
+    // The row exactly as it was when this edit was applied (true "old" values for the audit).
+    const before = engineResult?.before || { ...rec };
 
     // ── Explicit numeric overrides — applied on top of the recompute above ────
-    const overrideData = {};
-    if (workedMinutes !== undefined) overrideData.workedMinutes = parseInt(workedMinutes) || 0;
-
-    // Certification HIGH#4: a manual lateMinutes/earlyLeaveMinutes correction
-    // must also recompute the penalty-UNIT fields (latePenaltyUnits/
-    // earlyCheckoutUnits) that mergeEffectivePenalty() actually reads for
-    // payroll money — using the exact same tier-lookup formula
-    // attendanceEngine.computeDerivedFields() uses (calcLatePenalty/
-    // calcEarlyCheckout), never a second implementation. Proven live on
-    // production data: before this fix, overriding lateMinutes to 0 left
-    // latePenaltyUnits/effectiveLatePenalty/the persisted payroll deduction
-    // completely unchanged — HR believed the late mark was cleared, but the
-    // employee was still charged the original penalty.
+    // (shared with the preview — see buildNumericOverrides())
+    let overrideRules = null;
+    let postEngineRec = null;
     if (lateMinutes !== undefined || earlyLeaveMinutes !== undefined) {
       const employee = await prisma.employee.findUnique({ where: { id: rec.employeeId } });
-      const rules = await getRules(employee.branchId, employee.departmentId, employee.id);
-      const workStartMin = timeToMinutes(rules.work_start || '09:00');
-      const workEndMin   = timeToMinutes(rules.work_end   || '17:00');
-      const lateAbsRules  = parseTimeRules(rules.late_rules)  || [];
-      const earlyAbsRules = parseTimeRules(rules.early_rules) || [];
-
-      if (lateMinutes !== undefined) {
-        const newLateMinutes = parseInt(lateMinutes) || 0;
-        overrideData.lateMinutes = newLateMinutes;
-        // Inverse of computeDerivedFields' `lateMinutes = max(0, checkInMin - workStartMin)`.
-        overrideData.latePenaltyUnits = newLateMinutes > 0
-          ? calcLatePenalty(workStartMin + newLateMinutes, lateAbsRules)
-          : 0;
-      }
-      if (earlyLeaveMinutes !== undefined) {
-        const newEarlyLeaveMinutes = parseInt(earlyLeaveMinutes) || 0;
-        overrideData.earlyLeaveMinutes = newEarlyLeaveMinutes;
-        const earlyLeaveGraceMin = parseInt(rules.early_leave_grace) || 0;
-        // Inverse of `earlyLeaveMinutes = workEndMin - checkOutMin`; grace
-        // gates the penalty lookup exactly like the automatic engine does.
-        overrideData.earlyCheckoutUnits = (newEarlyLeaveMinutes > 0 && newEarlyLeaveMinutes > earlyLeaveGraceMin)
-          ? calcEarlyCheckout(workEndMin - newEarlyLeaveMinutes, earlyAbsRules)
-          : 0;
-      }
-      // EF-003.2a: fall back to the row's post-processDate() state, not the
-      // pre-recompute `rec` snapshot — processDate() above may have already
-      // committed different latePenaltyUnits/earlyCheckoutUnits than what
-      // `rec` was read with at the top.
-      const postEngineRec = await prisma.attendanceDaily.findUnique({ where: { id: rec.id } });
-      overrideData.totalDeductionUnits =
-        (overrideData.latePenaltyUnits  ?? postEngineRec.latePenaltyUnits  ?? 0) +
-        (overrideData.earlyCheckoutUnits ?? postEngineRec.earlyCheckoutUnits ?? 0);
+      overrideRules = await getRules(employee.branchId, employee.departmentId, employee.id);
+      postEngineRec = await tx.attendanceDaily.findUnique({ where: { id: rec.id } });
     }
-
-    if (overtimeMinutes !== undefined) {
-      const ot = parseInt(overtimeMinutes) || 0;
-      overrideData.overtimeMinutes = ot;
-      overrideData.overtimeHours = ot / 60;
-    }
-    // ── Transaction boundary (EF-003.2): the override write and its audit
-    // trail commit atomically — either both persist or neither does.
-    const { updated, auditEntries } = await prisma.$transaction(async (tx) => {
+    const overrideData = buildNumericOverrides({ workedMinutes, lateMinutes, earlyLeaveMinutes, overtimeMinutes }, overrideRules, postEngineRec);
+    // ── Transaction boundary (EF-003.2): the engine write, the override write and the audit
+    // trail commit atomically — everything persists or nothing does.
       if (Object.keys(overrideData).length) {
         await tx.attendanceDaily.update({
           where: { id: rec.id },
@@ -222,8 +274,8 @@ router.put('/daily/:id', authorize('admin', 'hr'), async (req, res) => {
         }
       }
 
-      return { updated, auditEntries };
-    });
+      return { updated, auditEntries, before };
+    }, { maxWait: 10000, timeout: 30000 })));
 
     // ── Diagnostics + audit trail logging — kept outside the transaction ────
     if (updated.status !== before.status) {
@@ -265,8 +317,9 @@ router.put('/:id/manual-penalty', authorize('admin', 'hr'), async (req, res) => 
   try {
     const {
       manualLatePenaltyUnits, manualEarlyPenaltyUnits, manualOvertimeUnits,
-      status, reason, overrideReason, modifiedBy, modifiedByName, modifiedByRole, source,
+      status, reason, overrideReason, source,
     } = req.body;
+    const { modifiedBy, modifiedByName, modifiedByRole } = modifier(req);
     const effReason = reason ?? overrideReason;
     const rec = await prisma.attendanceDaily.findUnique({ where: { id: parseInt(req.params.id) } });
     if (!rec) return res.status(404).json({ error: 'Record not found' });
@@ -414,7 +467,8 @@ const ABSENCE_TYPE_DEFAULT_DAYS = { with_permission: 1, without_permission: 2 };
 
 router.put('/:id/absence-type', authorize('admin', 'hr'), async (req, res) => {
   try {
-    const { absenceType, penaltyDays, absenceReason, modifiedBy, modifiedByName, modifiedByRole, source } = req.body;
+    const { absenceType, penaltyDays, absenceReason, source } = req.body;
+    const { modifiedBy, modifiedByName, modifiedByRole } = modifier(req);
     const rec = await prisma.attendanceDaily.findUnique({ where: { id: parseInt(req.params.id) } });
     if (!rec) return res.status(404).json({ error: 'Record not found' });
     // EF-005.4 Phase 2: a day that hasn't occurred yet has no attendance to edit.
@@ -511,7 +565,8 @@ router.put('/:id/absence-type', authorize('admin', 'hr'), async (req, res) => {
 // `payrollResults`, same EF-022.1 rationale as the single-row routes above.
 router.post('/bulk-mark-unauthorized', authorize('admin', 'hr'), async (req, res) => {
   try {
-    const { ids, absenceReason, modifiedBy, modifiedByName, modifiedByRole, source } = req.body || {};
+    const { ids, absenceReason, source } = req.body || {};
+    const { modifiedBy, modifiedByName, modifiedByRole } = modifier(req);
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: 'ids مطلوب (مصفوفة من معرّفات سجلات الحضور)' });
     }
@@ -671,44 +726,36 @@ router.post('/daily/:id/preview', authorize('admin', 'hr'), async (req, res) => 
     const legacyRules = await getRules(employee.branchId, employee.departmentId, employee.id);
     const dayDate = new Date(dateStr);
     const dayOfWeek = dayDate.getDay();
-    const fridayIsWeekend = (legacyRules.friday_is_weekend ?? 'false') === 'true';
+    const fridayIsWeekend = isRuleTrue(legacyRules.friday_is_weekend);
     const configuredWeekend = isWeekend(dayDate, legacyRules.weekend_days);
     const weekend = configuredWeekend || (fridayIsWeekend && dayOfWeek === 5);
     const holiday = await isHoliday(dayDate, employee.branchId);
 
-    const effCheckIn = checkIn !== undefined
-      ? (checkIn ? new Date(`${dateStr}T${checkIn}`) : null)
-      : rec.checkIn;
-    const effCheckOut = checkOut !== undefined
-      ? (checkOut ? new Date(`${dateStr}T${checkOut}`) : null)
-      : rec.checkOut;
-
-    let proposedFields;
-    if (effCheckIn) {
-      proposedFields = await computeDerivedFields(employee, dateStr, {
-        checkIn: effCheckIn, checkOut: effCheckOut, weekend, holiday, dayOfWeek,
-        manual: status ? { status } : null, legacyRules,
-      });
-    } else {
-      proposedFields = {
-        checkIn: null, checkOut: effCheckOut,
-        workedMinutes: 0, lateMinutes: 0, overtimeMinutes: 0, overtimeHours: 0,
-        earlyLeaveMinutes: 0, morningOvertimeHours: 0, eveningOvertimeHours: 0,
-        latePenaltyUnits: 0, earlyCheckoutUnits: 0, totalDeductionUnits: 0,
-        isAbsent: true, isWeekend: weekend, isHoliday: holiday,
-        status: status || 'absent',
-      };
+    // Same inputs the save builds: only the fields this request names are manual input; an
+    // unnamed time is the current row's value.
+    const manual = {
+      ...(checkIn  !== undefined ? { checkIn:  checkIn  ? new Date(`${dateStr}T${checkIn}`)  : null } : {}),
+      ...(checkOut !== undefined ? { checkOut: checkOut ? new Date(`${dateStr}T${checkOut}`) : null } : {}),
+      ...(status ? { status } : {}),
+    };
+    // The save rejects this outright (400); the preview must not pretend it would succeed.
+    if (absentWithPunch(manual, rec)) {
+      return res.status(400).json({ error: ABSENT_WITH_PUNCH_ERROR });
     }
+    const effCheckIn  = 'checkIn'  in manual ? manual.checkIn  : rec.checkIn;
+    const effCheckOut = 'checkOut' in manual ? manual.checkOut : rec.checkOut;
 
-    // Explicit numeric overrides apply on top of the recomputed fields.
-    if (workedMinutes !== undefined) proposedFields.workedMinutes = parseInt(workedMinutes) || 0;
-    if (lateMinutes !== undefined) proposedFields.lateMinutes = parseInt(lateMinutes) || 0;
-    if (earlyLeaveMinutes !== undefined) proposedFields.earlyLeaveMinutes = parseInt(earlyLeaveMinutes) || 0;
-    if (overtimeMinutes !== undefined) {
-      const ot = parseInt(overtimeMinutes) || 0;
-      proposedFields.overtimeMinutes = ot;
-      proposedFields.overtimeHours = ot / 60;
-    }
+    // The row exactly as the engine would write it (absent / weekend / holiday / punch-implies-present,
+    // weekend & holiday zeroing…) — the SAME buildDayFields() processDate persists. The baseline reset
+    // is what a save's upsert applies underneath it.
+    const { data } = await buildDayFields(employee, dateStr, {
+      checkIn: effCheckIn, checkOut: effCheckOut, weekend, holiday, dayOfWeek, manual, legacyRules,
+    });
+    const proposedFields = { ...DAILY_RESET, ...data };
+
+    // Explicit numeric overrides apply on top of the recomputed fields — same helper as the save.
+    Object.assign(proposedFields, buildNumericOverrides(
+      { workedMinutes, lateMinutes, earlyLeaveMinutes, overtimeMinutes }, legacyRules, proposedFields));
 
     const m = moment(rec.date);
     const month = m.month() + 1, year = m.year();
@@ -766,7 +813,8 @@ router.post('/daily/:id/preview', authorize('admin', 'hr'), async (req, res) => 
 // reversal.
 router.post('/daily/:id/restore-auto', authorize('admin', 'hr'), async (req, res) => {
   try {
-    const { reason, modifiedBy, modifiedByName, modifiedByRole } = req.body || {};
+    const { reason } = req.body || {};
+    const { modifiedBy, modifiedByName, modifiedByRole } = modifier(req);
     const rec = await prisma.attendanceDaily.findUnique({ where: { id: parseInt(req.params.id) } });
     if (!rec) return res.status(404).json({ error: 'Record not found' });
     // EF-005.4 Phase 2: a day that hasn't occurred yet has no attendance to edit.

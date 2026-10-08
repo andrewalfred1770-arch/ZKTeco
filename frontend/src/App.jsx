@@ -16,9 +16,9 @@ import ServerReadyGate from './components/ServerReadyGate';
 
 import { isManager } from './lib/edition';
 import useAuthStore from './store/authStore';
-import useCompanySettingsStore from './store/companySettingsStore';
+import useCompanySettingsStore, { shouldRefetchOnStatus } from './store/companySettingsStore';
 
-import { getSocket } from './lib/socket';
+import { getSocket, subscribeConnectionStatus } from './lib/socket';
 import { BRAND } from './lib/branding';
 
 /* ============================================================================
@@ -105,6 +105,56 @@ const ConnectionSettingsPage = lazy(() =>
 /* ============================================================================
  * Manager Gate
  * ========================================================================== */
+
+// Shown (instead of a blank screen or the first-run setup wizard) while a
+// Manager client that ALREADY has a saved server address waits for that server
+// — at launch, after a server restart, or after a Wi-Fi drop. The saved
+// address is never cleared or re-asked; retries happen automatically.
+function ConnectingScreen({ serverUrl, onRetry, onChangeServer }) {
+  return (
+    <div
+      dir="rtl"
+      style={{
+        position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', gap: 14,
+        background: 'var(--bg, #0b1220)', color: 'var(--text, #e2e8f0)', zIndex: 9999,
+      }}
+    >
+      <div style={{
+        width: 36, height: 36, borderRadius: '50%',
+        border: '3px solid rgba(148,163,184,0.25)', borderTopColor: '#3b82f6',
+        animation: 'spin 0.8s linear infinite',
+      }} />
+      <div style={{ fontSize: 14, fontWeight: 700 }}>جاري الاتصال بالخادم…</div>
+      {serverUrl && (
+        <div style={{ fontSize: 12, color: 'var(--text-3, #94a3b8)', direction: 'ltr' }}>{serverUrl}</div>
+      )}
+      {onRetry && (
+        <>
+          <div style={{ fontSize: 12, color: 'var(--text-3, #94a3b8)', textAlign: 'center', maxWidth: 340 }}>
+            الخادم غير متاح حاليًا. سيعيد البرنامج المحاولة تلقائيًا ويتصل فور عودته — لا حاجة لأي إجراء.
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button
+              onClick={onRetry}
+              style={{ padding: '7px 18px', borderRadius: 8, border: '1px solid #2563eb', background: '#1d4ed8', color: '#fff', fontSize: 12.5, cursor: 'pointer' }}
+            >
+              إعادة المحاولة الآن
+            </button>
+            <button
+              onClick={onChangeServer}
+              style={{ padding: '7px 18px', borderRadius: 8, border: '1px solid rgba(148,163,184,0.4)', background: 'transparent', color: 'inherit', fontSize: 12.5, cursor: 'pointer' }}
+            >
+              تغيير عنوان الخادم
+            </button>
+          </div>
+        </>
+      )}
+      <style>{'@keyframes spin { to { transform: rotate(360deg); } }'}</style>
+    </div>
+  );
+}
+
 function ManagerGate({ children }) {
   trace("ManagerGate render");
 
@@ -114,6 +164,9 @@ function ManagerGate({ children }) {
   const hydrated = useAuthStore((s) => s.hydrated);
   const authEnabled = useAuthStore((s) => s.authEnabled);
   const token = useAuthStore((s) => s.token);
+  const checkAuthRequired = useAuthStore((s) => s.checkAuthRequired);
+  const [probeAttempt, setProbeAttempt] = useState(0);
+  const [showWizard, setShowWizard] = useState(false);
 
   useEffect(() => {
     trace("ManagerGate effect", { isManager });
@@ -145,6 +198,20 @@ function ManagerGate({ children }) {
     hydrate();
   }, [connSettings, hydrate]);
 
+  // Server unreachable (authEnabled still unknown) with a saved address: keep
+  // probing in the background with a growing delay (2s → 15s cap) until it
+  // answers. Never touches the saved settings.
+  useEffect(() => {
+    if (!isManager || !hydrated || !connSettings?.serverUrl || authEnabled !== null) return;
+    let cancelled = false;
+    const delay = Math.min(2000 * Math.pow(1.5, probeAttempt), 15000);
+    const timer = setTimeout(async () => {
+      await checkAuthRequired();
+      if (!cancelled) setProbeAttempt((n) => n + 1);
+    }, delay);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [hydrated, connSettings, authEnabled, probeAttempt, checkAuthRequired]);
+
   if (!isManager) {
     trace("Server Edition");
     return children;
@@ -162,12 +229,19 @@ function ManagerGate({ children }) {
 
   if (!hydrated) {
     trace("Waiting for auth hydration...");
-    return null;
+    return <ConnectingScreen serverUrl={connSettings.serverUrl} />;
   }
 
   if (authEnabled === null) {
-    trace("Server unreachable");
-    return <ConnectionWizard />;
+    trace("Server unreachable — auto-retrying, saved address kept");
+    if (showWizard) return <ConnectionWizard initialUrl={connSettings.serverUrl} />;
+    return (
+      <ConnectingScreen
+        serverUrl={connSettings.serverUrl}
+        onRetry={() => { setProbeAttempt(0); checkAuthRequired(); }}
+        onChangeServer={() => setShowWizard(true)}
+      />
+    );
   }
 
   if (authEnabled === true && !token) {
@@ -301,10 +375,26 @@ function AppShellRoutes() {
 
     socket.on("company-settings:changed", onChanged);
 
+    // F-15: the fetch above can fail (server still starting / connection dropped)
+    // and nothing used to retry it, so the "company data" banner stayed on screen
+    // until a manual reload. The realtime link already tells us when the server
+    // is reachable again — refresh once on every transition INTO 'connected'
+    // (the first, immediate callback is the initial state and is skipped, the
+    // mount fetch covers it). No polling.
+    let prevStatus = null;
+    const unsubscribeStatus = subscribeConnectionStatus((status) => {
+      if (shouldRefetchOnStatus(prevStatus, status, useCompanySettingsStore.getState())) {
+        trace("Socket (re)connected - refreshing company settings");
+        fetchCompanySettings();
+      }
+      prevStatus = status;
+    });
+
     return () => {
       trace("Socket cleanup");
 
       socket.off("company-settings:changed", onChanged);
+      unsubscribeStatus();
     };
   }, [fetchCompanySettings]);
 
@@ -437,16 +527,14 @@ function AppShellRoutes() {
             }
           />
 
-          {!isManager && (
-            <Route
-              path="settings/connection"
-              element={
-                <ErrorBoundary>
-                  <ConnectionSettingsPage />
-                </ErrorBoundary>
-              }
-            />
-          )}
+          <Route
+            path="settings/connection"
+            element={
+              <ErrorBoundary>
+                <ConnectionSettingsPage />
+              </ErrorBoundary>
+            }
+          />
 
           <Route
   path="maintenance/cleanup"

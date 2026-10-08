@@ -37,8 +37,8 @@ export const DEFAULT_LATE_TIERS = [
 export const DEFAULT_EARLY_TIERS = [
   { fromTime: '13:00', toTime: '13:59', units: 4 },
   { fromTime: '14:00', toTime: '14:59', units: 3 },
-  { fromTime: '15:00', toTime: '15:50', units: 2 },
-  { fromTime: '15:51', toTime: '16:54', units: 1 },
+  { fromTime: '15:00', toTime: '15:49', units: 2 },
+  { fromTime: '15:50', toTime: '16:54', units: 1 },
   { fromTime: '16:55', toTime: '23:59', units: 0 },
 ];
 
@@ -49,7 +49,7 @@ const ALL_KEYS = [
   'late_rules', 'early_rules',
   'overtime_minimum', 'overtime_multiplier', 'overtime_cap_hours',
   'friday_ot_multiplier', 'holiday_ot_multiplier',
-  'weekend_days', 'friday_is_weekend', 'absence_deduct_days',
+  'weekend_days', 'friday_is_weekend',
 ];
 
 const DEFAULTS = {
@@ -61,7 +61,6 @@ const DEFAULTS = {
   overtime_cap_hours: '0', friday_ot_multiplier: '1.5',
   holiday_ot_multiplier: '1.5',
   weekend_days: '', friday_is_weekend: 'false',
-  absence_deduct_days: '1',
 };
 
 // ── Time-rule table editor ────────────────────────────────────────────────────
@@ -237,9 +236,10 @@ function Field({ label, hint, children, horizontal, ruleKey, ruleMap }) {
   );
 }
 
+// min={null} = no lower attribute (used for "must be greater than zero" fields, which HTML min cannot express).
 function NumInput({ value, onChange, min = 0, max = 100, step = 0.5, width = 100 }) {
   return (
-    <input type="number" min={min} max={max} step={step} value={value}
+    <input type="number" min={min ?? undefined} max={max} step={step} value={value}
       onChange={e => onChange(e.target.value)}
       className="input text-sm py-1.5" style={{ width }} />
   );
@@ -343,7 +343,15 @@ export default function AttendanceSettingsPage() {
       let saved = 0;
       const errs = [];
 
-      for (const key of ALL_KEYS) {
+      // D6/R1: every PUT is validated against the CURRENT saved rules. The saved late_rules must always cover
+      // work_start → 23:59, so when work_start moves EARLIER the (already-validated) late rules that start earlier
+      // are saved first; when it moves later or stays, work_start goes first. Never reordered otherwise.
+      const orderedKeys = [...ALL_KEYS];
+      if (String(toSave.work_start) < String(savedRef.current.work_start)) {
+        orderedKeys.splice(orderedKeys.indexOf('late_rules'), 1);
+        orderedKeys.splice(orderedKeys.indexOf('work_start'), 0, 'late_rules');
+      }
+      for (const key of orderedKeys) {
         const newVal = String(toSave[key] ?? '');
         if (newVal === String(savedRef.current[key] ?? '') && key !== 'late_rules' && key !== 'early_rules') continue;
 
@@ -354,7 +362,7 @@ export default function AttendanceSettingsPage() {
           } else {
             const { data: cr } = await api.post('/rules', {
               name: key, key,
-              category: ['overtime_multiplier','friday_ot_multiplier','holiday_ot_multiplier','overtime_minimum','overtime_cap_hours','absence_deduct_days'].includes(key) ? 'payroll' : 'attendance',
+              category: ['overtime_multiplier','friday_ot_multiplier','holiday_ot_multiplier','overtime_minimum','overtime_cap_hours'].includes(key) ? 'payroll' : 'attendance',
               type: (key.endsWith('_rules') || key === 'weekend_days') ? 'text' : (key.endsWith('_start') || key.endsWith('_end') || key === 'work_start' || key === 'work_end' || key.includes('window')) ? 'time' : 'number',
               value: newVal, isActive: true, changedByName: 'مدير النظام',
             });
@@ -501,7 +509,7 @@ export default function AttendanceSettingsPage() {
           badgeColor={ruleMap.late_rules?.isActive ? '#15803d' : '#1d4ed8'}>
           <div style={{ marginBottom: 12 }}>
             <Field label="دقائق السماح للتأخير" horizontal ruleKey="late_grace" ruleMap={ruleMap}>
-              <NumInput value={vals.late_grace} onChange={v => set('late_grace', v)} min={0} max={60} step={1} width={80} />
+              <NumInput value={vals.late_grace} onChange={v => set('late_grace', v)} min={0} max={480} step="any" width={80} />
               <span style={{ fontSize: 12, color: 'var(--text-3)' }}>دقيقة (الحضور خلالها لا يُعدّ تأخيراً)</span>
             </Field>
           </div>
@@ -512,7 +520,7 @@ export default function AttendanceSettingsPage() {
             label="قواعد التأخير"
           />
           <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'rgba(180,83,9,0.06)', border: '1px solid rgba(180,83,9,0.15)', fontSize: 11.5, color: 'var(--text-3)' }}>
-            <strong style={{ color: 'var(--text-2)' }}>ملاحظة:</strong> هذه الأوقات مطلقة (وقت الحضور الفعلي). كل شريحة تحدد ساعات الخصم المقابلة.
+            <strong style={{ color: 'var(--text-2)' }}>ملاحظة:</strong> هذه الأوقات مطلقة (وقت الحضور الفعلي). كل شريحة تحدد ساعات الخصم المقابلة. يجب أن تغطي القواعد كل الوقت من بداية الدوام حتى 23:59 بلا فجوات.
           </div>
         </Card>
 
@@ -523,7 +531,7 @@ export default function AttendanceSettingsPage() {
           badgeColor={ruleMap.early_rules?.isActive ? '#15803d' : '#1d4ed8'}>
           <div style={{ marginBottom: 12 }}>
             <Field label="دقائق السماح للانصراف المبكر" horizontal ruleKey="early_leave_grace" ruleMap={ruleMap}>
-              <NumInput value={vals.early_leave_grace} onChange={v => set('early_leave_grace', v)} min={0} max={60} step={1} width={80} />
+              <NumInput value={vals.early_leave_grace} onChange={v => set('early_leave_grace', v)} min={0} max={480} step="any" width={80} />
               <span style={{ fontSize: 12, color: 'var(--text-3)' }}>دقيقة</span>
             </Field>
           </div>
@@ -541,20 +549,20 @@ export default function AttendanceSettingsPage() {
         {/* ── 4. Overtime ──────────────────────────────────────────────── */}
         <Card title="قواعد الإضافي" icon={TrendingUp} accent="#6d28d9" subtitle="الحد الأدنى والمضاعفات">
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 16px' }}>
-            <Field label="الحد الأدنى للإضافي (دقيقة)" hint="لا تُحسب ساعات إضافية دون هذا الحد" ruleKey="overtime_minimum" ruleMap={ruleMap}>
-              <NumInput value={vals.overtime_minimum} onChange={v => set('overtime_minimum', v)} min={0} max={120} step={1} width={90} />
+            <Field label="الحد الأدنى للإضافي (دقيقة)" hint="لا تُحسب ساعات إضافية دون هذا الحد. في أيام العمل يُقارَن بالإضافي بعد تقريبه لساعات كاملة (الساعة = 60 دقيقة)، وفي الإجازات الأسبوعية والرسمية يُقارَن بدقائق العمل الفعلية في اليوم" ruleKey="overtime_minimum" ruleMap={ruleMap}>
+              <NumInput value={vals.overtime_minimum} onChange={v => set('overtime_minimum', v)} min={0} max={1440} step="any" width={90} />
             </Field>
-            <Field label="مضاعف الإضافي" hint="1.5 = مرة ونصف الأجر الساعي" ruleKey="overtime_multiplier" ruleMap={ruleMap}>
-              <NumInput value={vals.overtime_multiplier} onChange={v => set('overtime_multiplier', v)} min={1} max={3} step={0.1} width={90} />
+            <Field label="مضاعف الإضافي" hint="1.5 = مرة ونصف الأجر الساعي — يجب أن يكون أكبر من صفر" ruleKey="overtime_multiplier" ruleMap={ruleMap}>
+              <NumInput value={vals.overtime_multiplier} onChange={v => set('overtime_multiplier', v)} min={null} max={10} step="any" width={90} />
             </Field>
             <Field label="الحد الأقصى اليومي للإضافي (ساعة)" hint="0 = بلا حد" ruleKey="overtime_cap_hours" ruleMap={ruleMap}>
-              <NumInput value={vals.overtime_cap_hours} onChange={v => set('overtime_cap_hours', v)} min={0} max={12} step={0.5} width={90} />
+              <NumInput value={vals.overtime_cap_hours} onChange={v => set('overtime_cap_hours', v)} min={0} max={24} step="any" width={90} />
             </Field>
             <Field label="مضاعف إضافي الجمعة" ruleKey="friday_ot_multiplier" ruleMap={ruleMap}>
-              <NumInput value={vals.friday_ot_multiplier} onChange={v => set('friday_ot_multiplier', v)} min={1} max={3} step={0.1} width={90} />
+              <NumInput value={vals.friday_ot_multiplier} onChange={v => set('friday_ot_multiplier', v)} min={null} max={10} step="any" width={90} />
             </Field>
             <Field label="مضاعف إضافي الإجازات الرسمية" ruleKey="holiday_ot_multiplier" ruleMap={ruleMap}>
-              <NumInput value={vals.holiday_ot_multiplier} onChange={v => set('holiday_ot_multiplier', v)} min={1} max={3} step={0.1} width={90} />
+              <NumInput value={vals.holiday_ot_multiplier} onChange={v => set('holiday_ot_multiplier', v)} min={null} max={10} step="any" width={90} />
             </Field>
           </div>
         </Card>
@@ -582,9 +590,6 @@ export default function AttendanceSettingsPage() {
         {/* ── 6. Absence ───────────────────────────────────────────────── */}
         <Card title="قواعد الغياب" icon={UserX} accent="#dc2626" subtitle="أيام الخصم حسب نوع الغياب">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <Field label="أيام الخصم الافتراضية للغياب" ruleKey="absence_deduct_days" ruleMap={ruleMap}>
-              <NumInput value={vals.absence_deduct_days} onChange={v => set('absence_deduct_days', v)} min={1} max={5} step={0.5} width={90} />
-            </Field>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
               {[
                 { label: 'غياب بإذن', days: '1 يوم', color: '#15803d', bg: 'rgba(22,163,74,0.08)' },
@@ -599,7 +604,7 @@ export default function AttendanceSettingsPage() {
             </div>
             <p style={{ fontSize: 11.5, color: 'var(--text-3)', display: 'flex', alignItems: 'flex-start', gap: 6, margin: 0 }}>
               <Info style={{ width: 12, height: 12, flexShrink: 0, marginTop: 2, color: 'var(--accent)' }} />
-              نوع الغياب يُضبط من شاشة الحضور اليومي أو الشهري مباشرة على كل سجل غياب.
+              اليوم بلا بصمة ولم يُحدَّد نوع غيابه يُحتسب تلقائياً «غياب بإذن» بخصم يوم واحد ثابت. ولتغيير النوع أو عدد الأيام اضبطه من شاشة الحضور اليومي أو الشهري على سجل الغياب نفسه.
             </p>
           </div>
         </Card>

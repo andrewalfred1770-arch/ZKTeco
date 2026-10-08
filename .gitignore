@@ -78,3 +78,11 @@ backend/exports/*
 # clone/CI checkout never ships someone's real uploaded branding by accident.
 backend/uploads/company/*
 !backend/uploads/company/.gitkeep
+
+# ─── Release hygiene: generated / local-only (10.0.1) ─────────────────────────
+# electron-builder output of the Manager edition (electron-builder.manager.json)
+dist-electron-manager/
+# local preview tooling + editor launch configs (absolute local paths)
+tools/
+.claude/launch.json
+frontend/.claude/launch.json

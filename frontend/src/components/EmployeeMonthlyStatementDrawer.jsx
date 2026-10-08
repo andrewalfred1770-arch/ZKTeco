@@ -71,12 +71,16 @@ export default function EmployeeMonthlyStatementDrawer({ employeeId, employeeNam
   const [printOpen, setPrintOpen] = useState(false); // Phase 20.4
 
   useEffect(() => {
-    if (!open || !employeeId) return;
+    if (!open || !employeeId) return undefined;
+    // A response for a previous employee/month (or a previous open) must not land on
+    // the one being shown now.
+    let cancelled = false;
     setLoading(true);
     api.get('/attendance/monthly-detail', { params: { month, year, employeeId } })
-      .then((r) => setRows(Array.isArray(r.data) ? r.data : []))
-      .catch(() => setRows([]))
-      .finally(() => setLoading(false));
+      .then((r) => { if (!cancelled) setRows(Array.isArray(r.data) ? r.data : []); })
+      .catch(() => { if (!cancelled) setRows([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [open, employeeId, month, year]);
 
   // Summary counts — reuse the SAME classifiers used for row color, so the

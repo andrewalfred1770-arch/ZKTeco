@@ -3,14 +3,16 @@ const { sendError } = require('../utils/apiError');
 const moment = require('moment');
 const { getPrisma } = require('../utils/prisma');
 const { authenticate, authorize } = require('../middleware/auth');
-const { calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, withPayrollKeyLock, calculatePayrollImpl, filterProtectedPayrollTargets } = require('../engines/payrollEngine');
+const { calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, withPayrollKeyLock, calculatePayrollImpl, filterProtectedPayrollTargets, syncStoredPayroll, payrollSnapshotDiffers } = require('../engines/payrollEngine');
 const { mergeEffectivePenalty } = require('../engines/attendanceEngine');
-const { getRules, getRulesBatch } = require('../engines/rulesEngine');
+const { getRules, getRulesBatch, isRuleTrue } = require('../engines/rulesEngine');
 const { writeAudit } = require('../utils/manualEditAudit');
 const { monthRange } = require('../utils/monthRange');
-const { parseMoney } = require('../utils/numeric');
+const { parseMoney, hasMoneyPrecision } = require('../utils/numeric');
 const { MONTHS_AR } = require('../utils/constants');
 const { pLimit } = require('../utils/pLimit');
+const { modifier } = require('../utils/auditActor');
+const { parsePeriod } = require('../utils/period');
 
 const prisma = getPrisma();
 router.use(authenticate, authorize('admin', 'hr'));
@@ -41,8 +43,10 @@ const payrollLimit = pLimit(PAYROLL_COMPUTE_CONCURRENCY);
 router.get('/', async (req, res) => {
   try {
     const { month, year, branchId, departmentId, employeeId } = req.query;
-    const m = parseInt(month) || new Date().getMonth() + 1;
-    const y = parseInt(year) || new Date().getFullYear();
+    const per = parsePeriod(month, year);
+    if (per.error) return res.status(400).json({ error: per.error, code: per.code });
+    const m = per.m;
+    const y = per.y;
 
     const employeeFilter = {};
     if (branchId)     employeeFilter.branchId     = parseInt(branchId);
@@ -73,7 +77,7 @@ router.get('/', async (req, res) => {
     // eligibility filtering at all (pre-Phase-20.5 raw behavior) — the
     // policy is off, not silently replaced by hardcoded logic here.
     const rules = await getRules();
-    const stoppedEmployeeFilterEnabled = rules['exclude_stopped_employees_from_payroll'] === 'true';
+    const stoppedEmployeeFilterEnabled = isRuleTrue(rules['exclude_stopped_employees_from_payroll']);
 
     let eligiblePayrolls = payrolls;
     if (stoppedEmployeeFilterEnabled) {
@@ -160,7 +164,7 @@ router.get('/', async (req, res) => {
           payrollLimit(() => prisma.employee.findMany({ where: { id: { in: empIds } } })),
           payrollLimit(() => prisma.attendanceDaily.findMany({ where: { employeeId: { in: empIds }, date: { gte: mStart, lte: mEnd } } })),
           payrollLimit(() => prisma.attendanceAdjustment.findMany({ where: { employeeId: { in: empIds }, date: { gte: mStart, lte: mEnd }, approvalStatus: 'approved' } })),
-          payrollLimit(() => prisma.payroll.findMany({ where: { employeeId: { in: empIds }, month: m, year: y }, select: { employeeId: true, bonus: true, manualDeductionAdjustment: true } })),
+          payrollLimit(() => prisma.payroll.findMany({ where: { employeeId: { in: empIds }, month: m, year: y }, select: { employeeId: true, manualDeductionAdjustment: true } })),
           payrollLimit(() => prisma.advance.findMany({ where: { employeeId: { in: empIds }, month: m, year: y } })),
         ])
       : [[], [], [], [], []];
@@ -214,7 +218,6 @@ router.get('/', async (req, res) => {
         // Overlaid fresh here for the same staleness reason as the other computed
         // fields above (EF-017) — the stored row can lag behind live attendance.
         penaltyUnits: c.penaltyUnits,
-        bonus: c.bonus,
         advances: c.advances,
         manualDeductionAdjustment: c.manualDeductionAdjustment,
         deductions: c.deductions,
@@ -226,6 +229,15 @@ router.get('/', async (req, res) => {
       };
     });
     res.json(result);
+
+    // F-01: best-effort write-through AFTER the response — rows whose stored
+    // snapshot lags the fresh figures just shown are re-synced (each recomputes
+    // under its own payroll lock, so a concurrent edit can never be overwritten).
+    const stale = eligiblePayrolls.filter((p, i) => payrollSnapshotDiffers(p, fresh[i]));
+    if (stale.length) {
+      Promise.all(stale.map(p => payrollLimit(() => syncStoredPayroll(p.employeeId, p.month, p.year))))
+        .catch(e => console.error('[PAYROLL-SYNC] background sync failed:', e && e.message));
+    }
   } catch (err) {
     sendError(res, err);
   }
@@ -236,17 +248,16 @@ router.get('/:employeeId', async (req, res, next) => {
   if (isNaN(parseInt(req.params.employeeId))) return next();
   try {
     const { month, year } = req.query;
-    const m = parseInt(month) || new Date().getMonth() + 1;
-    const y = parseInt(year) || new Date().getFullYear();
+    const per = parsePeriod(month, year);
+    if (per.error) return res.status(400).json({ error: per.error, code: per.code });
+    const m = per.m;
+    const y = per.y;
 
+    const employeeId = parseInt(req.params.employeeId);
+    // F-01: never serve a stale snapshot — re-sync it with the canonical computation first.
+    await syncStoredPayroll(employeeId, m, y);
     const payroll = await prisma.payroll.findUnique({
-      where: {
-        employeeId_month_year: {
-          employeeId: parseInt(req.params.employeeId),
-          month: m,
-          year: y,
-        },
-      },
+      where: { employeeId_month_year: { employeeId, month: m, year: y } },
       include: { employee: true },
     });
 
@@ -260,8 +271,10 @@ router.get('/:employeeId', async (req, res, next) => {
 router.post('/calculate', async (req, res) => {
   try {
     const { month, year, branchId, employeeId } = req.body;
-    const m = parseInt(month) || new Date().getMonth() + 1;
-    const y = parseInt(year) || new Date().getFullYear();
+    const per = parsePeriod(month, year);
+    if (per.error) return res.status(400).json({ error: per.error, code: per.code });
+    const m = per.m;
+    const y = per.y;
 
     if (employeeId) {
       // C1: this button has no confirmation flow — a finalized/paid month
@@ -285,34 +298,32 @@ router.post('/calculate', async (req, res) => {
   }
 });
 
-// Manual payroll adjustments — `bonus` and `manualDeductionAdjustment` are
-// HR-entered amounts preserved across every `calculatePayroll` recalc (read
-// back from the existing row, like `bonus` always was). Raw `deductions` and
+// Manual payroll adjustments — `manualDeductionAdjustment` is an
+// HR-entered amount preserved across every `calculatePayroll` recalc (read
+// back from the existing row). Raw `deductions` and
 // `advances` are NOT writable here — both are fully derived by the engine
 // (advances come from the Advance table). After persisting, `calculatePayroll`
 // recomputes `deductions`/`netSalary` consistently and logs [PAYROLL-RECALC].
 router.put('/:id', async (req, res) => {
   try {
-    const { basicSalary, bonus, manualDeductionAdjustment, notes, status, reason, modifiedBy, modifiedByName, modifiedByRole } = req.body;
+    const { basicSalary, manualDeductionAdjustment, notes, status, reason } = req.body;
+    const { modifiedBy, modifiedByName, modifiedByRole } = modifier(req);
     const payroll = await prisma.payroll.findUnique({ where: { id: parseInt(req.params.id) } });
     if (!payroll) return res.status(404).json({ error: 'Payroll not found' });
 
-    const before = { ...payroll };
 
-    // EF-007.4: `parseFloat(x) || 0` let a negative value (truthy) through —
-    // a negative bonus silently reduces totalEarnings with no deduction
-    // audit trail; same class of bug the basicSalary check below already guards.
+    // This system has no bonus component: reject it explicitly rather than
+    // silently accepting a field that would otherwise look like it worked.
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'bonus')) {
+      return res.status(400).json({ error: 'حقل المكافأة غير مدعوم' });
+    }
     // Strict parse (utils/numeric.js): parseFloat("12abc") === 12 and
     // parseFloat("0x10") === 0 would store a different amount than was typed.
-    if (bonus !== undefined && parseMoney(bonus) === null) {
-      return res.status(400).json({ error: 'قيمة المكافأة يجب أن تكون رقمًا موجبًا' });
-    }
     if (manualDeductionAdjustment !== undefined && parseMoney(manualDeductionAdjustment) === null) {
       return res.status(400).json({ error: 'قيمة الخصم الإضافي يجب أن تكون رقمًا موجبًا' });
     }
 
     const data = {};
-    if (bonus !== undefined) data.bonus = parseMoney(bonus);
     if (manualDeductionAdjustment !== undefined) data.manualDeductionAdjustment = parseMoney(manualDeductionAdjustment);
     if (notes !== undefined) data.notes = notes;
     if (status !== undefined) data.status = status;
@@ -346,9 +357,19 @@ router.put('/:id', async (req, res) => {
     let updated;
     await withPayrollKeyLock(payroll.employeeId, payroll.month, payroll.year, async () => {
       await prisma.$transaction(async (tx) => {
+        // F-07: the audit "old" values must be the row as it is committed RIGHT NOW, not
+        // the snapshot read at the top of this request (which can predate an edit that
+        // finished while this request was waiting for the payroll lock). Lock the row, then
+        // read it, inside the same transaction that applies and audits the change.
+        await tx.$queryRaw`SELECT id FROM payrolls WHERE id = ${payroll.id} FOR UPDATE`;
+        const before = await tx.payroll.findUnique({ where: { id: payroll.id } });
+        if (!before) { const e = new Error('Payroll not found'); e.statusCode = 404; throw e; }
         if (newSalary !== null) {
-          const emp = await tx.employee.findUnique({ where: { id: payroll.employeeId }, select: { salary: true } });
-          salaryBefore = emp?.salary ?? null;
+          // F-05/F-07: lock the employee row, THEN read the committed salary — a concurrent salary
+          // edit (other month's payroll row, or the Employees page) cannot slip in between the
+          // read and the write, so the audit old value is always the real previous value.
+          const rows = await tx.$queryRaw`SELECT salary FROM employees WHERE id = ${payroll.employeeId} FOR UPDATE`;
+          salaryBefore = rows.length ? rows[0].salary : null;
           salaryAfter = newSalary;
           await tx.employee.update({ where: { id: payroll.employeeId }, data: { salary: newSalary } });
         }
@@ -361,7 +382,7 @@ router.put('/:id', async (req, res) => {
 
         updated = await tx.payroll.findUnique({ where: { id: payroll.id }, include: { employee: true } });
 
-        for (const field of ['bonus', 'manualDeductionAdjustment', 'notes', 'status']) {
+        for (const field of ['manualDeductionAdjustment', 'notes', 'status']) {
           const oldVal = before[field];
           const newVal = updated[field];
           if (String(oldVal ?? '') !== String(newVal ?? '')) {
@@ -380,7 +401,7 @@ router.put('/:id', async (req, res) => {
 
         // basicSalary lives on the employee record, so audit it from the
         // salary before/after captured above (not from the payroll row diff).
-        if (salaryBefore !== null && String(salaryBefore) !== String(salaryAfter)) {
+        if (salaryBefore !== null && Number(salaryBefore) !== Number(salaryAfter)) {
           await writeAudit({
             employeeId: payroll.employeeId,
             payrollId: payroll.id,
@@ -406,12 +427,22 @@ router.put('/:id', async (req, res) => {
 // the cell treats the new value as the *desired total*: we create a single
 // delta `Advance` record (positive or negative) so the engine recalculates
 // `advances`/`netSalary` exactly like a normal advance entry, with the same
-// audit trail as bonus/manualDeductionAdjustment.
+// audit trail as manualDeductionAdjustment.
+// F-11: a delta advance created from the Payroll grid is dated today when today is
+// inside the payroll month, otherwise the last day of that month — never a date
+// that belongs to a different period than the month/year it is charged to.
+function advanceDateInPayrollMonth(month, year) {
+  const now = new Date();
+  if (now.getFullYear() === year && now.getMonth() + 1 === month) return now;
+  return new Date(Date.UTC(year, month, 0));
+}
 router.put('/:id/advances', async (req, res) => {
   try {
-    const { amount, reason, modifiedBy, modifiedByName, modifiedByRole } = req.body;
+    const { amount, reason } = req.body;
+    const { modifiedBy, modifiedByName, modifiedByRole } = modifier(req);
     const newTotal = parseMoney(amount);
     if (newTotal === null) return res.status(400).json({ error: 'قيمة السلف غير صالحة' });
+    if (!hasMoneyPrecision(newTotal)) return res.status(400).json({ error: 'قيمة السلف يجب ألا تتجاوز خانتين عشريتين', code: 'ADVANCE_PRECISION' });
 
     const payroll = await prisma.payroll.findUnique({ where: { id: parseInt(req.params.id) } });
     if (!payroll) return res.status(404).json({ error: 'Payroll not found' });
@@ -435,25 +466,13 @@ router.put('/:id/advances', async (req, res) => {
       currentTotal = existingAdvances.reduce((s, a) => s + a.amount, 0);
       delta = parseFloat((newTotal - currentTotal).toFixed(2));
 
-      if (delta > 0) {
-        const employee = await prisma.employee.findUnique({ where: { id: employeeId } });
-        const rules = await getRules(employee.branchId, employee.departmentId, employee.id);
-        const maxPercent = parseFloat(rules.advance_max_percent || '0');
-        if (maxPercent > 0) {
-          const maxAllowed = (employee.salary || 0) * (maxPercent / 100);
-          if (newTotal > maxAllowed) {
-            const err = new Error(`إجمالي السلف (${newTotal.toFixed(2)}) يتجاوز الحد الأقصى المسموح (${maxAllowed.toFixed(2)} = ${maxPercent}% من الراتب الأساسي)`);
-            err.statusCode = 400;
-            throw err;
-          }
-        }
-      }
+      // F-04: no business limit on advances — the total is whatever the user enters.
 
       await prisma.$transaction(async (tx) => {
         if (delta !== 0) {
           await tx.advance.create({
             data: {
-              employeeId, month, year, amount: delta, date: new Date(),
+              employeeId, month, year, amount: delta, date: advanceDateInPayrollMonth(month, year),
               reason: reason || 'تعديل يدوي من شاشة المرتبات', status: 'approved',
             },
           });
@@ -503,8 +522,10 @@ router.get('/final-sheet', async (req, res) => {
     if (!employeeId || !month || !year) {
       return res.status(400).json({ error: 'employeeId, month, year required' });
     }
-    const m = parseInt(month);
-    const y = parseInt(year);
+    const per = parsePeriod(month, year);
+    if (per.error) return res.status(400).json({ error: per.error, code: per.code });
+    const m = per.m;
+    const y = per.y;
     const eId = parseInt(employeeId);
 
     // EF-008 Phase 2: now the literal same implementation as
@@ -607,7 +628,9 @@ router.get('/final-sheet', async (req, res) => {
     // recomputed) disagree with the persisted `Payroll.netSalary` (always
     // read verbatim) in the very same response — proved via a full production
     // scan across all 2,536 Payroll rows during the HIGH#1 investigation.
-    const computed = await computePayroll(eId, m, y);
+    // F-01: compute once AND bring the stored Payroll row in line with that
+    // same result (no-op when equal; never changes status; never creates a row).
+    const { computed } = await syncStoredPayroll(eId, m, y);
 
     const dailyRate  = computed.dailyRate;
     const hourlyRate = computed.hourlyRate;
@@ -641,8 +664,7 @@ router.get('/final-sheet', async (req, res) => {
     const morningOTAmt   = computed.morningOTAmount;
     const eveningOTAmt   = computed.eveningOTAmount;
     const overtimeAmount = computed.overtimeAmount;
-    const bonus          = computed.bonus;
-    const totalEarnings  = parseFloat((basicSalary + overtimeAmount + bonus).toFixed(2));
+    const totalEarnings  = parseFloat((basicSalary + overtimeAmount).toFixed(2));
 
     const totalAbsencePenaltyDays = computed.totalAbsencePenaltyDays;
     const absentDeduct   = computed.absentAmount;
@@ -682,7 +704,6 @@ router.get('/final-sheet', async (req, res) => {
         morningOT:     { hours: morningOT, amount: morningOTAmt },
         eveningOT:     { hours: eveningOT, amount: eveningOTAmt },
         overtimeAmount,
-        bonus,
         total:         totalEarnings,
       },
       deductions: {
@@ -709,8 +730,10 @@ router.get('/final-sheet', async (req, res) => {
 router.get('/final-sheet/bulk', async (req, res) => {
   try {
     const { month, year, branchId } = req.query;
-    const m = parseInt(month) || new Date().getMonth() + 1;
-    const y = parseInt(year)  || new Date().getFullYear();
+    const per = parsePeriod(month, year);
+    if (per.error) return res.status(400).json({ error: per.error, code: per.code });
+    const m = per.m;
+    const y = per.y;
 
     const empWhere = { status: true };
     if (branchId) empWhere.branchId = parseInt(branchId);

@@ -1,4 +1,0 @@
-provider: generic
-url: https://updates.petshrow.local/erp-manager/
-channel: latest
-updaterCacheDirName: petshrow-erp-manager-updater

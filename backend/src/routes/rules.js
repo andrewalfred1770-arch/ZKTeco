@@ -10,6 +10,7 @@ const router = require('express').Router();
 const { sendError, numericIdParam } = require('../utils/apiError');
 router.param('id', numericIdParam);
 const { getPrisma } = require('../utils/prisma');
+const { resolveActor } = require('../utils/auditActor');
 const moment = require('moment');
 const { authenticate, authorize } = require('../middleware/auth');
 const ruleStore = require('../services/ruleStore');
@@ -35,6 +36,23 @@ function ruleChanged(io, { keys, action, scope }) {
     io,
     `تعديل قاعدة: ${keys.join('، ')}${affects.length ? ` — يؤثر على: ${affects.join('، ')}` : ''}`,
   );
+}
+
+// D1 (approved): ALL rules are global — there is no branch / department / employee scope. The API
+// contract is explicit: a request that names a scope is rejected with a clear error (never silently
+// converted to global). Omitted / empty / 'all' are the only accepted forms.
+const GLOBAL_ONLY_ERROR = 'القواعد عامة لجميع الموظفين — لا يوجد نطاق (فرع / إدارة / موظف). appliesTo يجب أن تكون "all" فقط';
+function scopeViolation(body) {
+  if (!body) return null;
+  const a = body.appliesTo;
+  if (a != null && a !== '' && a !== 'all') return GLOBAL_ONLY_ERROR;
+  if (body.conditionJson) {
+    try {
+      const c = typeof body.conditionJson === 'string' ? JSON.parse(body.conditionJson) : body.conditionJson;
+      if (c && (c.branchId || c.departmentId || c.employeeId)) return GLOBAL_ONLY_ERROR;
+    } catch { /* not a scoping condition */ }
+  }
+  return null;
 }
 
 /** Resolve {branchId/departmentId/employeeId} from a rule's `appliesTo` + `conditionJson`, when present. */
@@ -85,7 +103,7 @@ const EDITABLE = ['name', 'category', 'type', 'value', 'unit', 'priority', 'isAc
 // reject creation even via a direct API call, not just via the (already
 // updated) UI dropdown.
 const REMOVED_RULE_TYPES = ['condition'];
-const actor = (req) => (req.body && req.body.changedByName) || 'النظام';
+const actor = (req) => resolveActor(req, { name: req.body && req.body.changedByName }, { name: 'النظام' }).name;
 
 async function audit(ruleId, ruleKey, action, fieldName, oldValue, newValue, changedByName) {
   await prisma.ruleAudit.create({
@@ -141,6 +159,8 @@ router.post('/', async (req, res) => {
   try {
     const { name, key, category, type, value, unit, priority, isActive, appliesTo, conditionJson, description } = req.body;
     if (!name || !key || !category) return res.status(400).json({ error: 'name, key, category required' });
+    const createScopeError = scopeViolation(req.body);
+    if (createScopeError) return res.status(400).json({ error: createScopeError });
     if (type && REMOVED_RULE_TYPES.includes(type)) {
       return res.status(400).json({ error: `نوع القاعدة 'شرط' لم يعد مدعوماً` });
     }
@@ -190,6 +210,9 @@ router.put('/:id', async (req, res) => {
     const id = parseInt(req.params.id);
     const existing = await prisma.rule.findUnique({ where: { id } });
     if (!existing) return res.status(404).json({ error: 'Rule not found' });
+
+    const updateScopeError = scopeViolation(req.body);
+    if (updateScopeError) return res.status(400).json({ error: updateScopeError });
 
     if (req.body.type && REMOVED_RULE_TYPES.includes(req.body.type)) {
       return res.status(400).json({ error: `نوع القاعدة 'شرط' لم يعد مدعوماً` });
@@ -253,6 +276,16 @@ router.patch('/:id/toggle', async (req, res) => {
     const id = parseInt(req.params.id);
     const existing = await prisma.rule.findUnique({ where: { id } });
     if (!existing) return res.status(404).json({ error: 'Rule not found' });
+    // E12: enabling a rule makes its STORED value live in the engines, so it passes the same
+    // reject-and-explain gate as a PUT (an empty value is the "use the engine default" form and,
+    // like in POST, is not validated). Disabling never needs validation.
+    if (!existing.isActive && existing.value != null && existing.value !== '') {
+      const allRules = await prisma.rule.findMany({ select: { key: true, value: true, isActive: true } });
+      const violations = validateRuleValue(existing, existing.value, allRules);
+      if (violations.length) {
+        return res.status(400).json({ error: violations.join('\n'), violations });
+      }
+    }
     const updated = await prisma.rule.update({ where: { id }, data: { isActive: !existing.isActive } });
     await audit(id, existing.key, updated.isActive ? 'enabled' : 'disabled', 'isActive', existing.isActive, updated.isActive, actor(req));
     ruleChanged(req.io, { keys: [updated.key], action: updated.isActive ? 'enabled' : 'disabled', scope: scopeFromRule(updated) });

@@ -26,6 +26,7 @@ import PrintPreviewModal from '../components/PrintPreviewModal';
 import TimeCellEditor from '../components/grid/TimeCellEditor';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
+import { useStaleGuard, keepCurrentRows, mergeEmployeeRows } from '../lib/staleGuard';
 import AbsenceTypeModal, { ABSENCE_TYPE_LABELS } from '../components/AbsenceTypeModal';
 import AttendanceFilterBar from '../components/AttendanceFilterBar';
 import { useAttendanceFilter } from '../hooks/useAttendanceFilter';
@@ -70,6 +71,10 @@ export default function AttendanceMonthlyPage() {
   // sibling field on the same row is still saving can be merged instead of
   // clobbering the whole row (see applyRowFieldUpdate in attendanceUtils.js).
   const savingCellsRef = useRef(new Set());
+  // Stale-response protection (see lib/staleGuard.js): an older GET must never
+  // overwrite the month/department the user switched to, or a row saved since.
+  const screenKey = `${month}|${year}|${deptId}`;
+  const guard = useStaleGuard(screenKey);
 
   // ── Filter system ─────────────────────────────────────────────────────────
   const {
@@ -305,13 +310,20 @@ export default function AttendanceMonthlyPage() {
   // button / Ctrl+Shift+R) — either can replace rowData mid-edit otherwise.
   const load = useCallback(async (showLoading = false) => {
     if (editCountRef.current > 0) { pendingReloadRef.current = true; return; }
+    const t = guard.start(screenKey);
     if (showLoading) setLoading(true);
     try {
       const params = { month, year };
       if (deptId) params.departmentId = deptId;
       const { data } = await api.get('/attendance/monthly-detail', { params });
-      setRows(data);
-    } catch { toast.error('تعذر تحميل بيانات الحضور الشهري'); }
+      // Dropped when the month/department changed meanwhile, or a later load already applied.
+      if (!guard.accept(t)) return;
+      // Rows saved (or being edited) after this request started keep their newer version.
+      const keep = guard.claim(data, t);
+      setRows(prev => keepCurrentRows(prev, data, keep));
+    } catch {
+      if (guard.keyMatches(t)) toast.error('تعذر تحميل بيانات الحضور الشهري');
+    }
     finally { if (showLoading) setLoading(false); }
   }, [month, year, deptId]);
 
@@ -323,16 +335,21 @@ export default function AttendanceMonthlyPage() {
   // that employee's complete current-month row set, not a partial patch.
   const loadOne = useCallback(async (employeeIds) => {
     try {
+      const t = guard.startOne(screenKey);
       const params = { month, year };
       if (deptId) params.departmentId = deptId;
       const fetched = await Promise.all(employeeIds.map(id =>
-        api.get('/attendance/monthly-detail', { params: { ...params, employeeId: id } }).then(r => r.data).catch(() => [])
+        api.get('/attendance/monthly-detail', { params: { ...params, employeeId: id } })
+          .then(r => ({ employeeId: id, rows: Array.isArray(r.data) ? r.data : null }))
+          // A failed refresh must NOT remove that employee's rows from the screen
+          // (it used to resolve to [] and wipe them): leave them untouched instead.
+          .catch(() => ({ employeeId: id, rows: null }))
       ));
-      setRows(rs => {
-        const touchedIds = new Set(employeeIds);
-        const kept = rs.filter(r => !touchedIds.has(r.employeeId));
-        return [...kept, ...fetched.flat()];
-      });
+      if (!guard.keyMatches(t)) return;                       // month/department changed meanwhile
+      const ok = fetched.filter(f => f.rows);
+      if (!ok.length) return;
+      const keep = guard.claim(ok.flatMap(f => f.rows), t);
+      setRows(rs => mergeEmployeeRows(rs, ok, keep));
     } catch { /* silent — next full reload (rules/device event) will catch up */ }
   }, [month, year, deptId]);
 
@@ -424,6 +441,7 @@ export default function AttendanceMonthlyPage() {
 
     // Save primary row — block background reloads for the duration of the PUT
     editCountRef.current++;
+    guard.beginEdit([data.id]);
     const rowKey = `${data.id}:${field}`;
     savingCellsRef.current.add(rowKey);
     let primaryOk = false;
@@ -439,6 +457,7 @@ export default function AttendanceMonthlyPage() {
         const hasOtherFieldsInFlight = Array.from(savingCellsRef.current)
           .some(k => k.startsWith(rowKeyPrefix) && k !== rowKey);
         if (hasOtherFieldsInFlight) pendingReloadRef.current = true;
+        guard.markFresh([data.id]);   // the PUT result is now the newest data for this row
         setRows(rs => applyRowFieldUpdate(rs, updated, field, hasOtherFieldsInFlight));
         primaryOk = true;
         if (field === 'status' && newValue === 'absent') {
@@ -456,11 +475,13 @@ export default function AttendanceMonthlyPage() {
       toast.error(err?.response?.data?.error || 'فشل التحديث');
       node.setDataValue(field, oldValue);
       savingCellsRef.current.delete(rowKey);
+      guard.endEdit([data.id]);
       editCountRef.current--;
       if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }
       return;
     }
     savingCellsRef.current.delete(rowKey);
+    guard.endEdit([data.id]);
     editCountRef.current--;
     if (!primaryOk) return;
 
@@ -474,16 +495,19 @@ export default function AttendanceMonthlyPage() {
     }
 
     editCountRef.current += otherNodes.length;
+    guard.beginEdit(otherNodes.map(n => n.data.id));
     let bulkCount = 1;
     await Promise.all(otherNodes.map(async n => {
       try {
         const updated = await saveRecord(n.data, field, newValue);
         if (updated) {
+          guard.markFresh([n.data.id]);
           setRows(rs => replaceAttendanceRow(rs, updated));
           bulkCount++;
         }
       } catch {}
       finally {
+        guard.endEdit([n.data.id]);
         editCountRef.current--;
         if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }
       }
@@ -494,17 +518,20 @@ export default function AttendanceMonthlyPage() {
   const handleAbsenceSave = useCallback(async ({ absenceType, penaltyDays, absenceReason }) => {
     if (!absenceModal?.id) return;
     editCountRef.current++;
+    guard.beginEdit([absenceModal.id]);
     setAbsenceSaving(true);
     try {
       const { data: updated } = await api.put(`/attendance/${absenceModal.id}/absence-type`, {
         absenceType, penaltyDays, absenceReason, modifiedByName: ACTOR,
       });
+      guard.markFresh([absenceModal.id]);
       setRows(rs => replaceAttendanceRow(rs, updated));
       toast.success('تم تحديث نوع الغياب');
       setAbsenceModal(null);
     } catch (err) {
       toast.error(err?.response?.data?.error || 'فشل تحديث نوع الغياب');
     } finally {
+      guard.endEdit([absenceModal.id]);
       editCountRef.current--;
       setAbsenceSaving(false);
       if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }

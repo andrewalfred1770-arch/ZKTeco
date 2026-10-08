@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const { sendError } = require('../utils/apiError');
 const { getPrisma } = require('../utils/prisma');
+const { parsePeriod } = require('../utils/period');
 const moment = require('moment');
 const XLSX = require('xlsx');
 const { authenticate, authorize } = require('../middleware/auth');
@@ -72,8 +73,9 @@ router.get('/attendance/monthly/export', async (req, res) => {
       // not the isWeekend/isHoliday/isAbsent-flag combination, which
       // silently disagrees with Payroll.workDays whenever a record carries a
       // stale/legacy status value (e.g. the removed 'half_day' status).
-      const workDays = records.filter(r => ['present', 'late', 'early_leave'].includes(r.status)).length;
-      const absentDays = records.filter(r => r.isAbsent).length;
+      // Counted on the approved-adjustment-aware rows (effRecords), like Payroll / Daily / Movement.
+      const workDays = effRecords.filter(r => ['present', 'late', 'early_leave'].includes(r.status)).length;
+      const absentDays = effRecords.filter(r => r.isAbsent).length;
       const totalHours = records.reduce((s, r) => s + r.workedMinutes / 60, 0);
       const totalOT = records.reduce((s, r) => s + r.overtimeHours, 0);
       const totalLate = records.reduce((s, r) => s + r.lateMinutes, 0);
@@ -116,8 +118,10 @@ router.get('/attendance/monthly/export', async (req, res) => {
 router.get('/payroll/export', async (req, res) => {
   try {
     const { month, year, branchId } = req.query;
-    const m = parseInt(month) || new Date().getMonth() + 1;
-    const y = parseInt(year) || new Date().getFullYear();
+    const per = parsePeriod(month, year);
+    if (per.error) return res.status(400).json({ error: per.error, code: per.code });
+    const m = per.m;
+    const y = per.y;
 
     // branchId filtering pushed into the query itself (was a JS-side
     // .filter() AFTER fetching every branch's payrolls) — same result set,
@@ -161,6 +165,14 @@ router.get('/payroll/export', async (req, res) => {
     // columns) stay after identity; Late Penalty (not among the 13
     // canonical grid columns) is appended after Net Salary rather than
     // interleaved.
+    // F-08: money cells carry the canonical Payroll precision (cents), not a
+    // whole-unit Math.round. Payroll stores/returns money to the cent; rounding
+    // each column to whole units here made Excel disagree with the stored row
+    // (e.g. 3237.5 -> 3238) and made basic + OT - deductions - advances differ
+    // from Net Salary by +-1 in the same sheet. toFixed(2) also strips the
+    // floating-point noise computePayroll() can carry (2594.1899999999996).
+    const money2 = (v) => Number((Number(v) || 0).toFixed(2));
+    const MONEY_COLS = ['Basic Salary', 'OT Amount', 'Deductions', 'Advances', 'Manual Deduction', 'Net Salary', 'Late Penalty'];
     const rows = filtered.map((p, i) => {
       const c = fresh[i];
       return {
@@ -168,7 +180,7 @@ router.get('/payroll/export', async (req, res) => {
         'Employee Name': p.employee.name,
         'Department': p.employee.department?.name || '',
         'Branch': p.employee.branch?.name || '',
-        'Basic Salary': Math.round(c.basicSalary || 0),
+        'Basic Salary': money2(c.basicSalary),
         // Phase 8.2: Hourly Rate is a RATE, not a money total — the canonical
         // presentation policy (EF-012.1, applied in PayrollPage's grid and
         // SalaryCard's fmtRate()) shows it to 2 decimal places, matching
@@ -191,26 +203,28 @@ router.get('/payroll/export', async (req, res) => {
         // that rounding is removed so this column carries the same
         // precision as computePayroll() itself, matching 'Penalty Units'.
         'OT Hours': c.overtimeHours || 0,
-        'OT Amount': Math.round(c.overtimeAmount || 0),
-        // Phase 8.3 Task 2: Bonus already exists on computePayroll()'s
-        // response (c.bonus, HR-entered, preserved across recalcs) and is
-        // already shown on SalaryCard/CompactSalarySheet/FinalSalaryModal —
-        // it was simply never added as a column here. Read directly, no
-        // recalculation; Net Salary below is unchanged (still sourced from
-        // c.netSalary, which already includes bonus).
-        'Bonus': Math.round(c.bonus || 0),
+        'OT Amount': money2(c.overtimeAmount),
         'Penalty Units': c.penaltyUnits || 0,
-        'Deductions': Math.round(c.deductions || 0),
-        'Advances': Math.round(c.advances || 0),
-        'Manual Deduction': Math.round(c.manualDeductionAdjustment || 0),
-        'Net Salary': Math.round(c.netSalary || 0),
-        'Late Penalty': Math.round(c.latePenalty || 0),
+        'Deductions': money2(c.deductions),
+        'Advances': money2(c.advances),
+        'Manual Deduction': money2(c.manualDeductionAdjustment),
+        'Net Salary': money2(c.netSalary),
+        'Late Penalty': money2(c.latePenalty),
       };
     });
 
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.json_to_sheet(rows);
     ws['!cols'] = Object.keys(rows[0] || {}).map(() => ({ wch: 16 }));
+    // Show cents in Excel for the money columns (numeric cells, not text).
+    const headers = Object.keys(rows[0] || {});
+    headers.forEach((h, ci) => {
+      if (!MONEY_COLS.includes(h)) return;
+      for (let ri = 1; ri <= rows.length; ri++) {
+        const cell = ws[XLSX.utils.encode_cell({ r: ri, c: ci })];
+        if (cell && cell.t === 'n') cell.z = '#,##0.00';
+      }
+    });
     XLSX.utils.book_append_sheet(wb, ws, `Payroll ${m}-${y}`);
 
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });

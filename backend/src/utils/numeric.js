@@ -32,4 +32,9 @@ function parseMoney(value, { max = MAX_MONEY } = {}) {
   return n;
 }
 
-module.exports = { parseMoney, MAX_MONEY };
+/** True when the amount has at most 2 decimal places (money is kept to the cent). */
+function hasMoneyPrecision(n) {
+  return Number.isFinite(n) && Math.abs(n * 100 - Math.round(n * 100)) < 1e-6 * Math.max(1, Math.abs(n * 100));
+}
+
+module.exports = { parseMoney, hasMoneyPrecision, MAX_MONEY };

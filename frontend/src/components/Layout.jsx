@@ -41,7 +41,7 @@ const NAV = [
     { to: '/rules',               icon: ShieldCheck,       label: 'محرك القواعد', badge: 'ERP' },
     { to: '/maintenance/cleanup', icon: Trash2,            label: 'تنظيف الحركات', badge: 'ERP' },
     { to: '/settings/company',    icon: Building2,         label: 'بيانات الشركة' },
-    { to: '/settings/connection', icon: PlugZap,           label: 'إعدادات الاتصال', badge: 'ERP', serverOnly: true },
+    { to: '/settings/connection', icon: PlugZap,           label: 'إعدادات الاتصال', badge: 'ERP' },
     { to: '/settings',            icon: Settings,          label: 'الإعدادات' },
   ]},
 ]

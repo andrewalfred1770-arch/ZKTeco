@@ -15,6 +15,7 @@ import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS } from '../lib/gridDe
 import PrintPreviewModal from '../components/PrintPreviewModal';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
+import { useStaleGuard } from '../lib/staleGuard';
 
 const VERIFY = { 0: 'Password', 1: 'Fingerprint', 2: 'Card', 3: 'Finger + Pass', 4: 'Face', 15: 'Unknown' };
 const NUM = { textAlign: 'right', direction: 'ltr', fontFamily: 'Consolas, monospace' };
@@ -74,13 +75,19 @@ export default function RawLogsPage() {
   // per raw punch record.
   const getRowId = useCallback(p => String(p.data.id), []);
 
+  // An older GET must never overwrite the date range the user switched to.
+  const rangeKey = `${from}|${to}`;
+  const guard = useStaleGuard(rangeKey);
+
   const load = async () => {
+    const t = guard.start(rangeKey);
     setLoading(true);
     try {
       const { data } = await api.get('/attendance/logs', {
         params: { from: from + 'T00:00:00', to: to + 'T23:59:59', limit: 500 } });
+      if (!guard.accept(t)) return;   // range changed meanwhile, or a newer load already applied
       setLogs(data.logs); setTotal(data.total);
-    } catch { toast.error('فشل تحميل السجلات'); }
+    } catch { if (guard.keyMatches(t)) toast.error('فشل تحميل السجلات'); }
     finally { setLoading(false); }
   };
 

@@ -18,6 +18,7 @@ import PayrollBreakdownDialog from '../components/PayrollBreakdownDialog';
 import EmployeeMonthlyStatementDrawer from '../components/EmployeeMonthlyStatementDrawer';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
+import { useStaleGuard, keepCurrentRows } from '../lib/staleGuard';
 import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_TINY, tabToNextCell, safeRefreshCells } from '../lib/gridDefaults';
 import { MONTHS_AR, getYearRange } from '../lib/constants';
 import { MobileActionsMenu } from '../components/ui';
@@ -186,6 +187,10 @@ export default function PayrollPage() {
   // Set when a reload was skipped because editCountRef was nonzero; flushed
   // once the in-flight edit's finally block sees the counter back at 0.
   const pendingReloadRef = useRef(false);
+  // Stale-response protection (see lib/staleGuard.js): an older GET must never
+  // overwrite the month/department the user switched to, or a row saved since.
+  const screenKey = `${month}|${year}|${deptId}`;
+  const guard = useStaleGuard(screenKey);
 
   // Load departments list once on mount for the filter dropdown.
   useEffect(() => {
@@ -350,13 +355,20 @@ export default function PayrollPage() {
   // refresh button) — either would otherwise replace rowData mid-edit.
   const load = async () => {
     if (editCountRef.current > 0) { pendingReloadRef.current = true; return; }
+    const t = guard.start(screenKey);
     setLoading(true);
     try {
       const params = { month, year };
       if (deptId) params.departmentId = deptId;
       const { data } = await api.get('/payroll', { params });
-      setRows(data);
-    } catch { toast.error('تعذر تحميل المرتبات'); }
+      // Dropped when the month/department changed meanwhile, or a later load already applied.
+      if (!guard.accept(t)) return;
+      // Rows saved (or being edited) after this request started keep their newer version.
+      const keep = guard.claim(data, t);
+      setRows(prev => keepCurrentRows(prev, data, keep));
+    } catch {
+      if (guard.keyMatches(t)) toast.error('تعذر تحميل المرتبات');
+    }
     finally { setLoading(false); }
   };
 
@@ -366,12 +378,18 @@ export default function PayrollPage() {
   // every employee for the month.
   const loadOne = async (employeeIds) => {
     try {
+      const t = guard.startOne(screenKey);
       const fetched = await Promise.all(employeeIds.map(id =>
         api.get('/payroll', { params: { month, year, employeeId: id } }).then(r => r.data[0]).catch(() => null)
       ));
+      if (!guard.keyMatches(t)) return;                      // month/department changed meanwhile
+      // Drop any row a newer save/refresh has already superseded; stamp the rest.
+      const present = fetched.filter(Boolean);
+      const keep = guard.claim(present, t);
+      const usable = present.filter(r => !keep.has(r.id));
       setRows(rs => {
         let next = rs;
-        for (const row of fetched) {
+        for (const row of usable) {
           if (!row) continue;
           const exists = next.some(r => r.employeeId === row.employeeId);
           // A department filter is active and this employee wasn't already a
@@ -434,6 +452,7 @@ export default function PayrollPage() {
     if (num === oldNum) return;
 
     editCountRef.current++;
+    guard.beginEdit([data.id]);
     markSaving(data.id, field, node, true);
     try {
       // السلف uses a dedicated endpoint that creates a delta Advance record
@@ -453,6 +472,7 @@ export default function PayrollPage() {
       const hasOtherFieldsInFlight = Array.from(savingCellsRef.current)
         .some(k => k.startsWith(rowKeyPrefix) && k !== `${rowKeyPrefix}${field}`);
       if (hasOtherFieldsInFlight) pendingReloadRef.current = true;
+      guard.markFresh([data.id]);   // the PUT result is now the newest data for this row
       setRows(rs => rs.map(r => {
         if (r.id !== updated.id) return r;
         return hasOtherFieldsInFlight
@@ -464,6 +484,7 @@ export default function PayrollPage() {
       toast.error(err?.response?.data?.error || 'فشل الحفظ');
       node.setDataValue(field, oldValue);
     } finally {
+      guard.endEdit([data.id]);
       editCountRef.current--;
       markSaving(data.id, field, node, false);
       if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(); }

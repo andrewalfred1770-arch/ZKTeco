@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../lib/api';
-import { isStandalone } from '../lib/edition';
+import { isStandalone, isManager } from '../lib/edition';
 
 // ─── Connection Layer settings (EP-003 Hybrid Client/Server) ─────────────────
 // Electron-only page: the mode/serverUrl decide whether this desktop install
@@ -251,7 +251,8 @@ export default function ConnectionSettingsPage() {
     return <StandaloneConnectionView />;
   }
 
-  const [mode, setMode]           = useState('local');
+  // Manager clients only ever run in Server Mode (no local backend exists).
+  const [mode, setMode]           = useState(isManager ? 'server' : 'local');
   const [serverUrl, setServerUrl] = useState('');
   const [savedMode, setSavedMode] = useState('local');
   const [loading, setLoading]     = useState(true);
@@ -263,9 +264,9 @@ export default function ConnectionSettingsPage() {
     if (!isElectron) { setLoading(false); return; }
     window.electron.connection.getSettings()
       .then((s) => {
-        setMode(s.mode || 'local');
+        setMode(isManager ? 'server' : (s.mode || 'local'));
         setServerUrl(s.serverUrl || '');
-        setSavedMode(s.mode || 'local');
+        setSavedMode(isManager ? 'server' : (s.mode || 'local'));
       })
       .catch(() => toast.error('فشل تحميل إعدادات الاتصال'))
       .finally(() => setLoading(false));
@@ -292,13 +293,34 @@ export default function ConnectionSettingsPage() {
       toast.error('يجب إدخال عنوان الخادم أولاً');
       return;
     }
+    if (mode === 'server') {
+      let validUrl = false;
+      try { validUrl = /^https?:$/.test(new URL(serverUrl.trim()).protocol); } catch { /* not a URL */ }
+      if (!validUrl) {
+        toast.error('عنوان غير صالح — مثال: http://192.168.1.120:5000');
+        return;
+      }
+    }
     setSaving(true);
     try {
       await window.electron.connection.setSettings({ mode, serverUrl: serverUrl.trim() });
       setSavedMode(mode);
+      if (isManager) {
+        // The new address replaces the old one on disk first (setSettings throws if
+        // the write fails, so we never get here with the old URL still saved), then
+        // the app restarts itself so api.js / socket.js / the health checks all
+        // start on it — no reinstall, no rebuild, no manual restart.
+        toast.success('تم حفظ عنوان الخادم — جارٍ الاتصال بالعنوان الجديد…');
+        setTimeout(() => window.electron.relaunch(), 700);
+        return;
+      }
       toast.success('تم حفظ الإعدادات — أعد تشغيل التطبيق لتطبيق التغييرات');
-    } catch {
-      toast.error('فشل الحفظ');
+    } catch (err) {
+      if (String(err?.message || '').includes('SELF_POINTING_SERVER_URL')) {
+        toast.error('هذا العنوان يشير إلى هذا الجهاز نفسه — أدخل عنوان جهاز الخادم على الشبكة');
+      } else {
+        toast.error('فشل الحفظ');
+      }
     } finally {
       setSaving(false);
     }
@@ -334,7 +356,7 @@ export default function ConnectionSettingsPage() {
           </h3>
 
           <div style={{ display: 'flex', gap: 10 }}>
-            <button
+            {!isManager && <button
               onClick={() => setMode('local')}
               style={{
                 flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
@@ -346,7 +368,7 @@ export default function ConnectionSettingsPage() {
               <HardDrive style={{ width: 20, height: 20, color: mode === 'local' ? '#79C0FF' : 'var(--text-3)' }} />
               <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>محلي</span>
               <span style={{ fontSize: 10.5, color: 'var(--text-3)', textAlign: 'center' }}>يشغّل التطبيق الخادم تلقائياً</span>
-            </button>
+            </button>}
             <button
               onClick={() => setMode('server')}
               style={{
@@ -386,7 +408,7 @@ export default function ConnectionSettingsPage() {
             </button>
             <button className="btn-primary text-xs flex-1 justify-center" onClick={save} disabled={saving}>
               {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-              حفظ
+              {isManager ? 'اتصال' : 'حفظ'}
             </button>
           </div>
 

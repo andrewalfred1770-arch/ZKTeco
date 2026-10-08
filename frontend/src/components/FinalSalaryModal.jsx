@@ -14,10 +14,11 @@ import SalaryCard from './SalaryCard';
 import CompactSalarySheet, { PER_PAGE } from './CompactSalarySheet';
 import { useTheme } from '../contexts/ThemeContext';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
+import { useStaleGuard } from '../lib/staleGuard';
 import { EMBEDDED_FONT_CSS_ALL } from '../lib/reportTemplate';
 import { exportToExcel, printDocument } from '../lib/printUtils';
 import { FILE_PREFIX, useCompanyBrand } from '../lib/branding';
-import { fmtMoney, fmtIntZero, displayNetSalary } from '../lib/formatters';
+import { fmtIntZero } from '../lib/formatters';
 import { MONTHS_AR } from '../lib/constants';
 import { COLORS } from '../lib/printDesignSystem';
 
@@ -81,16 +82,22 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
   }, [onClose]);
 
   // ── Load single salary sheet ──────────────────────────────────────────────
+  // Rule-change events re-fetch the sheet while an earlier fetch may still be running;
+  // only the most recently started one may update what is shown/printed.
+  const guard = useStaleGuard('sheet');
+
   const loadSingle = useCallback(async (empId) => {
+    const t = guard.start('sheet');
     setLoading(true);
     try {
       const { data: d } = await api.get('/payroll/final-sheet', {
         params: { employeeId: empId, month, year },
       });
+      if (!guard.accept(t)) return;
       setData(d);
     } catch (err) {
-      toast.error('تعذر تحميل كشف الراتب: ' + (err.response?.data?.error || err.message));
-    } finally { setLoading(false); }
+      if (guard.isLatest(t)) toast.error('تعذر تحميل كشف الراتب: ' + (err.response?.data?.error || err.message));
+    } finally { if (guard.isLatest(t)) setLoading(false); }
   }, [month, year]);
 
   // ── Load bulk ─────────────────────────────────────────────────────────────
@@ -109,6 +116,7 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
   // skip behavior exactly.
   const BULK_FETCH_CONCURRENCY = 12;
   const loadBulk = useCallback(async () => {
+    const t = guard.start('sheet');
     setLoading(true);
     const slots = new Array(allRows.length);
 
@@ -129,9 +137,11 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
     }
 
     const results = slots.filter(Boolean);
-    setBulkData(results);
-    if (results.length === 0) toast.error('لا توجد بيانات رواتب محسوبة');
-    setLoading(false);
+    if (guard.accept(t)) {
+      setBulkData(results);
+      if (results.length === 0) toast.error('لا توجد بيانات رواتب محسوبة');
+    }
+    if (guard.isLatest(t)) setLoading(false);
   }, [allRows, month, year]);
 
   const reloadSheet = useCallback(() => {
@@ -186,22 +196,12 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
   };
 
   // ── Export Excel (real .xlsx, PETSHROW branded, with totals) ────────────────
-  // EF-011 Accounting Policy: "إجمالي الخصومات" is the sum of this SAME row's
-  // other displayed (already-rounded) deduction columns — not the backend's
-  // separately-rounded `deductions.total` field — so the sheet is calculator-
-  // verifiable from the numbers printed in it. Unchanged by EF-019.1.
-  // Phase 8.1: r0() was a byte-for-byte duplicate of formatters.js's
-  // displayNetSalary() (same Math.round(Number(n)||0)) — removed in favor of
-  // the shared function; the row-sum policy itself (EF-011, above) is unchanged.
-  const rowDedTotal = (row) => (
-    displayNetSalary(row?.deductions?.absentAmount) + displayNetSalary(row?.deductions?.lateAmount) + displayNetSalary(row?.deductions?.earlyAmount)
-    + displayNetSalary(row?.deductions?.manualDeductionAdjustment)
-  );
-  // EF-019.1: "صافي الراتب" is the ONE shared displayNetSalary() helper
-  // applied to this row's own canonical `netSalary` field — not re-derived
-  // from components (that was the proven root cause of cross-system ±1
-  // divergence between this export and the Payroll Grid/Salary Card).
-  const rowNet = (row) => displayNetSalary(row?.netSalary);
+  // F-08: Excel gets NUMERIC cells at the canonical Payroll precision (cents),
+  // taken straight from the API fields — the screen's whole-unit display
+  // rounding (fmtMoney) and its "sum of displayed lines" section totals are
+  // presentation choices and must not leak into a spreadsheet, where they made
+  // totals disagree with the stored row by +-1 and turned numbers into text.
+  const xl2 = (v) => Number((Number(v) || 0).toFixed(2));
   const exportExcel = async () => {
     const sheets = bulk ? bulkData : (data ? [data] : []);
     if (!sheets.length) { toast.error('لا توجد بيانات للتصدير'); return; }
@@ -211,23 +211,17 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
       { header:'القسم',           key:'employee.department' },
       { header:'أيام الحضور',    key:'attendance.workDays',   format:v=>fmtIntZero(v), total:'sum' },
       { header:'أيام الغياب',    key:'attendance.absentDays', format:v=>fmtIntZero(v), total:'sum' },
-      { header:'الراتب الأساسي', key:'earnings.basicSalary',  format:v=>fmtMoney(v), total:'sum' },
-      { header:'إضافي صباحي',    key:'earnings.morningOT.amount', format:v=>fmtMoney(v), total:'sum' },
-      { header:'إضافي مسائي',    key:'earnings.eveningOT.amount', format:v=>fmtMoney(v), total:'sum' },
-      { header:'إجمالي الإضافي', key:'earnings.overtimeAmount', format:v=>fmtMoney(v), total:'sum' },
-      // Phase 9 Part 1: earnings.bonus already exists on this exact
-      // /final-sheet response (shown on SalaryCard/CompactSalarySheet) — it
-      // was simply never added as a column here, the same gap Phase 8.3
-      // fixed in reports.js's /reports/payroll/export. Read directly, no
-      // recalculation; netSalary below already included it.
-      { header:'مكافأة / بدل',   key:'earnings.bonus',           format:v=>fmtMoney(v), total:'sum' },
-      { header:'خصم الغياب',     key:'deductions.absentAmount', format:v=>fmtMoney(v), total:'sum' },
-      { header:'خصم التأخير',    key:'deductions.lateAmount',  format:v=>fmtMoney(v), total:'sum' },
-      { header:'خصم الانصراف المبكر', key:'deductions.earlyAmount', format:v=>fmtMoney(v), total:'sum' },
-      { header:'السلف',           key:'deductions.advances',                format:v=>fmtMoney(v), total:'sum' },
-      { header:'خصم إداري',      key:'deductions.manualDeductionAdjustment', format:v=>fmtMoney(v), total:'sum' },
-      { header:'إجمالي الخصومات', key:'deductions.total', format:(v,row)=>fmtMoney(row?.__total ? v : rowDedTotal(row)), total:(rows)=>rows.reduce((s,r)=>s+rowDedTotal(r),0) },
-      { header:'صافي الراتب',    key:'netSalary', format:(v,row)=>fmtMoney(row?.__total ? v : rowNet(row)), total:(rows)=>rows.reduce((s,r)=>s+rowNet(r),0) },
+      { header:'الراتب الأساسي', key:'earnings.basicSalary',  format:v=>xl2(v), total:'sum' },
+      { header:'إضافي صباحي',    key:'earnings.morningOT.amount', format:v=>xl2(v), total:'sum' },
+      { header:'إضافي مسائي',    key:'earnings.eveningOT.amount', format:v=>xl2(v), total:'sum' },
+      { header:'إجمالي الإضافي', key:'earnings.overtimeAmount', format:v=>xl2(v), total:'sum' },
+      { header:'خصم الغياب',     key:'deductions.absentAmount', format:v=>xl2(v), total:'sum' },
+      { header:'خصم التأخير',    key:'deductions.lateAmount',  format:v=>xl2(v), total:'sum' },
+      { header:'خصم الانصراف المبكر', key:'deductions.earlyAmount', format:v=>xl2(v), total:'sum' },
+      { header:'السلف',           key:'deductions.advances',                format:v=>xl2(v), total:'sum' },
+      { header:'خصم إداري',      key:'deductions.manualDeductionAdjustment', format:v=>xl2(v), total:'sum' },
+      { header:'إجمالي الخصومات', key:'deductions.total', format:v=>xl2(v), total:'sum' },
+      { header:'صافي الراتب',    key:'netSalary', format:v=>xl2(v), total:'sum' },
     ];
     await exportToExcel(sheets, cols, `كشف_رواتب_${monthLabel}_${year}`, 'كشف الرواتب', {
       title: `كشف رواتب ${monthLabel} ${year}`, period: `${monthLabel} ${year}`, brand,

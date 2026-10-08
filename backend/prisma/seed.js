@@ -301,7 +301,7 @@ async function main() {
           employeeId: emp.id, month: currentMonth, year: currentYear,
           basicSalary: emp.salary, hourlyRate, workDays, absentDays,
           latePenalty: 0, overtimeHours: totalOTHours, overtimeAmount: otAmount,
-          bonus: 0, advances: 0, deductions: absentDeduction, netSalary,
+          advances: 0, deductions: absentDeduction, netSalary,
         },
       });
     } catch {}

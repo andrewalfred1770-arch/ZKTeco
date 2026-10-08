@@ -13,6 +13,7 @@ import { attendanceRowClass } from '../lib/gridDefaults';
 import { useTheme } from '../contexts/ThemeContext';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
+import { useStaleGuard } from '../lib/staleGuard';
 import { useFingerprintSyncWorkflow } from '../hooks/useFingerprintSyncWorkflow';
 import PrintPreviewModal from '../components/PrintPreviewModal';
 import FingerprintSyncModal from '../components/FingerprintSyncModal';
@@ -117,8 +118,13 @@ export default function DashboardPage() {
   const today = todayStr();
   const todayAr = new Date().toLocaleDateString('ar-EG', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
 
+  // Overlapping loads (socket events, the 60 s fallback, the sync button) can finish
+  // out of order: only the most recently started one may update the screen.
+  const guard = useStaleGuard('dashboard');
+
   const load = async () => {
     lastLoadRef.current = Date.now();
+    const t = guard.start('dashboard');
     try {
       const [d, dv, ros, depts, evRes, syncLogsRes] = await Promise.all([
         api.get('/dashboard'),
@@ -134,6 +140,7 @@ export default function DashboardPage() {
           : Promise.resolve({ data: { logs: [] } }),
         api.get('/devices/sync-logs/recent', { params: { limit: 30 } }).catch(() => ({ data: [] })),
       ]);
+      if (!guard.accept(t)) return;   // a newer load already applied
       setData(d.data);
       setDevices(dv.data);
       setRoster(ros.data || []);
@@ -142,6 +149,7 @@ export default function DashboardPage() {
       setSyncLogs(syncLogsRes.data || []);
       setLoadError(null);
     } catch (err) {
+      if (!guard.isLatest(t)) return;   // a newer load is in charge of the error/loaded state
       // Distinguish "server reachable but rejected the request" from "no
       // response at all" so a 401 (e.g. server-side AUTH_ENABLED on while
       // this client never logs in) reads as an auth/config problem instead

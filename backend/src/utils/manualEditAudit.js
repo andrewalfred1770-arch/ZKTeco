@@ -1,6 +1,6 @@
 // Generic manual-edit audit trail. One row per changed field — used by
 // PUT /attendance/daily/:id (attendance overrides), PUT /payroll/:id
-// (bonus / manual deduction adjustment), and POST/DELETE /advances.
+// (manual deduction adjustment), and POST/DELETE /advances.
 const { getPrisma } = require('./prisma');
 const logger = require('./logger');
 

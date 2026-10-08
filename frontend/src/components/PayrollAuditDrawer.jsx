@@ -20,7 +20,9 @@ import { fmtMoney } from '../lib/formatters';
 
 const FIELD_LABELS = {
   basicSalary: 'الراتب الأساسي',
-  bonus: 'مكافأة / بدل',
+  // Historical audit rows written before the Bonus feature was retired keep
+  // their original label so old entries stay readable.
+  bonus: 'مكافأة / بدل (سجل قديم)',
   manualDeductionAdjustment: 'خصم إداري',
   advances: 'السلف',
   notes: 'ملاحظات',
@@ -43,12 +45,16 @@ export default function PayrollAuditDrawer({ payrollId, employeeName, open, onCl
   const [entries, setEntries] = useState([]);
 
   useEffect(() => {
-    if (!open || !payrollId) return;
+    if (!open || !payrollId) return undefined;
+    // A response for a previous payroll row (or a previous open) must not land on the
+    // one being shown now.
+    let cancelled = false;
     setLoading(true);
     api.get(`/payroll/${payrollId}/audit`)
-      .then((r) => setEntries(r.data || []))
-      .catch(() => setEntries([]))
-      .finally(() => setLoading(false));
+      .then((r) => { if (!cancelled) setEntries(r.data || []); })
+      .catch(() => { if (!cancelled) setEntries([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [open, payrollId]);
 
   return (

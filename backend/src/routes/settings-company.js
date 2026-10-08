@@ -15,6 +15,7 @@ const path    = require('path');
 const crypto  = require('crypto');
 const multer  = require('multer');
 const { getPrisma } = require('../utils/prisma');
+const { resolveActor } = require('../utils/auditActor');
 const prisma = getPrisma();
 const store = require('../services/companySettingsStore');
 const { authenticate, authorize } = require('../middleware/auth');
@@ -24,7 +25,7 @@ const { authenticate, authorize } = require('../middleware/auth');
 // AUTH_ENABLED=false, so the desktop no-auth flow is unaffected.
 router.use(authenticate);
 
-const actor = (req) => (req.body && req.body.changedByName) || 'النظام';
+const actor = (req) => resolveActor(req, { name: req.body && req.body.changedByName }, { name: 'النظام' }).name;
 
 const TEXT_KEYS = [
   'company_name_ar', 'company_name_en', 'company_description', 'company_address',

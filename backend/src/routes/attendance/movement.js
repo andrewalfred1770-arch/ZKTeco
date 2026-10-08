@@ -108,8 +108,8 @@ function buildMovementDays(employee, recMap, yearStr, monthStr, totalDays) {
       isHoliday: canonical.isHoliday,
       isAbsent:  canonical.isAbsent,
       hasData:   !!rec,
-      absenceType:   rec?.absenceType   || null,
-      penaltyDays:   rec?.penaltyDays   ?? null,
+      absenceType:   canonical.absenceType,
+      penaltyDays:   canonical.penaltyDays,
       absenceReason: rec?.absenceReason || null,
       absenceSetBy:  rec?.absenceSetBy  || null,
       // EP-018: was missing from this row builder (unlike daily.js/monthly.js,
@@ -132,8 +132,9 @@ function summarizeMovementDays(days, hourlyRate, multipliers, totalDays) {
   // not re-derive absence from checkIn presence.
   const presentDays  = workDays.filter(d => !d.isAbsent).length;
   const absentDays   = workDays.filter(d => d.isAbsent).length;
-  // EP-024.2: sum of the HR-entered/rule-derived deduction-day amount per
-  // absent day (AttendanceDaily.penaltyDays) — distinct from absentDays
+  // EP-024.2: sum of the deduction-day amount per absent day (the explicit
+  // AttendanceDaily.penaltyDays, or the fixed automatic 1 day — D5, resolved by
+  // buildAttendanceRow/absencePolicy so it equals what payroll deducts) — distinct from absentDays
   // (a pure calendar count). Same field payrollEngine.js sums independently
   // as totalAbsencePenaltyDays; this is display-only, no money computed here.
   const totalPenaltyDays = workDays.filter(d => d.isAbsent).reduce((s, d) => s + (d.penaltyDays || 0), 0);

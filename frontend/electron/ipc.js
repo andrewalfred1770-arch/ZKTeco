@@ -6,8 +6,8 @@ import { io as socketIOClient } from 'socket.io-client';
 import { IS_DEV, BUILD_MARKER, REQUIRED_API_VERSION } from './constants.js';
 import { state } from './state.js';
 import { fetchHealth, requestBackendShutdown, startBackend } from './backend.js';
-import { readConnectionSettings, writeConnectionSettings, getEffectiveBackendBaseUrl } from './connectionSettings.js';
-import { isStandalone } from './edition.js';
+import { readConnectionSettings, writeConnectionSettings, getEffectiveBackendBaseUrl, isSelfPointingServerUrl } from './connectionSettings.js';
+import { isStandalone, isManager } from './edition.js';
 import { createBackup, listBackups, restoreBackup } from './standaloneBackup.js';
 import { getConnectionEnv } from './mysqlManager.js';
 import { getPaths } from './paths.js';
@@ -35,7 +35,17 @@ secureOn('app:relaunch', () => { app.relaunch(); app.exit(0); });
 // of either the current settings or a candidate (not-yet-saved) one.
 secureHandle('connection:get-settings', () => readConnectionSettings());
 
-secureHandle('connection:set-settings', (_e, patch) => writeConnectionSettings(asConnectionPatch(patch)));
+secureHandle('connection:set-settings', (_e, rawPatch) => {
+  const patch = asConnectionPatch(rawPatch);
+  // A Manager client has no local backend: an address that points back at this
+  // very machine (localhost / 127.0.0.1 / ::1 / one of its own interface IPs)
+  // can never work, so refuse it up front instead of saving something the app
+  // would then have to ignore. Private LAN addresses of OTHER machines are fine.
+  if (isManager && patch.serverUrl && isSelfPointingServerUrl(patch.serverUrl)) {
+    throw new Error('SELF_POINTING_SERVER_URL');
+  }
+  return writeConnectionSettings(patch);
+});
 
 // Synchronous by design: preload.cjs reads this once, before the page loads,
 // to expose a single static `backendBaseUrl` string — mirrors the existing
