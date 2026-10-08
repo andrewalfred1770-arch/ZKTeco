@@ -543,7 +543,7 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto', actor = null) {
     // Pull is only "successful" if it converged AND the final pass had no err.
     // node-zklib sends chunks oldest-first, so a truncated pull is missing the
     // NEWEST records — partial results must never be trusted as complete.
-    const success = converged && !lastZkErr;
+    let success = converged && !lastZkErr; // also cleared below if any attendanceLog insert batch fails
 
     let oldestTs = null;
     let newestTs = null;
@@ -567,6 +567,7 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto', actor = null) {
     let newCount = 0;
     let dupCount = 0;
     let invalidCount = quarantined;
+    let failedBatches = 0; // attendanceLog insert batches that threw — see the fail-closed note after the loop
     const batchSize = 1000;
 
     // Prefetch the zkUserId → employeeId map ONCE instead of one findFirst per
@@ -624,6 +625,7 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto', actor = null) {
         rawLogCountCache.adjust(deviceId, res.count);
         dupCount += rows.length - res.count;
       } catch (e) {
+        failedBatches++;
         logger.warn(`[ZK] Batch insert error (${rows.length} rows): ${e.message}`);
       }
       emit(io, 'device:sync-step', {
@@ -631,6 +633,13 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto', actor = null) {
         processed: Math.min(i + batchSize, toProcess.length), total: toProcess.length,
       });
     }
+
+    // Fail closed: a batch that could not be stored means punches are missing from the DB. Calling
+    // this pull a success would advance the checkpoint past them, and later pulls only re-read the
+    // checkpoint's overlap window, so they would never be fetched again. Instead take the existing
+    // partial path (checkpoint NOT advanced); the next sync re-reads the same window and the unique
+    // key + skipDuplicates make the batches that already landed harmless.
+    if (failedBatches > 0) success = false;
 
     // ── Immediate processing for matched logs ───────────────────────────────
     // Previously only orphaned logs (employeeId resolved after the fact) were
@@ -727,7 +736,9 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto', actor = null) {
       // ingested above so newer punches aren't needlessly delayed further.
       const reason = lastZkErr
         ? `Partial pull: ${zkErrorMessage(lastZkErr, 'unknown error')} (after ${passesRun} pass(es))`
-        : `Pull did not converge after ${passesRun} pass(es) (returned counts kept changing)`;
+        : !converged
+          ? `Pull did not converge after ${passesRun} pass(es) (returned counts kept changing)`
+          : `Partial ingest: ${failedBatches} attendance-log insert batch(es) failed — checkpoint not advanced, the next sync retries`;
       logger.warn(`[SYNC] device=${deviceId} "${device.name}": ${reason} — checkpoint NOT advanced, ${newCount} record(s) still ingested from merged passes`);
 
       await prisma.device.update({
