@@ -370,10 +370,14 @@ async function buildDayFields(employee, dateStr, { checkIn: effCheckIn, checkOut
 // turn rather than being dropped — because dropping a real attendance
 // recompute silently is worse than a bounded wait. A LOCK_ACQUIRE_TIMEOUT_MS
 // ceiling prevents an indefinite wait if a holder hangs; on timeout the
-// waiting call proceeds anyway (fail-open, logged) rather than starving
-// forever, consistent with this codebase's existing fail-open error handling.
+// waiting call is REJECTED (fail-closed, same principle as withPayrollKeyLock):
+// the callback never runs and a typed 409 error is thrown. Running it unserialized
+// would let an automatic recompute overwrite a manual edit that is still inside
+// its transaction (reported as saved, then silently lost).
 const dateKeyLocks = new Map(); // "employeeId|dateStr" -> { tail: Promise, token: object }
 const LOCK_ACQUIRE_TIMEOUT_MS = 15000;
+const ATTENDANCE_LOCK_TIMEOUT_CODE = 'ATTENDANCE_LOCK_TIMEOUT';
+const ATTENDANCE_LOCK_TIMEOUT_MESSAGE = 'تعذّر الحصول على قفل سجل حضور هذا الموظف لهذا اليوم لأن عملية أخرى ما زالت قيد التنفيذ. لم يُحفظ أي تغيير — أعد المحاولة بعد لحظات.';
 
 async function withEmployeeDateLock(employeeId, dateStr, fn) {
   const key = `${employeeId}|${dateStr}`;
@@ -382,17 +386,34 @@ async function withEmployeeDateLock(employeeId, dateStr, fn) {
 
   let markDone;
   const ourCompletion = new Promise((resolve) => { markDone = resolve; });
+  // ourTail settles only AFTER the real previous holder has finished AND we have released,
+  // so later waiters stay behind the real holder even if we give up early.
   const ourTail = previousTail.then(() => ourCompletion, () => ourCompletion);
   const token = {};
   dateKeyLocks.set(key, { tail: ourTail, token });
 
-  let timedOut = false;
-  await Promise.race([
-    previousTail.catch(() => {}),
-    new Promise((resolve) => setTimeout(() => { timedOut = true; resolve(); }, LOCK_ACQUIRE_TIMEOUT_MS)),
-  ]);
-  if (timedOut) {
-    logger.error(`[DATE-LOCK] timeout after ${LOCK_ACQUIRE_TIMEOUT_MS}ms waiting for employee=${employeeId} date=${dateStr} — proceeding without serialization (fail-open)`);
+  let acquired = false;
+  let timer;
+  const prevDone = previousTail.then(() => { acquired = true; }, () => { acquired = true; });
+  const timeout = new Promise((resolve) => { timer = setTimeout(resolve, LOCK_ACQUIRE_TIMEOUT_MS); });
+  try {
+    await Promise.race([prevDone, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!acquired) {
+    logger.error(`[DATE-LOCK] timeout after ${LOCK_ACQUIRE_TIMEOUT_MS}ms waiting for employee=${employeeId} date=${dateStr} — operation REJECTED (fail-closed), nothing executed`);
+    // Release only our own slot; the map entry goes only after the real holder is done.
+    markDone();
+    ourTail.then(() => {
+      const current = dateKeyLocks.get(key);
+      if (current && current.token === token) dateKeyLocks.delete(key);
+    });
+    const err = new Error(ATTENDANCE_LOCK_TIMEOUT_MESSAGE);
+    err.code = ATTENDANCE_LOCK_TIMEOUT_CODE;
+    err.statusCode = 409;
+    throw err;
   }
 
   try {
@@ -651,14 +672,16 @@ async function processMonth(year, month, branchId) {
   const employees = await prisma.employee.findMany({
     where: { status: true, branchId: branchId || undefined },
   });
+  let failedDays = 0;
   for (const emp of employees) {
     let d = start.clone();
     while (d.isSameOrBefore(end)) {
       try { await processDate(d.toDate(), emp.id); }
-      catch (err) { logger.error(`processMonth emp ${emp.id} on ${d.format('YYYY-MM-DD')}: ${err.message}`); }
+      catch (err) { failedDays++; logger.error(`processMonth emp ${emp.id} on ${d.format('YYYY-MM-DD')}: ${err.message}`); }
       d.add(1, 'day');
     }
   }
+  return { failedDays };
 }
 
 // Overlap guard: processToday can be triggered by the scheduler cron, the
@@ -747,4 +770,4 @@ function mergeEffectivePenalty(record) {
 // from a manually-corrected lateMinutes/earlyLeaveMinutes using the exact
 // same tier-parsing this module already uses internally — never a second,
 // duplicate implementation of "HH:MM tier JSON → absolute-minute tiers".
-module.exports = { processDate, processMonth, processToday, computeDerivedFields, buildDayFields, DAILY_RESET, mergeEffectivePenalty, parseTimeRules, withEmployeeDateLock };
+module.exports = { processDate, processMonth, processToday, computeDerivedFields, buildDayFields, DAILY_RESET, mergeEffectivePenalty, parseTimeRules, withEmployeeDateLock, LOCK_ACQUIRE_TIMEOUT_MS, ATTENDANCE_LOCK_TIMEOUT_CODE };

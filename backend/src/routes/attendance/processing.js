@@ -31,8 +31,11 @@ router.post('/process', authorize('admin', 'hr'), async (req, res) => {
 router.post('/process-month', authorize('admin', 'hr'), async (req, res) => {
   try {
     const { year, month, branchId } = req.body;
-    await processMonth(parseInt(year), parseInt(month), branchId ? parseInt(branchId) : null);
-    res.json({ message: 'Month processing complete' });
+    const result = await processMonth(parseInt(year), parseInt(month), branchId ? parseInt(branchId) : null);
+    // Additive: a day skipped (e.g. its date lock timed out and was rejected) is reported, not hidden.
+    res.json(result && result.failedDays > 0
+      ? { message: 'Month processing complete', failedDays: result.failedDays }
+      : { message: 'Month processing complete' });
   } catch (err) {
     sendError(res, err);
   }
