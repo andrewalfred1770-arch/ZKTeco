@@ -321,6 +321,16 @@ router.put('/:id/manual-penalty', authorize('admin', 'hr'), async (req, res) => 
     } = req.body;
     const { modifiedBy, modifiedByName, modifiedByRole } = modifier(req);
     const effReason = reason ?? overrideReason;
+    // C3: a status override writes status/isAbsent/manualEdit, so it must serialize with the automatic
+    // recompute (processDate) through the SAME employee+day lock the manual-edit route uses. The row is
+    // re-read INSIDE the lock so every check and the audit's old values come from what is actually stored.
+    // On a lock timeout the callback never runs (typed 409, nothing written, no audit). Requests without
+    // a status touch only the HR-overlay fields the engine never writes, so they stay lock-free as before.
+    const peek = status !== undefined
+      ? await prisma.attendanceDaily.findUnique({ where: { id: parseInt(req.params.id) }, select: { employeeId: true, date: true } })
+      : null;
+    let applied = null; // set only when the write really happened; every early `return res...` leaves it null
+    const applyOverride = async () => {
     const rec = await prisma.attendanceDaily.findUnique({ where: { id: parseInt(req.params.id) } });
     if (!rec) return res.status(404).json({ error: 'Record not found' });
     // EF-005.4 Phase 2: a day that hasn't occurred yet has no attendance to edit.
@@ -444,6 +454,12 @@ router.put('/:id/manual-penalty', authorize('admin', 'hr'), async (req, res) => 
       }
       return updated;
     });
+    applied = { rec, updated };
+    };
+    if (peek) await withEmployeeDateLock(peek.employeeId, moment(peek.date).format('YYYY-MM-DD'), applyOverride);
+    else await applyOverride();
+    if (!applied) return; // a validation branch inside already answered
+    const { rec, updated } = applied;
 
     // EF-022.1 / C1: see manual-edit handler above for rationale.
     const m = moment(rec.date);
