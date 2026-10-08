@@ -38,7 +38,7 @@ export const APP_NAME     = 'PETSHROW ERP';
 // prove the EXE is loading THIS build and not a stale cached app.asar/dist.
 // Printed in [Startup Diagnostics] below and surfaced in the renderer console
 // + sidebar (see branding.js BRAND.buildMarker / Layout.jsx).
-export const BUILD_MARKER = 'BUILD: 2026-10-08-release-10.0.1';
+export const BUILD_MARKER = 'BUILD: 2026-10-08-release-10.0.2';
 export const HEALTH_URL   = `http://localhost:${BACKEND_PORT}/api/health`;
 export const FRONTEND_URL = `http://localhost:${VITE_PORT}`;  // dev only
 

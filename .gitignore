@@ -82,6 +82,8 @@ backend/uploads/company/*
 # ─── Release hygiene: generated / local-only (10.0.1) ─────────────────────────
 # electron-builder output of the Manager edition (electron-builder.manager.json)
 dist-electron-manager/
+# any other versioned electron-builder output dir (dist-electron-release-X, dist-electron-<ver>-..., ...)
+dist-electron-*/
 # local preview tooling + editor launch configs (absolute local paths)
 tools/
 .claude/launch.json
