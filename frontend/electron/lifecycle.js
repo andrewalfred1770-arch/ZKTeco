@@ -5,8 +5,8 @@ import { IS_DEV, BUILD_MARKER } from './constants.js';
 import { state } from './state.js';
 import { getPaths } from './paths.js';
 import { killStaleBackend, startBackend, fetchStartupStatus, requestBackendShutdown } from './backend.js';
-import { createSplash, closeSplash, markSplashStep, isSplashStepDone, notifyRenderer } from './splash.js';
-import { createMainWindow } from './windows.js';
+import { markSplashStep, isSplashStepDone, notifyRenderer } from './splash.js';
+import { createMainWindow, revealMainWindow } from './windows.js';
 import { buildDebugMenu, createTray } from './tray.js';
 import { initUpdater } from './updater.js';
 import { readConnectionSettings, getEffectiveBackendBaseUrl, isSelfPointingServerUrl } from './connectionSettings.js';
@@ -101,11 +101,11 @@ app.on('ready', async () => {
   console.log(`[Startup] resolved mode=${state.connectionMode}`);
   console.log(`[Electron] Connection mode: ${state.connectionMode} → ${state.backendBaseUrl}`);
 
-  // 1. Splash — instant, functional checklist (real status, no fake progress)
-  createSplash();
+  // 1. (No splash window any more.) The main window is created HIDDEN below and
+  //    shown by revealMainWindow() once startup is ready.
 
-  // 2. Main window — created + shown immediately. Frontend content loads
-  //    async in the background; this call does NOT block on it.
+  // 2. Main window — created hidden. Frontend content loads async in the
+  //    background; this call does NOT block on it.
  console.log("BEFORE createMainWindow");
 createMainWindow(paths);
 console.log("AFTER createMainWindow");
@@ -209,14 +209,14 @@ console.log("AFTER createMainWindow");
     console.log('[Electron] Server Mode — skipping local backend spawn, connecting to', state.backendBaseUrl);
   }
 
-  // 5. Readiness poller — drives the splash checklist AND the Progressive
+  // 5. Readiness poller — tracks real readiness AND drives the Progressive
   //    App Readiness events (UI / Backend / Realtime / Device). Polls
-  //    /api/startup-status every 300ms; closes the splash once everything
+  //    /api/startup-status every 300ms; shows the main window once everything
   //    that *can* be ready is ready, or after SPLASH_TIMEOUT_MS regardless —
-  //    a slow/offline fingerprint device must never hold the splash open.
+  //    a slow/offline fingerprint device must never keep the app hidden.
   //
-  //    SPLASH_TIMEOUT_MS is cosmetic only — it closes the splash window and
-  //    hands off to the renderer's own "connecting" spinner (ServerReadyGate),
+  //    SPLASH_TIMEOUT_MS (name kept from the removed splash) is cosmetic only — it
+  //    reveals the main window and hands off to the renderer's own "connecting" spinner (ServerReadyGate),
   //    it is NOT a failure signal. A slow-but-healthy backend/MySQL cold
   //    start (observed: first launch after boot can legitimately take longer
   //    than 6s for MySQL to accept connections) must never be reported to the
@@ -236,6 +236,11 @@ console.log("AFTER createMainWindow");
   // a realistic timeout. Local Mode keeps the original 400ms.
   const statusTimeoutMs = () => (state.connectionMode === 'server' ? 3000 : 400);
 
+  // Failsafe: whatever happens in the poller below, the user must never be left
+  // with no window at all (the main window starts hidden). Normally
+  // revealMainWindow() has long since run and this is a no-op.
+  setTimeout(revealMainWindow, SPLASH_TIMEOUT_MS + 2000);
+
   const pollReadiness = async () => {
     const elapsed = Date.now() - t0;
 
@@ -247,9 +252,9 @@ console.log("AFTER createMainWindow");
     // before. Local Mode is untouched — it still waits for its own backend.
     if (state.connectionMode === 'server' && !splashReleasedEarly && isSplashStepDone(0)) {
       splashReleasedEarly = true;
-      console.log('[Startup] Server Mode — releasing splash early, readiness continues in background');
+      console.log('[Startup] Server Mode — showing the main window now, readiness continues in background');
       notifyRenderer('system-ready');
-      closeSplash();
+      revealMainWindow();
     }
     const status = await fetchStartupStatus(statusTimeoutMs(), state.backendBaseUrl);
 
@@ -293,7 +298,7 @@ console.log("AFTER createMainWindow");
 
     if ((coreReady && isSplashStepDone(0)) || elapsed > SPLASH_TIMEOUT_MS) {
       if (elapsed > SPLASH_TIMEOUT_MS && !coreReady) {
-        console.warn('[Electron] Startup splash timeout reached — closing splash, backend still starting in background');
+        console.warn('[Electron] Startup readiness budget reached — showing the main window, backend still starting in background');
         if (!backendNotified) {
           // Cosmetic close only — do NOT tell the renderer the backend is
           // unreachable here. The renderer falls back to its own "connecting"
@@ -305,7 +310,7 @@ console.log("AFTER createMainWindow");
       if (!splashReleasedEarly) {
         console.log('[Startup] releasing renderer bootstrap');
         notifyRenderer('system-ready');
-        closeSplash();
+        revealMainWindow();
       }
       console.log(`[Electron] Total startup: ${Date.now() - t0}ms`);
       return;
@@ -369,7 +374,11 @@ app.on('window-all-closed', () => {
 
 app.on('activate', () => {
   if (state.mainWindow) { state.mainWindow.show(); state.mainWindow.focus(); }
-  else createMainWindow(getPaths());
+  else {
+    // Re-created outside the startup readiness poller — nothing else would show it.
+    createMainWindow(getPaths());
+    revealMainWindow();
+  }
 });
 
 let backendShutdownDone = false;

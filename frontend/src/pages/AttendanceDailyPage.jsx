@@ -28,6 +28,7 @@ import { useFingerprintSyncWorkflow } from '../hooks/useFingerprintSyncWorkflow'
 import { useKeyboardShortcut } from '../hooks/useKeyboardShortcut';
 import AbsenceTypeModal, { ABSENCE_TYPE_LABELS } from '../components/AbsenceTypeModal';
 import PasteAttendanceModal from '../components/PasteAttendanceModal';
+import { useAttendancePaste } from '../hooks/useAttendancePaste';
 import AttendanceFilterBar from '../components/AttendanceFilterBar';
 import { MobileActionsMenu } from '../components/ui';
 import { useAttendanceFilter } from '../hooks/useAttendanceFilter';
@@ -69,11 +70,6 @@ export default function AttendanceDailyPage() {
   const [absenceSaving, setAbsenceSaving] = useState(false);
   const [selectedRows, setSelectedRows] = useState([]);
   const [bulkSaving, setBulkSaving] = useState(false);
-  // Copy/paste of a manual attendance entry. The clipboard is plain page state
-  // holding ONLY the pasteable values (never an employee id or audit data).
-  const [attClipboard, setAttClipboard] = useState(null);
-  const [pasteTarget, setPasteTarget]   = useState(null);
-  const [pasteSaving, setPasteSaving]   = useState(false);
   const gridRef = useRef();
   // per-cell "saving" affordance
   const savingCellsRef = useRef(new Set());
@@ -602,92 +598,21 @@ export default function AttendanceDailyPage() {
   }, [selectedAbsent, clearSelection, load, beginRowEdit, endRowEdit, markRowsFresh]);
 
   // ── Copy / paste a manual attendance entry ────────────────────────────────
-  // A shortcut for typing the same values by hand: pasting saves through the
-  // exact endpoints (and server-side validation + audit) the inline grid uses —
-  // PUT /attendance/daily/:id for time/status/worked minutes and
-  // PUT /attendance/:id/manual-penalty for the late/early/overtime overrides.
-  const singleSelected = selectedRows.length === 1 ? selectedRows[0] : null;
-  const canCopy  = !!singleSelected;
-  const canPaste = !!attClipboard && editMode && !!singleSelected?.id;
-
-  const handleCopyRow = () => {
-    const r = singleSelected;
-    if (!r) return;
-    setAttClipboard({
-      sourceName: r.employeeName,
-      sourceCode: r.employeeCode,
-      sourceDate: date,
-      checkIn: toHHMM(r.checkIn),
-      checkOut: toHHMM(r.checkOut),
-      status: r.status,
-      workedMinutes: r.workedMinutes ?? 0,
-      effectiveLatePenalty: r.effectiveLatePenalty ?? 0,
-      effectiveEarlyPenalty: r.effectiveEarlyPenalty ?? 0,
-      effectiveOvertimeUnits: r.effectiveOvertimeUnits ?? 0,
-    });
-    toast.success(`تم نسخ حركة ${r.employeeName}`);
-  };
-
-  const handlePasteOpen = () => { if (canPaste) setPasteTarget(singleSelected); };
-
-  const handlePasteApply = async (keys) => {
-    const t = pasteTarget;
-    const clip = attClipboard;
-    if (!t?.id || !clip || !keys.length) return;
-    const picked = new Set(keys);
-    const reason = `نسخ/لصق حركة يدوية من ${clip.sourceName} (${clip.sourceDate})`;
-
-    const dailyBody = {};
-    if (picked.has('checkIn'))       dailyBody.checkIn  = clip.checkIn  || '';
-    if (picked.has('checkOut'))      dailyBody.checkOut = clip.checkOut || '';
-    if (picked.has('status'))        dailyBody.status   = clip.status;
-    if (picked.has('workedMinutes')) dailyBody.workedMinutes = clip.workedMinutes;
-    const penaltyBody = {};
-    for (const [field, overrideKey] of Object.entries(OVERRIDE_FIELD_MAP)) {
-      if (picked.has(field)) penaltyBody[overrideKey] = Number(clip[field]) || 0;
-    }
-
-    // Same client-side check the grid applies before it calls the API.
-    for (const k of ['checkIn', 'checkOut']) {
-      if (dailyBody[k] && !HHMM_RE.test(dailyBody[k])) { toast.error('صيغة الوقت غير صحيحة (HH:mm)'); return; }
-    }
-
-    // Same in-flight guards a normal cell save uses (see handleCellEdit).
-    editCountRef.current++;
-    beginRowEdit([t.employeeId]);
-    setPasteSaving(true);
-    let updated = null;
-    try {
-      if (Object.keys(dailyBody).length) {
-        const res = await api.put(`/attendance/daily/${t.id}`, {
-          ...dailyBody, reason, modifiedByName: ACTOR, source: 'inline-grid',
-        });
-        updated = normalizeDailyUpdate(res.data);
-      }
-      if (Object.keys(penaltyBody).length) {
-        const res = await api.put(`/attendance/${t.id}/manual-penalty`, {
-          ...penaltyBody, overrideReason: reason, modifiedByName: ACTOR, source: 'inline-grid',
-        });
-        updated = normalizeDailyUpdate(res.data);
-      }
-      toast.success('تم لصق الحركة');
-      setPasteTarget(null);
-    } catch (err) {
-      // The server's own validation message, exactly like a rejected cell edit.
-      toast.error(err?.response?.data?.error || 'فشل لصق الحركة');
-    } finally {
-      // If the first request succeeded and the second failed, the row still
-      // shows what the server actually saved.
-      if (updated) {
-        markRowsFresh([t.employeeId]);
-        setRows(rs => replaceAttendanceRow(rs, updated));
-      }
+  // Shared workflow (hooks/useAttendancePaste + lib/attendanceClipboard): saves
+  // through the same endpoints, validation and audit as the inline grid.
+  const paste = useAttendancePaste({
+    selected: selectedRows, fallbackDate: date, editMode,
+    onBegin: (t) => { editCountRef.current++; beginRowEdit([t.employeeId]); },
+    onSaved: (updated, t) => { markRowsFresh([t.employeeId]); setRows(rs => replaceAttendanceRow(rs, updated)); },
+    onEnd: (t) => {
       endRowEdit([t.employeeId]);
       editCountRef.current--;
-      setPasteSaving(false);
       if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }
-    }
-  };
+    },
+  });
+  const { canCopy, canPaste, clip: attClipboard } = paste;
+  const handleCopyRow = paste.copy;
+  const handlePasteOpen = paste.openPaste;
 
   const process = async () => {
     setProc(true);
@@ -749,10 +674,7 @@ export default function AttendanceDailyPage() {
               onClick={handlePasteOpen}
               disabled={!canPaste}
               className="btn-secondary text-xs py-1.5 px-3"
-              title={!attClipboard ? 'لا توجد حركة منسوخة'
-                : !editMode ? 'وضع القراءة فقط'
-                : !singleSelected?.id ? 'حدّد حركة واحدة لها سجل للصق عليها'
-                : `لصق حركة ${attClipboard.sourceName} (${attClipboard.sourceDate})`}
+              title={paste.blockReason || `لصق حركة ${attClipboard.sourceName} (${attClipboard.sourceDate})`}
             >
               <ClipboardPaste className="w-3.5 h-3.5" /> لصق الحركة
             </button>
@@ -929,14 +851,7 @@ export default function AttendanceDailyPage() {
         onViewLogs={() => { fpSync.close(); navigate('/attendance/logs'); }}
       />
 
-      <PasteAttendanceModal
-        open={!!pasteTarget}
-        onClose={() => { if (!pasteSaving) setPasteTarget(null); }}
-        onApply={handlePasteApply}
-        saving={pasteSaving}
-        clip={attClipboard}
-        target={pasteTarget}
-      />
+      <PasteAttendanceModal {...paste.modalProps} />
 
       {absenceModal && (
         <AbsenceTypeModal

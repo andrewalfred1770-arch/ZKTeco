@@ -52,7 +52,7 @@ function recalcForAdvance(advance, io) {
       select: { status: true },
     });
     if (row && (row.status === 'finalized' || row.status === 'paid')) {
-      const s = await syncStoredPayroll(advance.employeeId, advance.month, advance.year);
+      const s = await syncStoredPayroll(advance.employeeId, advance.month, advance.year, { allowClosed: true });
       if (s && s.lockTimeout) logger.warn(`[PAYROLL-SYNC] employee=${advance.employeeId} ${advance.month}/${advance.year} source=advance — payroll lock busy, stored ${row.status} row left for the next read to repair`);
     }
     return result;

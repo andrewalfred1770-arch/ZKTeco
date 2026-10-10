@@ -202,6 +202,11 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
   // presentation choices and must not leak into a spreadsheet, where they made
   // totals disagree with the stored row by +-1 and turned numbers into text.
   const xl2 = (v) => Number((Number(v) || 0).toFixed(2));
+  const splitSubtotal = (part) => (rows) => (
+    rows.some(r => r.earnings?.[part]?.amount == null)
+      ? null
+      : rows.reduce((s, r) => s + Number(r.earnings[part].amount), 0)
+  );
   const exportExcel = async () => {
     const sheets = bulk ? bulkData : (data ? [data] : []);
     if (!sheets.length) { toast.error('لا توجد بيانات للتصدير'); return; }
@@ -212,8 +217,11 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
       { header:'أيام الحضور',    key:'attendance.workDays',   format:v=>fmtIntZero(v), total:'sum' },
       { header:'أيام الغياب',    key:'attendance.absentDays', format:v=>fmtIntZero(v), total:'sum' },
       { header:'الراتب الأساسي', key:'earnings.basicSalary',  format:v=>xl2(v), total:'sum' },
-      { header:'إضافي صباحي',    key:'earnings.morningOT.amount', format:v=>xl2(v), total:'sum' },
-      { header:'إضافي مسائي',    key:'earnings.eveningOT.amount', format:v=>xl2(v), total:'sum' },
+      // null = the approved stored record has no morning/evening split (only the total) -> blank cell.
+      // The subtotal is blank too when ANY row lacks a split: summing only the rows that have one would
+      // not add up to the overtime total column.
+      { header:'إضافي صباحي',    key:'earnings.morningOT.amount', format:v=>(v == null ? '' : xl2(v)), total:splitSubtotal('morningOT') },
+      { header:'إضافي مسائي',    key:'earnings.eveningOT.amount', format:v=>(v == null ? '' : xl2(v)), total:splitSubtotal('eveningOT') },
       { header:'إجمالي الإضافي', key:'earnings.overtimeAmount', format:v=>xl2(v), total:'sum' },
       { header:'خصم الغياب',     key:'deductions.absentAmount', format:v=>xl2(v), total:'sum' },
       { header:'خصم التأخير',    key:'deductions.lateAmount',  format:v=>xl2(v), total:'sum' },

@@ -5,6 +5,20 @@ import { IS_DEV, APP_NAME, FRONTEND_URL, FRONTEND_ROOT } from './constants.js';
 import { state } from './state.js';
 import { markSplashStep } from './splash.js';
 
+// ─── Reveal the main window (replaces the old splash hand-off) ───────────────
+// Called by lifecycle.js when startup is ready, when the readiness budget is
+// spent (the in-app ServerReadyGate then shows connecting / unreachable), or
+// when the main document failed to load. Idempotent.
+let mainWindowRevealed = false;
+export function revealMainWindow() {
+  const win = state.mainWindow;
+  if (mainWindowRevealed || !win || win.isDestroyed()) return;
+  mainWindowRevealed = true;
+  win.maximize();   // also shows a hidden window (without focus)
+  win.show();
+  win.focus();
+}
+
 // ─── Main window ──────────────────────────────────────────────────────────────
 export async function createMainWindow(paths) {
   const iconPath = paths.iconPng;
@@ -46,13 +60,14 @@ export async function createMainWindow(paths) {
     },
   });
 
-  // ── Instant Window ───────────────────────────────────────────────────────
-  // Show the (still-empty, backgroundColor-filled) window immediately — do
-  // NOT wait for the frontend bundle, backend, DB, sockets, or device
-  // listeners. The functional splash stays alwaysOnTop above it until real
-  // readiness signals (or the hard timeout) close it.
-  mainWindow.show();
-  mainWindow.maximize();
+  // ── Hidden until ready ───────────────────────────────────────────────────
+  // The window is created hidden and the frontend loads in the background, but
+  // it is NOT shown yet: showing an empty, backgroundColor-filled window the
+  // moment the app starts is what produced a full-screen dark rectangle with no
+  // content. lifecycle.js calls revealMainWindow() once the backend/services are
+  // ready (or the readiness budget runs out — see SPLASH_TIMEOUT_MS), and from
+  // then on the in-app ServerReadyGate shows the connecting / unreachable state.
+  mainWindowRevealed = false;   // every newly created window gets its own reveal
   if (IS_DEV) mainWindow.webContents.openDevTools({ mode: 'detach' });
 
   mainWindow.webContents.once('did-finish-load', () => markSplashStep(0, true));
@@ -122,9 +137,21 @@ export async function createMainWindow(paths) {
   // independent of console/log routing. Confirmed live: a missing bundled
   // JS file produces exactly one onErrorOccurred call with
   // error:'net::ERR_FILE_NOT_FOUND'.
+  let loadFailureShown = false;
   mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
     if (errorCode === -3) return;
     console.error(`[AssetSmokeTest] did-fail-load: ${errorDescription} (${errorCode}) url=${validatedURL} mainFrame=${isMainFrame}`);
+    // The window is still hidden at this point (see "Hidden until ready"), so a
+    // failed main-document load must be surfaced explicitly instead of leaving the
+    // user with no window at all. Packaged builds only (dev reloads via Vite).
+    if (isMainFrame && !IS_DEV && !loadFailureShown) {
+      loadFailureShown = true;
+      revealMainWindow();
+      dialog.showErrorBox(
+        'خطأ في التشغيل — تعذر تحميل الواجهة',
+        `تعذر تحميل واجهة البرنامج (${errorDescription}).\n\nأعد تشغيل البرنامج، وإذا استمرت المشكلة أعد تثبيته.`
+      );
+    }
   });
   // Scoped to actual packaged-asset resource types ONLY — onErrorOccurred
   // fires for every failed network-level request on this session, which

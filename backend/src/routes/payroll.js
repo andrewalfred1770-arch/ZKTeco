@@ -201,8 +201,11 @@ router.get('/', async (req, res) => {
         advancesList: advancesByEmployee.get(p.employeeId) || [],
       },
     }))));
+    // Closed (finalized/paid) rows are approved records: show what was approved (the stored
+    // row), never freshly computed figures that may differ after a later attendance edit.
+    const isClosedRow = (p) => p.status === 'finalized' || p.status === 'paid';
     const result = eligiblePayrolls.map((p, i) => {
-      const c = fresh[i];
+      const c = isClosedRow(p) ? { ...fresh[i], ...p, dailyRate: fresh[i].dailyRate } : fresh[i];
       return {
         ...p,
         employee: { code: p.employee.code, name: p.employee.name },
@@ -233,7 +236,7 @@ router.get('/', async (req, res) => {
     // F-01: best-effort write-through AFTER the response — rows whose stored
     // snapshot lags the fresh figures just shown are re-synced (each recomputes
     // under its own payroll lock, so a concurrent edit can never be overwritten).
-    const stale = eligiblePayrolls.filter((p, i) => payrollSnapshotDiffers(p, fresh[i]));
+    const stale = eligiblePayrolls.filter((p, i) => !isClosedRow(p) && payrollSnapshotDiffers(p, fresh[i]));
     if (stale.length) {
       Promise.all(stale.map(p => payrollLimit(() => syncStoredPayroll(p.employeeId, p.month, p.year))))
         .catch(e => console.error('[PAYROLL-SYNC] background sync failed:', e && e.message));
@@ -655,7 +658,10 @@ router.get('/final-sheet', async (req, res) => {
     // counted here so the identity below always holds exactly, for any data.
     const otherDays = attRecords.length - (workDays + absentDays + weeklyOffDays + holidayDays);
 
-    const basicSalary    = computed.basicSalary;
+    // Closed payrolls: the headline money figures are the APPROVED stored values, not a fresh
+    // recomputation (see syncStoredPayrollLocked). Breakdown lines below stay live.
+    const closedStored = (pr.status === 'finalized' || pr.status === 'paid') ? pr : null;
+    const basicSalary    = closedStored ? closedStored.basicSalary : computed.basicSalary;
     // Certification HIGH#2: morningOTAmt/eveningOTAmt are no longer derived
     // here — this route must never multiply hours by rate/multiplier itself.
     // Both are sourced from computePayroll(), which computes them as an
@@ -663,18 +669,46 @@ router.get('/final-sheet', async (req, res) => {
     // integer-cent split — see PAYROLL_CONSISTENCY_ARCHITECTURE.md).
     const morningOTAmt   = computed.morningOTAmount;
     const eveningOTAmt   = computed.eveningOTAmount;
-    const overtimeAmount = computed.overtimeAmount;
+    const overtimeAmount = closedStored ? closedStored.overtimeAmount : computed.overtimeAmount;
     const totalEarnings  = parseFloat((basicSalary + overtimeAmount).toFixed(2));
 
     const totalAbsencePenaltyDays = computed.totalAbsencePenaltyDays;
     const absentDeduct   = computed.absentAmount;
     const lateDeduct     = computed.latePenalty;
     const earlyDeduct    = computed.earlyLeavePenalty;
-    const advances                  = computed.advances;
-    const manualDeductionAdjustment = computed.manualDeductionAdjustment;
+    const advances                  = closedStored ? closedStored.advances : computed.advances;
+    const manualDeductionAdjustment = closedStored ? closedStored.manualDeductionAdjustment : computed.manualDeductionAdjustment;
 
-    const totalDeductions = computed.deductions;
-    const netSalary = computed.netSalary;
+    const totalDeductions = closedStored ? closedStored.deductions : computed.deductions;
+    const netSalary = closedStored ? closedStored.netSalary : computed.netSalary;
+
+    // Closed payroll whose live recalculation no longer equals the approved record (an attendance
+    // edit after close): every breakdown line must come from the APPROVED stored row, never from
+    // today's attendance, so the lines add up to the approved net by construction.
+    //   stored latePenalty            = late amount
+    //   stored penaltyAmount          = late + early amount  -> early = penaltyAmount - latePenalty
+    //   stored deductions             = absent + late + early + manual -> absent = the remainder
+    // The morning/evening overtime SPLIT is not persisted anywhere, so it is reported as unknown
+    // (null) and only the approved overtime total is shown.
+    let approved = null;
+    if (closedStored && payrollSnapshotDiffers(closedStored, computed)) {
+      const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+      const hr = Number(closedStored.hourlyRate) || Number(computed.hourlyRate) || 0;
+      const dRate = Number(computed.dailyRate) || (hr * 8) || 0;
+      const lateAmt = r2(closedStored.latePenalty);
+      const earlyAmt = Math.max(0, r2(closedStored.penaltyAmount - closedStored.latePenalty));
+      const manualAmt = r2(closedStored.manualDeductionAdjustment);
+      const dedTotal = r2(closedStored.deductions);
+      const absentAmt = Math.max(0, r2(dedTotal - lateAmt - earlyAmt - manualAmt));
+      approved = {
+        lateAmt, earlyAmt, manualAmt, dedTotal, absentAmt,
+        lateHrs: hr ? r2(lateAmt / hr) : 0,
+        earlyHrs: hr ? r2(earlyAmt / hr) : 0,
+        absentPenaltyDays: dRate ? r2(absentAmt / dRate) : 0,
+        otTotal: r2(closedStored.overtimeAmount),
+        otHours: r2(closedStored.overtimeHours),
+      };
+    }
 
 
     res.json({
@@ -694,19 +728,40 @@ router.get('/final-sheet', async (req, res) => {
         hourlyRate,
         dailyRate,
       },
-      attendance: {
+      attendance: approved ? {
+        workDays: closedStored.workDays, absentDays: closedStored.absentDays, totalLateMin, morningOT: null, eveningOT: null,
+        totalOTHours: approved.otHours, latePenalty: approved.lateHrs, earlyPenalty: approved.earlyHrs, hasManualPenalty, hasManualOvertime,
+        weeklyOffDays, holidayDays, futureDays, otherDays, totalDaysInPeriod,
+      } : {
         workDays, absentDays, totalLateMin, morningOT, eveningOT, totalOTHours, latePenalty, earlyPenalty, hasManualPenalty, hasManualOvertime,
         // EF-012: additive — full day accounting. workDays+absentDays+weeklyOffDays+holidayDays+futureDays === totalDaysInPeriod exactly.
         weeklyOffDays, holidayDays, futureDays, otherDays, totalDaysInPeriod,
       },
-      earnings: {
+      earnings: approved ? {
+        basicSalary,
+        morningOT:     { hours: null, amount: null },
+        eveningOT:     { hours: null, amount: null },
+        overtimeAmount,
+        total:         totalEarnings,
+      } : {
         basicSalary,
         morningOT:     { hours: morningOT, amount: morningOTAmt },
         eveningOT:     { hours: eveningOT, amount: eveningOTAmt },
         overtimeAmount,
         total:         totalEarnings,
       },
-      deductions: {
+      deductions: approved ? {
+        absentDays: closedStored.absentDays,
+        absentPenaltyDays: approved.absentPenaltyDays,
+        absentAmount:  approved.absentAmt,
+        latePenalty:   approved.lateHrs,
+        lateAmount:    approved.lateAmt,
+        earlyPenalty:  approved.earlyHrs,
+        earlyAmount:   approved.earlyAmt,
+        advances,
+        manualDeductionAdjustment,
+        total:         totalDeductions,
+      } : {
         absentDays,
         absentPenaltyDays: totalAbsencePenaltyDays,
         absentAmount:  absentDeduct,

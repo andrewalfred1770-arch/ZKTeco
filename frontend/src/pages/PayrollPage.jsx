@@ -413,8 +413,19 @@ export default function PayrollPage() {
   const calculate = async () => {
     setCalcing(true);
     try {
-      await api.post('/payroll/calculate', { month, year }, LONG_OP);
+      const { data: calcRes } = await api.post('/payroll/calculate', { month, year }, LONG_OP);
       toast.success('تم احتساب المرتبات بنجاح');
+      // The API skips finalized/paid payrolls (protectedPayroll: [{ employeeId, month, year, status }]) —
+      // say so, instead of leaving "success" to imply every payroll was recalculated.
+      const skipped = Array.isArray(calcRes?.protectedPayroll) ? calcRes.protectedPayroll : [];
+      if (skipped.length) {
+        const paid = skipped.filter(t => t.status === 'paid').length;
+        const finalized = skipped.length - paid;
+        const parts = [];
+        if (finalized) parts.push(`${finalized} معتمد`);
+        if (paid) parts.push(`${paid} مدفوع`);
+        toast(`تم تخطي ${skipped.length} مرتب (${parts.join('، ')}) — المرتبات المعتمدة/المدفوعة لا يُعاد احتسابها تلقائيًا`, { icon: 'ℹ️', duration: 7000 });
+      }
       load();
     } catch { toast.error('فشل الاحتساب'); }
     finally { setCalcing(false); }

@@ -47,10 +47,12 @@ const DEFAULT_RULES = {
   overtime_rounding:   '50',
 
   // ── Weekend ───────────────────────────────────────────────────────────────────
-  // Company policy (2026-06): Friday is a special overtime workday; Saturday is
-  // a normal workday. Neither is off by default — override from the UI.
+  // Company policy (2026-10): Friday is the official weekly day off — a Friday with no
+  // punches is a weekly off (never an absence) and a Friday with punches is overtime
+  // (all worked hours, no late/early penalties). Saturday is a normal workday.
+  // Set friday_is_weekend to 'false' from the UI to make Friday an ordinary workday.
   weekend_days:       '',      // e.g. 'fri', 'sat', 'fri,sat'
-  friday_is_weekend:  'false', // true → Friday = non-working day
+  friday_is_weekend:  'true',  // true → Friday = non-working day (weekly off)
 
   // ── Absence ───────────────────────────────────────────────────────────────────
   late_penalty_per_minute:'0',   // legacy per-minute rate (superseded by tiers)

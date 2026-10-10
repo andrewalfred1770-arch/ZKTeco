@@ -60,7 +60,7 @@ const DEFAULTS = {
   overtime_minimum: '50', overtime_multiplier: '1.5',
   overtime_cap_hours: '0', friday_ot_multiplier: '1.5',
   holiday_ot_multiplier: '1.5',
-  weekend_days: '', friday_is_weekend: 'false',
+  weekend_days: '', friday_is_weekend: 'true',
 };
 
 // ── Time-rule table editor ────────────────────────────────────────────────────

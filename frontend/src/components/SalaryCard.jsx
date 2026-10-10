@@ -182,11 +182,22 @@ export default function SalaryCard({ data, showBorder = true }) {
     ...(showBorder ? { border: `1px solid ${C.border}`, borderRadius: 12, boxShadow: SHADOW.card } : {}),
   };
 
+  // A finalized/paid statement rebuilt from the approved stored record has the overtime TOTAL only
+  // (the morning/evening split is not persisted): the API then sends the split as null.
+  const otUnsplit = earnings?.morningOT?.amount == null && earnings?.eveningOT?.amount == null;
   const earningsRows = [
     { label: 'الراتب الأساسي', value: earnings?.basicSalary },
-    { label: `إضافي صباحي (${formatHours(attendance?.morningOT)})`, value: earnings?.morningOT?.amount },
-    { label: `إضافي مسائي (${formatHours(attendance?.eveningOT)})`, value: earnings?.eveningOT?.amount },
-    { label: ' ', value: null },
+    ...(otUnsplit
+      ? [
+          { label: `إجمالي الإضافي (${formatHours(attendance?.totalOTHours)})`, value: earnings?.overtimeAmount },
+          { label: ' ', value: null },
+          { label: ' ', value: null },
+        ]
+      : [
+          { label: `إضافي صباحي (${formatHours(attendance?.morningOT)})`, value: earnings?.morningOT?.amount },
+          { label: `إضافي مسائي (${formatHours(attendance?.eveningOT)})`, value: earnings?.eveningOT?.amount },
+          { label: ' ', value: null },
+        ]),
   ];
   const deductionsRows = [
     {

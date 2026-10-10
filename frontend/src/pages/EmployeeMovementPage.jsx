@@ -6,10 +6,12 @@ import {
   UserSquare2, Download, Play,
   CheckCircle, XCircle, Clock, TrendingUp, AlertTriangle,
   Loader2, ChevronLeft, ChevronRight, Printer, Pencil,
-  Zap, ZapOff, Filter, ChevronDown, ChevronUp,
+  Zap, ZapOff, Filter, ChevronDown, ChevronUp, Copy, ClipboardPaste,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../lib/api';
+import PasteAttendanceModal from '../components/PasteAttendanceModal';
+import { useAttendancePaste } from '../hooks/useAttendancePaste';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import {
   westernDigits, fmtPenaltyUnits, fmtOvertimeUnits, formatHours, fmtEditableZero,
@@ -1054,6 +1056,32 @@ export default function EmployeeMovementPage() {
 
   // Assigns a ref only — no external state read, safe with an empty
   // dependency array (AG Grid only calls this once, when the grid mounts).
+  // ── Copy / paste a manual attendance entry (shared workflow) ──────────────
+  // This grid has no checkbox column, so the source/target is the row of the
+  // focused cell. The pinned totals row has no id and can never be pasted on.
+  const [focusedRow, setFocusedRow] = useState(null);
+  // The grid drops its focused cell when a toolbar button takes DOM focus, so
+  // the row is remembered from cell clicks / keyboard focus and is NOT cleared
+  // by that blur. A pinned (totals) row clears it.
+  const handleCellFocused = useCallback((e) => {
+    if (e.rowIndex == null) return;
+    const node = e.rowPinned == null ? e.api.getDisplayedRowAtIndex(e.rowIndex) : null;
+    setFocusedRow(node?.data?.id ? node.data : null);
+  }, []);
+  const handleCellClicked = useCallback((e) => {
+    setFocusedRow(!e.node?.rowPinned && e.data?.id ? e.data : null);
+  }, []);
+  const paste = useAttendancePaste({
+    selected: focusedRow ? [focusedRow] : [],
+    onBegin: (t) => { editCountRef.current++; guard.beginEdit([t.id]); },
+    onSaved: (updated, t) => applyUpdate(updated, t, null),
+    onEnd: (t) => {
+      guard.endEdit([t.id]);
+      editCountRef.current--;
+      if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }
+    },
+  });
+
   const handleGridReady = useCallback((p) => { filterGridApiRef.current = p.api; }, [filterGridApiRef]);
 
   return (
@@ -1088,6 +1116,14 @@ export default function EmployeeMovementPage() {
           </button>
           {data && (
             <>
+              <button onClick={paste.copy} disabled={!paste.canCopy} className="btn-secondary text-xs py-1.5 px-3"
+                title={paste.canCopy ? 'نسخ قيم الحركة المحددة' : 'انقر على خلية في الحركة لنسخها'}>
+                <Copy className="w-3.5 h-3.5" /> نسخ الحركة
+              </button>
+              <button onClick={paste.openPaste} disabled={!paste.canPaste} className="btn-secondary text-xs py-1.5 px-3"
+                title={paste.blockReason || `لصق حركة ${paste.clip.sourceName} (${paste.clip.sourceDate})`}>
+                <ClipboardPaste className="w-3.5 h-3.5" /> لصق الحركة
+              </button>
               <button onClick={exportCSV} className="btn-secondary text-xs py-1.5 px-3">
                 <Download className="w-3.5 h-3.5" /> CSV
               </button>
@@ -1242,6 +1278,8 @@ export default function EmployeeMovementPage() {
             getRowClass={getRowClass}
             getRowId={getRowId}
             onCellEditingStopped={handleCellEdit}
+            onCellFocused={handleCellFocused}
+            onCellClicked={handleCellClicked}
             onGridReady={handleGridReady}
             isExternalFilterPresent={gridIsExternalFilterPresent}
             doesExternalFilterPass={gridDoesExternalFilterPass}
@@ -1266,6 +1304,7 @@ export default function EmployeeMovementPage() {
         </div>
       </div>
 
+      <PasteAttendanceModal {...paste.modalProps} />
       {data && (
         <PrintPreviewModal
           isOpen={printOpen}

@@ -3,7 +3,7 @@ import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-quartz.css';
 import {
-  Download, RefreshCw, Loader2, Play, Printer, FileBarChart,
+  Download, RefreshCw, Loader2, Play, Printer, FileBarChart, Copy, ClipboardPaste,
   CheckCircle, XCircle, Clock, TrendingUp,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -32,6 +32,8 @@ import AttendanceFilterBar from '../components/AttendanceFilterBar';
 import { useAttendanceFilter } from '../hooks/useAttendanceFilter';
 import { ACTOR, HHMM_RE, OVERRIDE_FIELD_MAP, normalizeDailyUpdate, replaceAttendanceRow, applyRowFieldUpdate } from '../lib/attendanceUtils';
 import { useKeyboardShortcut } from '../hooks/useKeyboardShortcut';
+import PasteAttendanceModal from '../components/PasteAttendanceModal';
+import { useAttendancePaste } from '../hooks/useAttendancePaste';
 import { MONTHS_AR, getYearRange } from '../lib/constants';
 
 const DAYS_AR   = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
@@ -65,6 +67,7 @@ export default function AttendanceMonthlyPage() {
   const [year,  setYear]  = useState(_saved.year  ?? now.getFullYear());
 
   const gridRef = useRef();
+  const [selectedRows, setSelectedRows] = useState([]);
   const editCountRef   = useRef(0);
   const pendingReloadRef = useRef(false);
   // Tracks in-flight `${rowId}:${field}` saves so a response landing while a
@@ -623,6 +626,18 @@ export default function AttendanceMonthlyPage() {
     }
   }, [month, year, deptId, departments, collectFilteredRows]);
 
+  // ── Copy / paste a manual attendance entry (shared workflow) ──────────────
+  const paste = useAttendancePaste({
+    selected: selectedRows,
+    onBegin: (t) => { editCountRef.current++; guard.beginEdit([t.id]); },
+    onSaved: (updated, t) => { guard.markFresh([t.id]); setRows(rs => replaceAttendanceRow(rs, updated)); },
+    onEnd: (t) => {
+      guard.endEdit([t.id]);
+      editCountRef.current--;
+      if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }
+    },
+  });
+
   const summary = useMemo(() => ({
     present: rows.filter(r => ['present','late','early_leave'].includes(r.status)).length,
     absent:  rows.filter(r => r.isAbsent).length,
@@ -643,6 +658,14 @@ export default function AttendanceMonthlyPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button onClick={paste.copy} disabled={!paste.canCopy} className="btn-secondary text-xs py-1.5 px-3"
+            title={paste.canCopy ? 'نسخ قيم الحركة المحددة' : 'حدّد حركة واحدة لنسخها'}>
+            <Copy className="w-3.5 h-3.5" /> نسخ الحركة
+          </button>
+          <button onClick={paste.openPaste} disabled={!paste.canPaste} className="btn-secondary text-xs py-1.5 px-3"
+            title={paste.blockReason || `لصق حركة ${paste.clip.sourceName} (${paste.clip.sourceDate})`}>
+            <ClipboardPaste className="w-3.5 h-3.5" /> لصق الحركة
+          </button>
           <button onClick={exportCSV} className="btn-secondary text-xs py-1.5 px-3">
             <Download className="w-3.5 h-3.5" /> CSV
           </button>
@@ -730,6 +753,7 @@ export default function AttendanceMonthlyPage() {
             getRowClass={getRowClass}
             getRowStyle={getRowStyle}
             onCellEditingStopped={handleCellEdit}
+            onSelectionChanged={() => setSelectedRows(gridRef.current?.api?.getSelectedRows() ?? [])}
             onGridReady={handleGridReady}
             isExternalFilterPresent={gridIsExternalFilterPresent}
             doesExternalFilterPass={gridDoesExternalFilterPass}
@@ -770,6 +794,8 @@ export default function AttendanceMonthlyPage() {
         meta={summaryPrintMeta}
         orientation="landscape"
       />
+
+      <PasteAttendanceModal {...paste.modalProps} />
 
       {absenceModal && (
         <AbsenceTypeModal

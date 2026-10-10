@@ -608,7 +608,12 @@ async function syncStoredPayrollLocked(employeeId, month, year, opts = {}) {
     const computed = await computePayroll(employeeId, month, year, opts.preload ? { preload: opts.preload } : {});
     let stored = await prisma.payroll.findUnique({ where: { employeeId_month_year: { employeeId, month, year } } });
     let synced = false;
-    if (stored && payrollSnapshotDiffers(stored, computed)) {
+    // A finalized/paid row is an approved record: a READ must never rewrite it. The only
+    // caller that may refresh a closed row is one that passes { allowClosed: true } for an
+    // allowed post-close change (advances). Everything else gets the computed figures back
+    // and the stored row stays exactly as approved.
+    const closedRow = !!stored && (stored.status === 'finalized' || stored.status === 'paid');
+    if (stored && !(closedRow && !opts.allowClosed) && payrollSnapshotDiffers(stored, computed)) {
       const before = stored.netSalary;
       stored = await calculatePayrollImpl(employeeId, month, year, { precomputed: computed });
       synced = true;
