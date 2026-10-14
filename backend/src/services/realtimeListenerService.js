@@ -184,8 +184,18 @@ async function ingestPunch(deviceId, io, zkUserId, timestamp, attempt = 1) {
 
     if (inserted && employee?.id) {
       try {
-        await attendanceEngine.processDate(timestamp, employee.id);
+        const pr = await attendanceEngine.processDate(timestamp, employee.id);
         const m = moment(timestamp);
+        if (pr && pr.skipped === 'manual-lock' && pr.ignoredPunches > 0) {
+          // The punch is stored, but the day's row is locked by an HR edit and cannot take it: do NOT announce the day as
+          // processed (the screens would think the new punch is in), and do not re-settle payroll for a row that did not change.
+          logger.warn(`[RT] punch stored but NOT applied: locked attendance row device=${deviceId} employee=${employee.id} date=${m.format('YYYY-MM-DD')} ignoredPunches=${pr.ignoredPunches}`);
+          emit(io, 'attendance:locked-skip', {
+            deviceId, employeeId: employee.id, employeeName: employee.name,
+            date: m.format('YYYY-MM-DD'), timestamp, punches: pr.ignoredPunches, source: 'realtime',
+          });
+          return;
+        }
         // C1: a live punch is an automatic background trigger, not a direct
         // edit of a Payroll row — a punch that happens to land in an
         // already-finalized/paid month (device clock skew, a backlog punch,
@@ -819,6 +829,7 @@ function getDiagnostics() {
 }
 
 module.exports = {
+  ingestPunch,   // exported for the regression tests (scratch fixtures); not called from outside this module in production
   startAll,
   stopAll,
   startListener,

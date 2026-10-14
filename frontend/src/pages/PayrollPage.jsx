@@ -7,6 +7,10 @@ import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-quartz.css';
 import { Download, Play, Loader2, RefreshCw, Users, Printer, AlertTriangle, X, ClipboardList, ChevronDown, ChevronUp, CalendarDays, Search } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useUnsavedWork } from '../hooks/useUnsavedWork';
+import { useFailedEdits } from '../hooks/useFailedEdits';
+import FailedEditsBanner from '../components/FailedEditsBanner';
+import { handleEditFailure } from '../lib/failedEdits';
 import api, { LONG_OP } from '../lib/api';
 import { useTheme } from '../contexts/ThemeContext';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
@@ -144,6 +148,9 @@ function DetailBtnRenderer(p) {
   );
 }
 
+// A finalized / paid payroll is an approved, immutable record: its money cells are read-only (the API refuses edits too).
+const isClosedPayroll = (row) => !!row && (row.status === 'finalized' || row.status === 'paid');
+
 export default function PayrollPage() {
   const { agGridTheme } = useTheme();
   const [rows,        setRows]        = useState([]);
@@ -177,6 +184,8 @@ export default function PayrollPage() {
   // totals, calculations, print or export.
   const [searchQ, setSearchQ] = useState('');
   const gridRef = useRef();
+  // An open cell editor or a save still in flight must survive a session expiry (lib/unsavedWork.js).
+  useUnsavedWork('payroll-editor', 'الرواتب (خلية قيد التحرير)', () => !!gridRef.current?.api?.getEditingCells?.().length);
   const savingCellsRef = useRef(new Set());
   // Counts in-flight PUT requests — live-sync reloads (useRulesLiveSync/
   // useDeviceLiveSync below) are deferred while this is nonzero, so a
@@ -184,6 +193,14 @@ export default function PayrollPage() {
   // rowData out from under an open/saving cell. This page previously had no
   // such guard at all (see gridDefaults.js safeRefreshCells doc comment).
   const editCountRef = useRef(0);
+  // Edits typed but NOT saved because the session ended (lib/failedEdits.js): kept in the cell, flagged, re-sent only on request.
+  // Only a definitive "not applied" outcome (HTTP 401 / never sent) is ever retried, so the advances edit (which creates a delta
+  // record on the server) cannot be duplicated by a retry.
+  const failed = useFailedEdits({
+    id: 'payroll-failed', label: 'الرواتب (تعديلات لم تُحفظ)', gridRef, editCountRef,
+    revert: (e) => setRows((rs) => rs.map((r) => (r.id === e.rowId ? { ...r, [e.field]: e.oldValue } : r))),
+    resync: () => load(),   // after discarding edits whose outcome was unknown: re-read what the server really holds
+  });
   // Set when a reload was skipped because editCountRef was nonzero; flushed
   // once the in-flight edit's finally block sees the counter back at 0.
   const pendingReloadRef = useRef(false);
@@ -241,7 +258,7 @@ export default function PayrollPage() {
     // ── Earnings — basicSalary is editable inline ─────────────────────────────
     {
       field: 'basicSalary', headerName: 'الراتب الأساسي', width: 130, minWidth: 114,
-      editable: true,
+      editable: (p) => !isClosedPayroll(p.data),
       cellClass: editCellClass('basicSalary'),
       headerClass: 'ag-header-center',
       valueFormatter: p => fmtEditableZero(p.value, fmtMoney),
@@ -295,7 +312,7 @@ export default function PayrollPage() {
     // ── السلف (editable — calls PUT /payroll/:id/advances to create delta Advance row) ──
     {
       field: 'advances', headerName: 'السلف', width: 110, minWidth: 96, headerClass: 'ag-header-center',
-      editable: true,
+      editable: (p) => !isClosedPayroll(p.data),
       cellClass: editCellClass('advances'),
       valueFormatter: p => fmtEditableZero(p.value, v => ((v || 0) > 0 ? fmtMoney(v) : '—')),
       cellStyle: p => ({ ...MONEY, alignItems:'center', color: (p.value || 0) > 0 ? '#d97706' : 'var(--c-muted)' }),
@@ -303,7 +320,7 @@ export default function PayrollPage() {
     // ── خصم إداري (editable — maps to manualDeductionAdjustment) ────────────
     {
       field: 'manualDeductionAdjustment', headerName: 'خصم إداري', width: 118, minWidth: 104,
-      editable: true,
+      editable: (p) => !isClosedPayroll(p.data),
       cellClass: editCellClass('manualDeductionAdjustment'),
       headerClass: 'ag-header-center',
       valueFormatter: p => fmtEditableZero(p.value, v => ((v || 0) > 0 ? fmtMoney(v) : '—')),
@@ -349,7 +366,7 @@ export default function PayrollPage() {
 
   // Quick filter (name search) must match the employee name/code only — never
   // salary figures — so every column opts out; the name column opts back in.
-  const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF, getQuickFilterText: () => '' }), []);
+  const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF, getQuickFilterText: () => '', cellClassRules: failed.cellClassRules }), [failed]);
 
   // Guarded regardless of trigger (background live-sync OR the manual
   // refresh button) — either would otherwise replace rowData mid-edit.
@@ -407,8 +424,8 @@ export default function PayrollPage() {
   };
 
   useEffect(() => { load(); }, [month, year, deptId]);
-  useRulesLiveSync(load, { isBusyRef: editCountRef });
-  useDeviceLiveSync(load, { silent: true, isBusyRef: editCountRef, reloadOne: loadOne });
+  useRulesLiveSync(load, { isBusyRef: failed.busyRef });
+  useDeviceLiveSync(load, { silent: true, isBusyRef: failed.busyRef, reloadOne: loadOne });
 
   const calculate = async () => {
     setCalcing(true);
@@ -490,10 +507,21 @@ export default function PayrollPage() {
           ? { ...r, [field]: updated[field] }
           : { ...r, ...updated, employee: { ...r.employee, ...updated.employee } };
       }));
+      failed.clear(data.id, field);   // the server confirmed this cell: it is no longer an unsaved edit
       // No success toast for single-cell saves — cell updates visually
     } catch (err) {
-      toast.error(err?.response?.data?.error || 'فشل الحفظ');
-      node.setDataValue(field, oldValue);
+      handleEditFailure({
+        failed, err,
+        // 'advances' creates a delta Advance record server-side: after a lost reply it is NOT re-sent without the user's explicit confirmation.
+        // Every other payroll cell PUTs an absolute value (idempotent).
+        idempotent: field !== 'advances',
+        entry: { rowId: data.id, field, value: newValue, oldValue, label: data.employeeName || data.employee?.name },
+        retain: (e) => setRows((rs) => rs.map((r) => (r.id === e.rowId ? { ...r, [e.field]: e.value } : r))),
+        revert: () => node.setDataValue(field, oldValue),
+        notifyKept: () => toast.error('انتهت الجلسة — التعديل لم يُحفظ بعد. سجّل الدخول ثم اضغط «إعادة المحاولة» أعلى الجدول', { id: 'edit-not-saved', duration: 9000 }),
+        notifyUnknown: () => toast.error('انقطع الاتصال — لم يُتأكد هل حُفظ هذا التعديل. القيمة محفوظة في الجدول: راجع الشريط أعلى الجدول (إعادة المحاولة / تجاهل)', { id: 'edit-not-saved', duration: 9000 }),
+        notifyFailed: (e2) => toast.error(e2?.response?.data?.error || 'فشل الحفظ'),
+      });
     } finally {
       guard.endEdit([data.id]);
       editCountRef.current--;
@@ -744,6 +772,16 @@ export default function PayrollPage() {
       </div>
 
       {/* ── Data grid ────────────────────────────────────────────────────────── */}
+      <FailedEditsBanner
+        count={failed.count} unknown={failed.unknown} retrying={failed.retrying}
+        onDiscard={() => failed.discard()}
+        onRetry={() => failed.retryAll(async (e) => {
+          const node = gridRef.current?.api?.getRowNode(String(e.rowId));
+          if (!node?.data) { toast.error('السجل لم يعد معروضاً — تعذّرت إعادة المحاولة (يمكنك تجاهل التعديل)'); return; }
+          await handleCellEdit({ data: node.data, colDef: { field: e.field }, newValue: e.value, oldValue: e.oldValue, node });   // the page's normal save path: same validation, same request; it clears the entry only on a confirmed save
+        })}
+      />
+
       <div className="flex-1 overflow-hidden" style={{ minHeight: 0 }}>
         <div className={`${agGridTheme} h-full`}>
           <AgGridReact

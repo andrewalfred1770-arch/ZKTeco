@@ -25,6 +25,8 @@ import {
   Layers, Link2, Link2Off, Stethoscope,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useUnsavedWork } from '../hooks/useUnsavedWork';
+import { describeSaveFailure } from '../lib/saveFailure';
 import { getSocket } from '../lib/socket';
 import api, { LONG_OP } from '../lib/api';
 import { useTheme } from '../contexts/ThemeContext';
@@ -187,23 +189,28 @@ function DeviceDrawer({ open, onClose, onSaved, device, branches }) {
   const [saving,  setSaving]  = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  // Unsaved-edit protection (lib/unsavedWork.js): modified = differs from what the drawer was opened with. Boolean only, never stored.
+  const formRef = useRef(form); formRef.current = form;
+  const baselineRef = useRef(null);
+  const submitting = useRef(false);   // a second Save while one is running does nothing (no duplicated mutation)
+  useUnsavedWork('device-form', 'نموذج الجهاز', () => open && baselineRef.current !== null && JSON.stringify(formRef.current) !== baselineRef.current);
 
   useEffect(() => {
     setTestResult(null);
-    if (device) {
-      setForm({
-        name:         device.name,
-        ipAddress:    device.ipAddress,
-        port:         String(device.port),
-        branchId:     String(device.branchId),
-        deviceNumber: String(device.deviceNumber || 1),
-        syncInterval: String(device.syncInterval || 5),
-        autoSync:     device.autoSync !== false,
-        enabled:      device.enabled  !== false,
-      });
-    } else {
-      setForm(empty);
-    }
+    const next = device
+      ? {
+          name:         device.name,
+          ipAddress:    device.ipAddress,
+          port:         String(device.port),
+          branchId:     String(device.branchId),
+          deviceNumber: String(device.deviceNumber || 1),
+          syncInterval: String(device.syncInterval || 5),
+          autoSync:     device.autoSync !== false,
+          enabled:      device.enabled  !== false,
+        }
+      : empty;
+    baselineRef.current = JSON.stringify(next);
+    setForm(next);
   }, [device, open]);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
@@ -224,6 +231,8 @@ function DeviceDrawer({ open, onClose, onSaved, device, branches }) {
 
   const handleSave = async (e) => {
     e.preventDefault();
+    if (submitting.current) return;
+    submitting.current = true;
     setSaving(true);
     try {
       const payload = {
@@ -242,8 +251,8 @@ function DeviceDrawer({ open, onClose, onSaved, device, branches }) {
       onSaved();
       onClose();
     } catch (err) {
-      toast.error(err.response?.data?.error || 'فشل الحفظ');
-    } finally { setSaving(false); }
+      toast.error(describeSaveFailure(err));   // the drawer stays open with everything typed
+    } finally { submitting.current = false; setSaving(false); }
   };
 
   // Phase 13.9: accessible-dialog semantics — hooks run unconditionally,
@@ -935,9 +944,12 @@ export default function DevicesPage() {
     const onSyncing = ({ deviceId }) =>
       setLiveStatus(s => ({ ...s, [deviceId]: 'syncing' }));
 
-    const onDeviceSynced = ({ deviceId, newLogs, duration }) => {
+    const onDeviceSynced = ({ deviceId, newLogs, duration, lockedIgnored }) => {
       setLiveStatus(s => ({ ...s, [deviceId]: 'online' }));
-      if (newLogs > 0) toast.success(`مزامنة ناجحة — ${W(newLogs)} حركة جديدة (${fmtDuration(duration)})`);
+      if (lockedIgnored > 0) {
+        // Not a plain success: some punches were stored but not applied to attendance (manually-locked days).
+        toast(`⚠ اكتملت المزامنة (${W(newLogs || 0)} حركة جديدة) لكن ${W(lockedIgnored)} بصمة لم تُطبَّق على الحضور لأن السجلات معدّلة يدوياً — استرجع الحساب التلقائي من شاشة الحضور الشهري`, { duration: 12000, icon: '⚠️' });
+      } else if (newLogs > 0) toast.success(`مزامنة ناجحة — ${W(newLogs)} حركة جديدة (${fmtDuration(duration)})`);
       // Perf: targeted /devices + /devices/stats refresh, not the full
       // loadAll() (which also re-fetches static /branches and flashes the
       // page loading state) — see refreshDevicesAndStats's own doc comment.

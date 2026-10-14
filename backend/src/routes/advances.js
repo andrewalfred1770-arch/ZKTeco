@@ -6,12 +6,48 @@ const { modifier } = require('../utils/auditActor');
 const moment = require('moment');
 const { authenticate, authorize } = require('../middleware/auth');
 const recalcEngine = require('../engines/recalcEngine');
-const { withPayrollKeyLock, syncStoredPayroll } = require('../engines/payrollEngine');
+const { withPayrollKeyLock, assertPayrollOpen, replyPayrollPolicyError, calculatePayrollImpl } = require('../engines/payrollEngine');
+const { writeAudit } = require('../utils/manualEditAudit');
 const { monthRangeMoment } = require('../utils/monthRange');
 const logger = require('../utils/logger');
 const { parseMoney, hasMoneyPrecision } = require('../utils/numeric');
 const prisma = getPrisma();
 router.use(authenticate);
+
+/**
+ * Inside the caller's locked transaction (payroll row or, when none exists yet, the employee row — see assertPayrollOpen):
+ *  - snapshot the monthly advance total and (if a payroll row exists) its deductions / netSalary BEFORE the write;
+ *  - run `write()`;
+ *  - when a payroll row exists, recompute it IN THIS TRANSACTION (never INSERTs a row here: that is only done after the
+ *    commit by recalcForAdvance), then read the monthly total and the payroll totals AFTER;
+ *  - audit the monthly total (field 'advances', the same convention PUT /payroll/:id/advances uses) and, when payroll
+ *    figures moved, 'deductions' / 'netSalary' — all values are the committed results of this very transaction, and the
+ *    rows roll back together with everything else if anything fails.
+ */
+async function withCommittedTotalsAudit(tx, { employeeId, month, year, payrollId, payrollExists, actor, reason }, write) {
+  const sum = async () => ((await tx.advance.aggregate({ _sum: { amount: true }, where: { employeeId, month, year } }))._sum.amount || 0);
+  const beforeTotal = await sum();
+  const beforeRow = payrollExists ? await tx.payroll.findUnique({ where: { employeeId_month_year: { employeeId, month, year } } }) : null;
+  const result = await write();
+  let afterRow = null;
+  if (beforeRow) {
+    await calculatePayrollImpl(employeeId, month, year, { tx });
+    afterRow = await tx.payroll.findUnique({ where: { employeeId_month_year: { employeeId, month, year } } });
+  }
+  const afterTotal = await sum();
+  const base = { employeeId, payrollId: beforeRow ? beforeRow.id : payrollId, reason: reason || null, userId: actor.modifiedBy || 0, userName: actor.modifiedByName || 'HR', userRole: actor.modifiedByRole || 'hr', tx };
+  if (Math.round(beforeTotal * 100) !== Math.round(afterTotal * 100)) {
+    await writeAudit({ ...base, fieldName: 'advances', oldValue: beforeTotal, newValue: afterTotal });
+  }
+  if (beforeRow && afterRow) {
+    for (const field of ['deductions', 'netSalary']) {
+      if (Math.abs((Number(beforeRow[field]) || 0) - (Number(afterRow[field]) || 0)) > 0.004) {
+        await writeAudit({ ...base, fieldName: field, oldValue: beforeRow[field], newValue: afterRow[field] });
+      }
+    }
+  }
+  return result;
+}
 
 /** Resolve that month's payroll id (if it exists yet) for the audit row. */
 async function payrollIdFor(employeeId, month, year) {
@@ -40,28 +76,21 @@ function recalcForAdvance(advance, io) {
     employeeId: advance.employeeId, io,
     reason: `سلفة للموظف #${advance.employeeId} (${advance.month}/${advance.year})`,
   }).then(async (result) => {
-    // recalcScope deliberately skips finalized/paid payrolls (indirect cascades never overwrite
-    // a closed row), so for those the stored snapshot would still hold the OLD advances/net
-    // until some later read repaired it. Advances ARE allowed after close, so bring the stored
-    // row in line with the canonical figures before this request reports completion. This is
-    // the existing write-through (syncStoredPayroll: one computation under the payroll lock,
-    // writes only if something differs, never changes status) — no new write path, no formula.
-    // Draft rows were already written by recalcScope, so they are not recomputed here.
-    const row = await prisma.payroll.findUnique({
-      where: { employeeId_month_year: { employeeId: advance.employeeId, month: advance.month, year: advance.year } },
-      select: { status: true },
-    });
-    if (row && (row.status === 'finalized' || row.status === 'paid')) {
-      const s = await syncStoredPayroll(advance.employeeId, advance.month, advance.year, { allowClosed: true });
-      if (s && s.lockTimeout) logger.warn(`[PAYROLL-SYNC] employee=${advance.employeeId} ${advance.month}/${advance.year} source=advance — payroll lock busy, stored ${row.status} row left for the next read to repair`);
-    }
+    // recalcScope skips finalized/paid payrolls (indirect cascades never overwrite a closed row). Advances can no
+    // longer be created or deleted for a closed month at all (see the guards in POST / DELETE below), and a closed
+    // row must NEVER be refreshed afterwards — not even if it was finalized in the instant between the guard and
+    // this recalculation — so there is deliberately no write-through for closed rows here.
     return result;
   }).catch((err) => {
     logger.error(`[PAYROLL-RECALC-FAILED] employee=${advance.employeeId} month=${advance.month} year=${advance.year} source=advance error=${err.message}`);
   });
 }
 
-router.get('/', async (req, res) => {
+// Company-wide advances, each with the FULL employee row (salary, national id, phone, email). Admin / HR only: with
+// authentication on, any logged-in account (including the `employee` role the Employees form creates) used to be able
+// to read every colleague's advances and personal data. The UI never calls this list (it edits advances through
+// PUT /payroll/:id/advances, which is already admin/hr), so no screen depends on the old open access.
+router.get('/', authorize('admin', 'hr'), async (req, res) => {
   try {
     const { employeeId, month, year } = req.query;
     const where = {};
@@ -145,34 +174,43 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
     const advance = await withPayrollKeyLock(parseInt(employeeId), monthNum, yearNum, async () => {
      payrollId = await payrollIdFor(parseInt(employeeId), monthNum, yearNum);
      return prisma.$transaction(async (tx) => {
-      const created = await tx.advance.create({
-        data: {
-          employeeId: parseInt(employeeId),
-          amount: amountNum,
-          date: advDate,
-          month: monthNum,
-          year: yearNum,
-          reason,
-          status: 'approved',
-        },
-        include: { employee: true },
+      // Closed-payroll policy: a finalized/paid month accepts no new advance. Checked on the row as committed RIGHT NOW
+      // (locked FOR UPDATE, inside the same payroll lock + transaction as the write); a rejection throws before the
+      // advance and its audit row are written, so nothing is persisted.
+      const payrollStatus = await assertPayrollOpen(tx, parseInt(employeeId), monthNum, yearNum, 'إضافة');
+      return withCommittedTotalsAudit(tx, {
+        employeeId: parseInt(employeeId), month: monthNum, year: yearNum, payrollId,
+        payrollExists: payrollStatus !== null, actor: { modifiedBy, modifiedByName, modifiedByRole }, reason,
+      }, async () => {
+        const created = await tx.advance.create({
+          data: {
+            employeeId: parseInt(employeeId),
+            amount: amountNum,
+            date: advDate,
+            month: monthNum,
+            year: yearNum,
+            reason,
+            status: 'approved',
+          },
+          include: { employee: true },
+        });
+        await tx.manualEditAuditLog.create({
+          data: {
+            employeeId: created.employeeId, payrollId, fieldName: 'advance',
+            oldValue: null, newValue: String(created.amount), reason: created.reason || null,
+            modifiedBy: modifiedBy || 0, modifiedByName: modifiedByName || 'HR', modifiedByRole: modifiedByRole || 'hr',
+            source: 'inline-grid',
+          },
+        });
+        return created;
       });
-      await tx.manualEditAuditLog.create({
-        data: {
-          employeeId: created.employeeId, payrollId, fieldName: 'advance',
-          oldValue: null, newValue: String(created.amount), reason: created.reason || null,
-          modifiedBy: modifiedBy || 0, modifiedByName: modifiedByName || 'HR', modifiedByRole: modifiedByRole || 'hr',
-          source: 'inline-grid',
-        },
-      });
-      return created;
      });
     });
     logger.info(`[AUDIT-WRITE] employee=${advance.employeeId} field=advance old=— new=${advance.amount} by=${modifiedByName || 'HR'}${payrollId ? ` payrollId=${payrollId}` : ''}${advance.reason ? ` reason="${advance.reason}"` : ''}`);
 
     await recalcForAdvance(advance, req.io);
     res.status(201).json(advance);
-  } catch (err) { sendError(res, err); }
+  } catch (err) { if (replyPayrollPolicyError(res, err)) return; sendError(res, err); }
 });
 
 router.delete('/:id', authorize('admin', 'hr'), async (req, res) => {
@@ -185,6 +223,7 @@ router.delete('/:id', authorize('admin', 'hr'), async (req, res) => {
 
     // EF-007.6: delete + audit must commit atomically — see the POST handler above.
     // Same employee-month payroll lock as POST and the Payroll-grid edit (monthly total consistency).
+    let payrollStatusForDelete = null;
     const runDelete = () => prisma.$transaction(async (tx) => {
       // The Payroll grid lowers a month's total by adding a NEGATIVE delta row, so a month's rows can
       // legitimately be e.g. [+1000, -600] (total 400). Deleting the +1000 row on its own would leave
@@ -192,7 +231,15 @@ router.delete('/:id', authorize('admin', 'hr'), async (req, res) => {
       // and transaction (so no other advance write can slip in between), refuse a delete that would
       // leave the month's total below zero. Nothing is written: no delete, no audit, no recalculation.
       if (existing) {
-        const current = await tx.advance.findUnique({ where: { id } });
+        // LOCK FIRST. assertPayrollOpen takes the payroll-row lock (SELECT ... FOR UPDATE; the employee row when the month has no payroll row yet) and
+        // reads the status as committed right now, so it must be the FIRST statement of this transaction. Under MySQL's default REPEATABLE READ the first
+        // plain (consistent) read fixes the transaction's read view: a plain read BEFORE the lock (the advance lookup below used to come first) left every
+        // read after the lock wait - the monthly total for the negative-total check, withCommittedTotalsAudit's before/after totals and the payroll
+        // recalculation - on a view from before the other writer committed, so two concurrent deletes could both pass the check. Locking reads always see the
+        // latest committed rows, so lock -> read is safe. The employee/month/year come from the row read before the transaction (an advance is never moved
+        // to another month). Closed-payroll policy: a finalized/paid month's advances cannot be deleted either (fail closed).
+        payrollStatusForDelete = await assertPayrollOpen(tx, existing.employeeId, existing.month, existing.year, 'حذف');
+        const current = await tx.advance.findUnique({ where: { id } });   // first plain read of this transaction: after the lock
         if (current) {
           const agg = await tx.advance.aggregate({ _sum: { amount: true }, where: { employeeId: current.employeeId, month: current.month, year: current.year } });
           const remaining = (agg._sum.amount || 0) - current.amount;
@@ -204,16 +251,26 @@ router.delete('/:id', authorize('admin', 'hr'), async (req, res) => {
           }
         }
       }
-      await tx.advance.delete({ where: { id } });
+      const doDelete = async () => {
+        await tx.advance.delete({ where: { id } });
+        if (existing) {
+          await tx.manualEditAuditLog.create({
+            data: {
+              employeeId: existing.employeeId, payrollId, fieldName: 'advance',
+              oldValue: String(existing.amount), newValue: null, reason: reason || existing.reason || null,
+              modifiedBy: modifiedBy || 0, modifiedByName: modifiedByName || 'HR', modifiedByRole: modifiedByRole || 'hr',
+              source: 'inline-grid',
+            },
+          });
+        }
+      };
       if (existing) {
-        await tx.manualEditAuditLog.create({
-          data: {
-            employeeId: existing.employeeId, payrollId, fieldName: 'advance',
-            oldValue: String(existing.amount), newValue: null, reason: reason || existing.reason || null,
-            modifiedBy: modifiedBy || 0, modifiedByName: modifiedByName || 'HR', modifiedByRole: modifiedByRole || 'hr',
-            source: 'inline-grid',
-          },
-        });
+        await withCommittedTotalsAudit(tx, {
+          employeeId: existing.employeeId, month: existing.month, year: existing.year, payrollId,
+          payrollExists: payrollStatusForDelete !== null, actor: { modifiedBy, modifiedByName, modifiedByRole }, reason: reason || existing.reason || null,
+        }, doDelete);
+      } else {
+        await doDelete();
       }
     });
     if (existing) {
@@ -230,7 +287,7 @@ router.delete('/:id', authorize('admin', 'hr'), async (req, res) => {
 
     await recalcForAdvance(existing, req.io);
     res.json({ message: 'Advance deleted' });
-  } catch (err) { sendError(res, err); }
+  } catch (err) { if (replyPayrollPolicyError(res, err)) return; sendError(res, err); }
 });
 
 module.exports = router;

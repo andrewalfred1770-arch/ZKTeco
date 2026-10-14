@@ -22,6 +22,13 @@ function selectOvertimeMultiplier(record, { otMultiplier, fridayOTMultiplier, ho
   return otMultiplier;
 }
 
+// Finite-number guard for stored multiplier rules: valid values (including the ones the validators
+// allow) are returned unchanged; empty / non-numeric / NaN / +-Infinity fall back to `fallback`.
+function safeMultiplier(raw, fallback) {
+  const n = parseFloat(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 // ─── Rate derivation ───────────────────────────────────────────────────────────
 // Single source of truth for dailyRate/hourlyRate. EF-010: previously
 // duplicated (identically) inside routes/attendance/movement.js; both call
@@ -173,11 +180,13 @@ async function computePayroll(employeeId, month, year, opts = {}) {
   const monthDays = parseFloat(rules.month_days || 30);
   const workingHours = parseFloat(rules.work_hours_per_day || 8);
   const { dailyRate, hourlyRate } = computeRates(basicSalary, monthDays, workingHours);
-  const otMultiplier = parseFloat(rules.overtime_multiplier || '1.5');
-  const fridayOTMultiplier   = parseFloat(rules.friday_ot_multiplier   || otMultiplier);
-  const holidayOTMultiplier  = parseFloat(rules.holiday_ot_multiplier  || otMultiplier);
-  const weekendOTMultiplier  = parseFloat(rules.weekend_work_multiplier|| otMultiplier);
-  const holidayPayMultiplier = parseFloat(rules.holiday_pay_multiplier || '1');
+  // A stored multiplier that is empty, non-numeric, NaN or infinite must never reach the money math
+  // (it turned overtimeAmount and net into NaN). Falls back to the general overtime multiplier.
+  const otMultiplier = safeMultiplier(rules.overtime_multiplier, 1.5);
+  const fridayOTMultiplier   = safeMultiplier(rules.friday_ot_multiplier,   otMultiplier);
+  const holidayOTMultiplier  = safeMultiplier(rules.holiday_ot_multiplier,  otMultiplier);
+  const weekendOTMultiplier  = safeMultiplier(rules.weekend_work_multiplier, otMultiplier);
+  const holidayPayMultiplier = safeMultiplier(rules.holiday_pay_multiplier, 1);
   const nightShiftStartMin   = rules.night_shift_start ? parseTime(rules.night_shift_start) : null;
   const nightShiftBonusPct   = parseFloat(rules.night_shift_bonus || '0');
 
@@ -535,43 +544,36 @@ async function calculatePayrollImpl(employeeId, month, year, opts = {}) {
     `net=${netSalary.toFixed(2)} adjustmentsApplied=${appliedAdjustments}`
   );
 
-  const payroll = await client.payroll.upsert({
-    where: { employeeId_month_year: { employeeId, month, year } },
-    update: {
-      basicSalary,
-      hourlyRate,
-      workDays,
-      absentDays,
-      latePenalty,
-      penaltyUnits,
-      penaltyAmount,
-      overtimeHours,
-      overtimeAmount,
-      advances,
-      manualDeductionAdjustment,
-      deductions,
-      netSalary,
-      updatedAt: new Date(),
-    },
-    create: {
-      employeeId,
-      month,
-      year,
-      basicSalary,
-      hourlyRate,
-      workDays,
-      absentDays,
-      latePenalty,
-      penaltyUnits,
-      penaltyAmount,
-      overtimeHours,
-      overtimeAmount,
-      advances,
-      manualDeductionAdjustment,
-      deductions,
-      netSalary,
-    },
-  });
+  // Write the computed figures ATOMICALLY and only into a row that is not closed. The callers of this function that
+  // cascade (rule/holiday/adjustment/attendance/device/rebuild/"calculate") check `filterProtectedPayrollTargets` in an
+  // EARLIER, separate query, so a payroll finalized in between (another request, or another backend process) would
+  // otherwise be overwritten by a plain upsert. The status predicate below is evaluated by MySQL at write time under the
+  // row lock, so it holds across requests AND processes: a finalized/paid row is simply left exactly as approved.
+  // (Creating a missing row is unchanged; a concurrent create that loses the unique-key race falls back to the update.)
+  const figures = {
+    basicSalary, hourlyRate, workDays, absentDays, latePenalty, penaltyUnits, penaltyAmount,
+    overtimeHours, overtimeAmount, advances, manualDeductionAdjustment, deductions, netSalary,
+  };
+  const key = { employeeId_month_year: { employeeId, month, year } };
+  for (let attemptNo = 0; attemptNo < 3; attemptNo++) {
+    const res = await client.payroll.updateMany({
+      where: { employeeId, month, year, status: { notIn: CLOSED_PAYROLL_STATUSES.slice() } },
+      data: { ...figures, updatedAt: new Date() },
+    });
+    if (res.count > 0) break;                                   // draft row updated
+    const existing = await client.payroll.findUnique({ where: key });
+    if (existing) {                                              // closed (or concurrently closed): left untouched
+      logger.warn(`[PAYROLL-PROTECTED] emp=${employeeId} ${month}/${year} is ${existing.status} — recalculation write skipped`);
+      return existing;
+    }
+    try {
+      await client.payroll.create({ data: { employeeId, month, year, ...figures } });
+      break;
+    } catch (err) {
+      if (!(err && err.code === 'P2002') || attemptNo === 2) throw err;   // lost the create race → update on the next pass
+    }
+  }
+  const payroll = await client.payroll.findUnique({ where: key });
 
   return payroll;
 }
@@ -621,6 +623,100 @@ async function syncStoredPayrollLocked(employeeId, month, year, opts = {}) {
     }
     return { computed, stored, synced };
   });
+}
+
+// ─── Closed-payroll policy (fail closed) ───────────────────────────────────
+// A Payroll row has exactly three supported statuses (schema default 'draft'; the UI labels draft / finalized /
+// paid). 'finalized' and 'paid' are CLOSED: an approved record that no ordinary API call may change. This system has
+// no reopen workflow (nothing in the code or the docs defines one), so none is invented here — closed stays closed.
+// The only legal movement is forward: draft → finalized → paid. Every check below runs INSIDE the existing
+// per-employee-month lock (withPayrollKeyLock) and database transaction, on a row read with SELECT … FOR UPDATE,
+// so a concurrent request can never slip a change in between the check and the write.
+const PAYROLL_STATUSES = Object.freeze(['draft', 'finalized', 'paid']);
+const CLOSED_PAYROLL_STATUSES = Object.freeze(['finalized', 'paid']);
+const PAYROLL_TRANSITIONS = Object.freeze({ draft: ['finalized'], finalized: ['paid'], paid: [] });
+const isClosedPayrollStatus = (s) => CLOSED_PAYROLL_STATUSES.includes(s);
+
+class PayrollPolicyError extends Error {
+  constructor(statusCode, code, message) {
+    super(message);
+    this.name = 'PayrollPolicyError';
+    this.statusCode = statusCode;
+    this.code = code;
+    this.isPayrollPolicy = true;
+  }
+}
+
+/** Exact, case-sensitive match against the supported statuses — an arbitrary string is rejected (400). */
+function validatePayrollStatusValue(value) {
+  if (typeof value !== 'string' || !PAYROLL_STATUSES.includes(value)) {
+    throw new PayrollPolicyError(400, 'PAYROLL_STATUS_INVALID', 'حالة المرتب غير صالحة (المسموح: draft / finalized / paid)');
+  }
+  return value;
+}
+
+/**
+ * Decide what a PUT /payroll/:id may do to a row whose CURRENT (locked, freshly read) status is `current`.
+ * `req` = { hasSalary, hasManual, hasNotes, target }  (target = validated status or undefined).
+ * Returns 'edit' (draft: the normal recalculating edit), 'transition' (finalized → paid, status only, NO recalculation)
+ * or 'noop'. Throws PayrollPolicyError (409) for anything that would modify a closed record or skip a step.
+ */
+function planPayrollEdit(current, req) {
+  if (!PAYROLL_STATUSES.includes(current)) {
+    throw new PayrollPolicyError(409, 'PAYROLL_STATUS_UNKNOWN', 'حالة المرتب الحالية غير معروفة — لا يمكن تعديله');
+  }
+  const { hasSalary, hasManual, hasNotes, target } = req;
+  if (isClosedPayrollStatus(current)) {
+    if (hasSalary || hasManual || hasNotes || target === undefined) {
+      throw new PayrollPolicyError(409, 'PAYROLL_CLOSED', 'هذا المرتب معتمد/مدفوع ولا يمكن تعديله');
+    }
+    if (target === current) return 'noop';
+    if (!PAYROLL_TRANSITIONS[current].includes(target)) {
+      throw new PayrollPolicyError(409, 'PAYROLL_STATUS_TRANSITION_INVALID',
+        target === 'draft' ? 'لا يمكن إعادة فتح مرتب معتمد/مدفوع' : 'انتقال الحالة غير مسموح');
+    }
+    return 'transition';
+  }
+  // draft
+  if (target !== undefined && target !== current && !PAYROLL_TRANSITIONS[current].includes(target)) {
+    throw new PayrollPolicyError(409, 'PAYROLL_STATUS_TRANSITION_INVALID', 'يجب اعتماد المرتب (finalized) قبل تسجيله كمدفوع');
+  }
+  return 'edit';
+}
+
+/**
+ * Lock the employee-month payroll row (FOR UPDATE) inside `tx` and return its status, or null when no row exists yet.
+ * Call it from within withPayrollKeyLock + the caller's transaction.
+ */
+async function lockPayrollStatus(tx, employeeId, month, year) {
+  const rows = await tx.$queryRaw`SELECT id, status FROM payrolls WHERE employeeId = ${employeeId} AND month = ${month} AND year = ${year} FOR UPDATE`;
+  return rows && rows.length ? rows[0].status : null;
+}
+
+/** Throws PayrollPolicyError(409, PAYROLL_CLOSED) when that employee-month payroll is finalized/paid. */
+async function assertPayrollOpen(tx, employeeId, month, year, what = 'تعديل') {
+  const status = await lockPayrollStatus(tx, employeeId, month, year);
+  if (status === null) {
+    // No payroll row exists yet, so there is no row to lock and FOR UPDATE on the missing unique key only takes a GAP lock
+    // (shared between transactions). Every advance writer therefore also locks the EMPLOYEE row — always after the payroll
+    // lookup, the same order PUT /payroll/:id uses (payroll → employee) — so concurrent advance writes for the same
+    // employee serialise across backend processes too. Callers must not INSERT a payroll row inside this transaction.
+    await tx.$queryRaw`SELECT id FROM employees WHERE id = ${employeeId} FOR UPDATE`;
+  }
+  if (status !== null && !PAYROLL_STATUSES.includes(status)) {
+    throw new PayrollPolicyError(409, 'PAYROLL_STATUS_UNKNOWN', 'حالة المرتب الحالية غير معروفة — لا يمكن تعديله');
+  }
+  if (isClosedPayrollStatus(status)) {
+    throw new PayrollPolicyError(409, 'PAYROLL_CLOSED', `مرتب هذا الشهر معتمد/مدفوع — لا يمكن ${what} السلف أو أي مبلغ فيه`);
+  }
+  return status;
+}
+
+/** Route helper: answer a PayrollPolicyError with its status + code; returns true when it handled the error. */
+function replyPayrollPolicyError(res, err) {
+  if (!err || !err.isPayrollPolicy) return false;
+  if (!res.headersSent) res.status(err.statusCode).json({ error: err.message, code: err.code });
+  return true;
 }
 
 // ─── C1 canonical safety boundary ──────────────────────────────────────────
@@ -802,4 +898,4 @@ async function calculateMonthlyPayroll(month, year, branchId) {
   return { results, protectedTargets };
 }
 
-module.exports = { calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, computeDeductionsBreakdown, withPayrollKeyLock, calculatePayrollImpl, syncStoredPayroll, payrollSnapshotDiffers, PAYROLL_LOCK_ACQUIRE_TIMEOUT_MS, PAYROLL_LOCK_TIMEOUT_CODE, selectOvertimeMultiplier, computeRates, filterProtectedPayrollTargets, buildPayrollPreloadMap };
+module.exports = { PAYROLL_STATUSES, CLOSED_PAYROLL_STATUSES, PAYROLL_TRANSITIONS, isClosedPayrollStatus, PayrollPolicyError, validatePayrollStatusValue, planPayrollEdit, lockPayrollStatus, assertPayrollOpen, replyPayrollPolicyError, safeMultiplier, calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, computeDeductionsBreakdown, withPayrollKeyLock, calculatePayrollImpl, syncStoredPayroll, payrollSnapshotDiffers, PAYROLL_LOCK_ACQUIRE_TIMEOUT_MS, PAYROLL_LOCK_TIMEOUT_CODE, selectOvertimeMultiplier, computeRates, filterProtectedPayrollTargets, buildPayrollPreloadMap };

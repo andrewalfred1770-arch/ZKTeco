@@ -40,7 +40,6 @@ export default function DataCleanupPage() {
 
   const [confirmText, setConfirmText] = useState('');
   const [confirmCurrentPeriod, setConfirmCurrentPeriod] = useState(false);
-  const [confirmFinalizedPayroll, setConfirmFinalizedPayroll] = useState(false);
 
   const [progress, setProgress] = useState(null);
   const [executing, setExecuting] = useState(false);
@@ -109,9 +108,9 @@ export default function DataCleanupPage() {
     if (confirmText.trim() !== 'حذف') return false;
     if (!executedByName.trim()) return false;
     if (preview?.currentPeriodOverlap && !confirmCurrentPeriod) return false;
-    if (preview?.finalizedPayroll?.length && !confirmFinalizedPayroll) return false;
+    if (preview?.blocked) return false;   // closed payroll is protected: the server refuses it too, whatever is sent
     return true;
-  }, [confirmText, executedByName, preview, confirmCurrentPeriod, confirmFinalizedPayroll]);
+  }, [confirmText, executedByName, preview, confirmCurrentPeriod]);
 
   const execute = async () => {
     setExecuting(true); setExecError(null); setResult(null); setProgress({ done: 0, total: 1, label: 'جارِ البدء…' });
@@ -119,7 +118,7 @@ export default function DataCleanupPage() {
       const { data } = await api.post('/cleanup/execute', {
         from: form.from, to: form.to, types: form.types,
         backupFirst, executedByName: executedByName.trim(),
-        confirmCurrentPeriod, confirmFinalizedPayroll,
+        confirmCurrentPeriod,
         // EP-019: the backend now requires this — previously only checked
         // client-side to enable/disable the button, never actually sent.
         confirmText: confirmText.trim(),
@@ -211,6 +210,10 @@ export default function DataCleanupPage() {
                   </label>
                 ))}
               </div>
+              <p className="text-xs text-emerald-300 bg-emerald-900/20 border border-emerald-800/40 rounded-lg p-2.5" data-testid="cleanup-protection-note">
+                🛡️ المرتبات المعتمدة والمدفوعة محمية: لا تُحذف عبر هذه الأداة أبداً، ولا يُسمح بحذف المرتبات أو نتائج الحضور اليومية لأشهر تتضمنها.
+                حذف السجلات الخام مسموح، لكن لا يُعاد احتساب الحضور لموظفين مرتّبهم معتمد/مدفوع في ذلك الشهر.
+              </p>
               <div className="flex justify-between">
                 <button className="btn-secondary" onClick={() => setStep(1)}>السابق</button>
                 <button className="btn-primary" disabled={!anyTypeSelected} onClick={runPreview}>
@@ -256,6 +259,17 @@ export default function DataCleanupPage() {
                 هذا الإجراء نهائي ولا يمكن التراجع عنه بعد التنفيذ. سيتم إعادة احتساب الحضور والرواتب تلقائيًا للفترة المتأثرة بعد الحذف.
               </div>
 
+              {preview.protectedPayroll?.total > 0 && (
+                <div className={`text-xs rounded-lg p-3 space-y-1.5 border ${preview.blocked ? 'text-red-200 bg-red-900/25 border-red-800/50' : 'text-emerald-200 bg-emerald-900/20 border-emerald-800/40'}`} data-testid="cleanup-protected-summary">
+                  <p className="font-bold">
+                    {preview.blocked ? '⛔ التنفيذ مرفوض: ' : '🛡️ مرتبات محمية: '}
+                    {preview.protectedPayroll.total} سجل مرتب معتمد/مدفوع ({preview.protectedPayroll.finalized} معتمد، {preview.protectedPayroll.paid} مدفوع)
+                  </p>
+                  <p>{preview.protectedPayroll.months.map(m => `${m.month}/${m.year}: ${m.finalized} معتمد، ${m.paid} مدفوع`).join(' — ')}</p>
+                  {preview.blocked && <p>غيّر الفترة أو أزل نوع البيانات المرفوض (المرتبات / نتائج الحضور اليومية). لا يوجد تأكيد يتجاوز هذه الحماية.</p>}
+                </div>
+              )}
+
               <label className="flex items-center gap-2 text-sm text-gray-300">
                 <input type="checkbox" checked={backupFirst} onChange={e => setBackupFirst(e.target.checked)} />
                 تنزيل نسخة احتياطية (Excel) من البيانات قبل حذفها
@@ -263,7 +277,7 @@ export default function DataCleanupPage() {
 
               <div className="flex justify-between">
                 <button className="btn-secondary" onClick={() => setStep(2)}>السابق</button>
-                <button className="btn-primary" onClick={goConfirm}>المتابعة للتأكيد</button>
+                <button className="btn-primary" disabled={!!preview.blocked} onClick={goConfirm}>المتابعة للتأكيد</button>
               </div>
             </div>
           )}
@@ -285,13 +299,6 @@ export default function DataCleanupPage() {
                     أؤكد أنني أريد حذف بيانات تشمل الشهر الحالي رغم التحذير.
                   </label>
                 )}
-                {preview.finalizedPayroll?.length > 0 && (
-                  <label className="flex items-start gap-2 text-sm text-amber-300 bg-amber-900/20 border border-amber-800/40 rounded-lg p-3">
-                    <input type="checkbox" className="mt-1" checked={confirmFinalizedPayroll} onChange={e => setConfirmFinalizedPayroll(e.target.checked)} />
-                    أؤكد أنني أريد حذف سجلات رواتب معتمدة/مدفوعة ({preview.finalizedPayroll.length}) رغم التحذير.
-                  </label>
-                )}
-
                 <div>
                   <label className="label">تنفيذ بواسطة (يُسجَّل في سجل التدقيق) *</label>
                   <input className="input" value={executedByName} onChange={e => setExecutedByName(e.target.value)} placeholder="اسمك" />
@@ -347,6 +354,11 @@ export default function DataCleanupPage() {
                 <a className="btn-secondary inline-flex w-fit" href={`${api.defaults.baseURL}/cleanup/backups/${result.backupFile}`} target="_blank" rel="noreferrer">
                   <FileSpreadsheet className="w-4 h-4" /> تنزيل النسخة الاحتياطية
                 </a>
+              )}
+              {result.protectedPayroll?.total > 0 && (
+                <p className="text-xs text-emerald-300" data-testid="cleanup-result-protected">
+                  🛡️ {result.protectedPayroll.total} سجل مرتب معتمد/مدفوع بقي كما هو (محمي) — استُبعد {result.recalcSkippedEmployeeMonths || 0} موظف-شهر من إعادة الاحتساب.
+                </p>
               )}
               {result.consistencyNotes?.length > 0 && (
                 <div className="space-y-1">

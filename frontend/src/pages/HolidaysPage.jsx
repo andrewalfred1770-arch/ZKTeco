@@ -1,6 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Plus, Trash2, Calendar, X, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useUnsavedWork } from '../hooks/useUnsavedWork';
+import { describeSaveFailure } from '../lib/saveFailure';
 import api from '../lib/api';
 import { MONTHS_AR } from '../lib/constants';
 
@@ -10,6 +12,10 @@ export default function HolidaysPage() {
   const [year,     setYear]     = useState(new Date().getFullYear());
   const [modal,    setModal]    = useState(false);
   const [form,     setForm]     = useState({ name:'', date:'', type:'public' });
+  // Unsaved-edit protection (lib/unsavedWork.js): the open holiday form counts as modified once any field differs from the blank form.
+  const formRef = useRef(form); formRef.current = form;
+  const submitting = useRef(false);   // a second Save while one is running does nothing (no duplicated mutation)
+  useUnsavedWork('holiday-form', 'نموذج العطلة', () => modal && JSON.stringify(formRef.current) !== JSON.stringify({ name: '', date: '', type: 'public' }));
   const [saving,   setSaving]   = useState(false);
 
   const load = async () => {
@@ -22,13 +28,15 @@ export default function HolidaysPage() {
   useEffect(() => { load(); }, [year]);
 
   const save = async (e) => {
-    e.preventDefault(); setSaving(true);
+    e.preventDefault();
+    if (submitting.current) return;
+    submitting.current = true; setSaving(true);
     try {
       await api.post('/holidays', form);
       toast.success('تم إضافة الإجازة');
       setModal(false); setForm({ name:'', date:'', type:'public' }); load();
-    } catch (err) { toast.error(err?.response?.data?.error || 'فشل الحفظ'); }
-    finally { setSaving(false); }
+    } catch (err) { toast.error(describeSaveFailure(err)); }   // the form stays open with everything typed
+    finally { submitting.current = false; setSaving(false); }
   };
 
   const del = async (id) => {

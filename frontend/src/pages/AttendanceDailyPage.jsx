@@ -7,6 +7,10 @@ import {
   CheckCircle, XCircle, Clock, TrendingUp, Loader2, Play, Printer,
   Fingerprint, Pencil, Lock, UserX, Copy, ClipboardPaste } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useUnsavedWork } from '../hooks/useUnsavedWork';
+import { useFailedEdits } from '../hooks/useFailedEdits';
+import FailedEditsBanner from '../components/FailedEditsBanner';
+import { handleEditFailure } from '../lib/failedEdits';
 import { useNavigate } from 'react-router-dom';
 import api, { LONG_OP } from '../lib/api';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
@@ -71,10 +75,18 @@ export default function AttendanceDailyPage() {
   const [selectedRows, setSelectedRows] = useState([]);
   const [bulkSaving, setBulkSaving] = useState(false);
   const gridRef = useRef();
+  // An open cell editor or a save still in flight must survive a session expiry (lib/unsavedWork.js).
+  useUnsavedWork('attendance-daily-editor', 'الحضور اليومي (خلية قيد التحرير)', () => !!gridRef.current?.api?.getEditingCells?.().length);
   // per-cell "saving" affordance
   const savingCellsRef = useRef(new Set());
   // counts in-flight PUT requests — background load(false) skipped while > 0
   const editCountRef   = useRef(0);
+  // Edits typed but NOT saved because the session ended (lib/failedEdits.js): kept in the cell, flagged, re-sent only on request.
+  const failed = useFailedEdits({
+    id: 'attendance-daily-failed', label: 'الحضور اليومي (تعديلات لم تُحفظ)', gridRef, editCountRef,
+    revert: (e) => setRows((rs) => rs.map((r) => (r.id === e.rowId ? { ...r, [e.field]: e.oldValue } : r))),
+    resync: () => load(false),   // after discarding edits whose outcome was unknown: re-read what the server really holds
+  });
   // set to true when a background reload was skipped; cleared + fired on counter-zero
   const pendingReloadRef = useRef(false);
 
@@ -321,7 +333,7 @@ export default function AttendanceDailyPage() {
     },
   ], [isNarrow]);
 
-  const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
+  const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF, cellClassRules: failed.cellClassRules }), [failed]);
 
   // Priority: Monitored > Holiday > Weekend > Absent > Late > Overtime —
   // shared with AttendanceMonthlyPage/EmployeeMovementPage so the "entire
@@ -421,8 +433,8 @@ export default function AttendanceDailyPage() {
   }, [date, isRowStale]);
 
   useEffect(() => { load(true); }, [load]);
-  useRulesLiveSync(load, { isBusyRef: editCountRef });
-  useDeviceLiveSync(load, { silent: true, isBusyRef: editCountRef, reloadOne: loadOne });
+  useRulesLiveSync(load, { isBusyRef: failed.busyRef });
+  useDeviceLiveSync(load, { silent: true, isBusyRef: failed.busyRef, reloadOne: loadOne });
 
   // Remember the selected date for navigating away/back on the same local day
   useEffect(() => {
@@ -506,9 +518,17 @@ export default function AttendanceDailyPage() {
       if (hasOtherFieldsInFlight) pendingReloadRef.current = true;
       markRowsFresh([data.employeeId]);   // the PUT result is now the newest data for this row
       setRows(rs => applyRowFieldUpdate(rs, updated, field, hasOtherFieldsInFlight));
+      failed.clear(data.id, field);   // the server confirmed this cell: it is no longer an unsaved edit
     } catch (err) {
-      toast.error(err?.response?.data?.error || 'فشل التحديث');
-      node.setDataValue(field, oldValue);
+      handleEditFailure({
+        failed, err, idempotent: true,   // PUT of an absolute value: re-sending it cannot duplicate anything
+        entry: { rowId: data.id, field, value: newValue, oldValue, label: data.employeeName },
+        retain: (e) => setRows((rs) => rs.map((r) => (r.id === e.rowId ? { ...r, [e.field]: e.value } : r))),
+        revert: () => node.setDataValue(field, oldValue),
+        notifyKept: () => toast.error('انتهت الجلسة — التعديل لم يُحفظ بعد. سجّل الدخول ثم اضغط «إعادة المحاولة» أعلى الجدول', { id: 'edit-not-saved', duration: 9000 }),
+        notifyUnknown: () => toast.error('انقطع الاتصال — لم يُتأكد هل حُفظ هذا التعديل. القيمة محفوظة في الجدول: راجع الشريط أعلى الجدول (إعادة المحاولة / تجاهل)', { id: 'edit-not-saved', duration: 9000 }),
+        notifyFailed: (e2) => toast.error(e2?.response?.data?.error || 'فشل التحديث'),
+      });
     } finally {
       endRowEdit([data.employeeId]);
       editCountRef.current--;
@@ -796,6 +816,16 @@ export default function AttendanceDailyPage() {
         clearFilters={clearFilters}
         isActive={isActive}
         departments={departments}
+      />
+
+      <FailedEditsBanner
+        count={failed.count} unknown={failed.unknown} retrying={failed.retrying}
+        onDiscard={() => failed.discard()}
+        onRetry={() => failed.retryAll(async (e) => {
+          const node = gridRef.current?.api?.getRowNode(String(e.rowId));
+          if (!node?.data) { toast.error('السجل لم يعد معروضاً — تعذّرت إعادة المحاولة (يمكنك تجاهل التعديل)'); return; }
+          await handleCellEdit({ data: node.data, colDef: { field: e.field }, newValue: e.value, oldValue: e.oldValue, node });   // the page's normal save path: same validation, same request; it clears the entry only on a confirmed save
+        })}
       />
 
       {/* Grid */}

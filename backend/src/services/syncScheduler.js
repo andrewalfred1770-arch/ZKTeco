@@ -16,6 +16,7 @@ const { auditDeviceTopology, reconcileCrossDeviceDuplicates } = require('./devic
 const realtimeListener = require('./realtimeListenerService');
 const { processToday } = require('../engines/attendanceEngine');
 const logger = require('../utils/logger');
+const deviceUserDiscovery = require('./deviceUserDiscoveryService');
 
 const prisma = getPrisma();
 
@@ -31,6 +32,9 @@ const lastSyncAttempt = new Map();
 const RECOVERY_MIN_INTERVAL_MINUTES = 15;
 
 let io;
+
+const DISCOVERY_FIRST_RUN_DELAY_MS = 90 * 1000;
+let discoveryStartTimer = null;
 // Handles for every cron task — kept so stopSyncScheduler() can tear them all
 // down during graceful shutdown (orphan cron timers keep the event loop alive
 // and fire into a half-shutdown process otherwise).
@@ -38,6 +42,16 @@ const cronTasks = [];
 
 function schedule(expr, fn) {
   cronTasks.push(cron.schedule(expr, fn));
+}
+
+// A device-user scan pauses a device's realtime listener for a few seconds; punches made in that window are not
+// pushed live and are only picked up by the next recovery pull. Rather than add a competing sync path, the scan
+// asks THIS scheduler to treat the device as due: clearing its last-attempt marker makes the very next one-minute
+// tick run the normal checkDevice() → pullLogs() path (same lease, same eligibility checks, same 'auto' trigger,
+// idempotent inserts). If a pull is already running the tick skips and simply retries a minute later.
+function requestPromptSync(deviceId) {
+  lastSyncAttempt.delete(deviceId);
+  logger.info(`[Scheduler] device=${deviceId} catch-up sync requested after a device-user scan — next tick`);
 }
 
 // ─── Per-device sync check ────────────────────────────────────────────────────
@@ -166,6 +180,17 @@ function startSyncScheduler(socketIo) {
     staleSync: () => recoverStaleSyncState().catch((err) => logger.error(`[Scheduler] stale sync recovery: ${err.message}`)),
     auditPrune: () => pruneDeviceAuditLogs().catch(() => {}),
   };
+  // New-person discovery (read-only): list the users registered on each device and surface the ones that
+  // have no employee yet on the Employees page. The realtime channel carries attendance only, so this is a
+  // bounded poll — every 15 min, devices strictly one after another, a single run at a time, and a device
+  // that is busy (sync / realtime recovery holds its lease) or unreachable is skipped without affecting the
+  // others or the attendance sync. One delayed first run so the list is populated shortly after start-up.
+  const discover = () => deviceUserDiscovery.scanAll(io).catch((err) => logger.warn(`[USER-DISCOVERY] scan failed: ${err.message}`));
+  schedule('*/15 * * * *', discover);
+  deviceUserDiscovery.setCatchUpHook(requestPromptSync);
+  discoveryStartTimer = setTimeout(discover, DISCOVERY_FIRST_RUN_DELAY_MS);
+  if (discoveryStartTimer.unref) discoveryStartTimer.unref();
+
   schedule('*/15 * * * *', housekeeping.staleSync);
   schedule('30 3 * * *', housekeeping.auditPrune);
   setImmediate(() => { housekeeping.staleSync(); housekeeping.auditPrune(); });
@@ -175,6 +200,10 @@ function startSyncScheduler(socketIo) {
 
 // ─── Graceful shutdown ──────────────────────────────────────────────────────
 function stopSyncScheduler() {
+  if (discoveryStartTimer) { clearTimeout(discoveryStartTimer); discoveryStartTimer = null; }
+  // No new scans from here on; an in-flight one is aborted (it releases its lease and resumes its listener).
+  try { deviceUserDiscovery.shutdown(); } catch { /* shutting down anyway */ }
+  deviceUserDiscovery.setCatchUpHook(null);
   for (const task of cronTasks) {
     try { task.stop(); } catch {}
   }
@@ -182,4 +211,4 @@ function stopSyncScheduler() {
   cronTasks.length = 0;
 }
 
-module.exports = { startSyncScheduler, stopSyncScheduler };
+module.exports = { startSyncScheduler, stopSyncScheduler, requestPromptSync };

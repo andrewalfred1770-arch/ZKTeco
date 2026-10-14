@@ -1,10 +1,12 @@
-import React, { useEffect, useId, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import {
   Save, Plus, Trash2, Pencil, X, Loader2,
   Building2, GitBranch, Users, Archive,
   AlertTriangle, CheckCircle, RotateCcw,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useUnsavedWork } from '../hooks/useUnsavedWork';
+import { describeSaveFailure } from '../lib/saveFailure';
 import api from '../lib/api';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 
@@ -250,11 +252,24 @@ export default function SettingsPage() {
   const [newBranch, setNewBranch] = useState({ name: '', companyId: '', address: '' });
   const [newDept,   setNewDept]   = useState({ name: '', branchId: '' });
   const [saving,    setSaving]    = useState('');
+  const submitting = useRef(false);   // one save at a time: a second submit while one is running does nothing
 
   // Inline edit state
   const [editComp,   setEditComp]   = useState(null);
   const [editBranch, setEditBranch] = useState(null);
   const [editDept,   setEditDept]   = useState(null);
+
+  // Unsaved-edit protection (lib/unsavedWork.js): any non-blank "new" form, or an edit that differs from the stored row. Boolean only.
+  useUnsavedWork('settings-forms', 'الإعدادات (شركات / فروع / أقسام)', () => {
+    const blank = (o, keys) => keys.every((k) => !String(o[k] ?? '').trim());
+    if (!blank(newComp, ['name', 'address', 'phone']) || !blank(newBranch, ['name', 'companyId', 'address']) || !blank(newDept, ['name', 'branchId'])) return true;
+    const differs = (edit, list, keys) => {
+      if (!edit) return false;
+      const orig = list.find((x) => x.id === edit.id);
+      return !orig || keys.some((k) => String(edit[k] ?? '') !== String(orig[k] ?? ''));
+    };
+    return differs(editComp, companies, ['name', 'address', 'phone']) || differs(editBranch, branches, ['name', 'address', 'companyId']) || differs(editDept, departments, ['name', 'branchId']);
+  });
 
   // Archive confirmation modal state
   // shape: { type, item, deps, depsLoading, confirming }
@@ -312,70 +327,70 @@ export default function SettingsPage() {
 
   // ── Add handlers ────────────────────────────────────────────────────────────
   const addCompany = async (e) => {
-    e.preventDefault(); setSaving('company');
+    e.preventDefault(); if (submitting.current) return; submitting.current = true; setSaving('company');
     try {
       await api.post('/companies', newComp);
       toast.success('تمت إضافة الشركة');
       setNewComp({ name: '', address: '', phone: '' });
       load();
-    } catch (err) { toast.error(err.response?.data?.error || 'فشل الإضافة'); }
-    finally { setSaving(''); }
+    } catch (err) { toast.error(describeSaveFailure(err, 'فشل الإضافة')); }
+    finally { submitting.current = false; setSaving(''); }
   };
 
   const addBranch = async (e) => {
-    e.preventDefault(); setSaving('branch');
+    e.preventDefault(); if (submitting.current) return; submitting.current = true; setSaving('branch');
     try {
       await api.post('/branches', newBranch);
       toast.success('تمت إضافة الفرع');
       setNewBranch({ name: '', companyId: '', address: '' });
       load();
-    } catch (err) { toast.error(err.response?.data?.error || 'فشل الإضافة'); }
-    finally { setSaving(''); }
+    } catch (err) { toast.error(describeSaveFailure(err, 'فشل الإضافة')); }
+    finally { submitting.current = false; setSaving(''); }
   };
 
   const addDept = async (e) => {
-    e.preventDefault(); setSaving('dept');
+    e.preventDefault(); if (submitting.current) return; submitting.current = true; setSaving('dept');
     try {
       await api.post('/departments', newDept);
       toast.success('تمت إضافة القسم');
       setNewDept({ name: '', branchId: '' });
       load();
-    } catch (err) { toast.error(err.response?.data?.error || 'فشل الإضافة'); }
-    finally { setSaving(''); }
+    } catch (err) { toast.error(describeSaveFailure(err, 'فشل الإضافة')); }
+    finally { submitting.current = false; setSaving(''); }
   };
 
   // ── Edit save handlers ──────────────────────────────────────────────────────
   const saveCompany = async (e) => {
-    e.preventDefault(); setSaving('company-edit');
+    e.preventDefault(); if (submitting.current) return; submitting.current = true; setSaving('company-edit');
     try {
       await api.put(`/companies/${editComp.id}`, {
         name: editComp.name, address: editComp.address, phone: editComp.phone,
       });
       toast.success('تم تحديث الشركة'); setEditComp(null); load();
-    } catch (err) { toast.error(err.response?.data?.error || 'فشل التحديث'); }
-    finally { setSaving(''); }
+    } catch (err) { toast.error(describeSaveFailure(err, 'فشل التحديث')); }
+    finally { submitting.current = false; setSaving(''); }
   };
 
   const saveBranch = async (e) => {
-    e.preventDefault(); setSaving('branch-edit');
+    e.preventDefault(); if (submitting.current) return; submitting.current = true; setSaving('branch-edit');
     try {
       await api.put(`/branches/${editBranch.id}`, {
         name: editBranch.name, address: editBranch.address, phone: editBranch.phone,
       });
       toast.success('تم تحديث الفرع'); setEditBranch(null); load();
-    } catch (err) { toast.error(err.response?.data?.error || 'فشل التحديث'); }
-    finally { setSaving(''); }
+    } catch (err) { toast.error(describeSaveFailure(err, 'فشل التحديث')); }
+    finally { submitting.current = false; setSaving(''); }
   };
 
   const saveDept = async (e) => {
-    e.preventDefault(); setSaving('dept-edit');
+    e.preventDefault(); if (submitting.current) return; submitting.current = true; setSaving('dept-edit');
     try {
       await api.put(`/departments/${editDept.id}`, {
         name: editDept.name, branchId: editDept.branchId,
       });
       toast.success('تم تحديث القسم'); setEditDept(null); load();
-    } catch (err) { toast.error(err.response?.data?.error || 'فشل التحديث'); }
-    finally { setSaving(''); }
+    } catch (err) { toast.error(describeSaveFailure(err, 'فشل التحديث')); }
+    finally { submitting.current = false; setSaving(''); }
   };
 
   // Only active companies/branches are needed for dropdowns

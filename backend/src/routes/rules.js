@@ -31,7 +31,8 @@ function ruleChanged(io, { keys, action, scope }) {
   ruleStore.invalidate();
   if (io) io.emit('rules:changed', { keys, action, scope: scope || 'all', at: new Date() });
   const affects = [...new Set(keys.flatMap(k => ruleDependencyMap[k]?.affects || []))];
-  recalcEngine.scheduleRecalc(
+  // Returns the recalcRunId of the run that will cover this change (null for a scoped change).
+  return recalcEngine.scheduleRecalc(
     scope && scope !== 'all' ? scope : {},
     io,
     `تعديل قاعدة: ${keys.join('، ')}${affects.length ? ` — يؤثر على: ${affects.join('، ')}` : ''}`,
@@ -199,8 +200,9 @@ router.post('/', async (req, res) => {
       },
     });
     await audit(rule.id, rule.key, 'created', null, null, rule.value, actor(req));
-    ruleChanged(req.io, { keys: [rule.key], action: 'created', scope: scopeFromRule(rule) });
-    res.status(201).json(rule);
+    const recalcRunId = ruleChanged(req.io, { keys: [rule.key], action: 'created', scope: scopeFromRule(rule) });
+    // Additive: tells the caller a recalculation was scheduled (always true for a new rule) and which run covers it.
+    res.status(201).json({ ...rule, recalcScheduled: true, recalcRunId: recalcRunId || null });
   } catch (err) { sendError(res, err); }
 });
 
@@ -261,12 +263,14 @@ router.put('/:id', async (req, res) => {
     }
     // Only a value/active/scope change actually affects calculations — metadata-only edits (name, description) don't need a recalc.
     const calcFields = changes.filter(([f]) => ['value', 'isActive', 'appliesTo', 'conditionJson', 'priority'].includes(f));
+    let recalcRunId = null;
     if (calcFields.length) {
-      ruleChanged(req.io, { keys: [updated.key], action: 'updated', scope: scopeFromRule(updated) });
+      recalcRunId = ruleChanged(req.io, { keys: [updated.key], action: 'updated', scope: scopeFromRule(updated) }) || null;
     } else {
       ruleStore.invalidate();
     }
-    res.json(updated);
+    // Additive: false when this edit changed nothing calculation-relevant (no recalc was scheduled).
+    res.json({ ...updated, recalcScheduled: calcFields.length > 0, recalcRunId });
   } catch (err) { sendError(res, err); }
 });
 

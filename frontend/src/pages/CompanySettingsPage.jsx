@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Building2, Image as ImageIcon, Printer, Save, Loader2, Upload, Trash2, CheckCircle2, AlertTriangle } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useUnsavedWork } from '../hooks/useUnsavedWork';
+import { describeSaveFailure } from '../lib/saveFailure';
 import useCompanySettingsStore, { resolveCompanyAssetUrl } from '../store/companySettingsStore';
 
 // No login/auth in this desktop app — every change is recorded under this
@@ -117,6 +119,9 @@ export default function CompanySettingsPage() {
   // so the merge below only ever overwrites keys NOT in this set. Cleared
   // per-key the moment that key's own save round-trip confirms.
   const dirtyKeysRef = useRef(new Set());
+  const submitting = useRef(false);   // a second Save while one is running does nothing (no duplicated mutation)
+  // If the session ends while fields are unsaved, the app keeps this screen mounted under the login overlay (lib/unsavedWork.js).
+  useUnsavedWork('company-settings', 'إعدادات الشركة', () => dirtyKeysRef.current.size > 0);
 
   useEffect(() => { fetchSettings(); }, []);
 
@@ -141,6 +146,8 @@ export default function CompanySettingsPage() {
   };
 
   const saveSection = async (keys, label) => {
+    if (submitting.current) return;
+    submitting.current = true;
     setSaving(label);
     try {
       const partial = {};
@@ -151,9 +158,9 @@ export default function CompanySettingsPage() {
       // triggers) is free to adopt the server's value for them again.
       for (const k of keys) dirtyKeysRef.current.delete(k);
       toast.success('تم حفظ التغييرات — تنعكس فورًا في كل الشاشات');
-    } catch {
-      toast.error('فشل الحفظ');
-    } finally { setSaving(''); }
+    } catch (err) {
+      toast.error(describeSaveFailure(err));   // dirty keys are kept (not cleared), so the typed values stay and are not overwritten by a sync
+    } finally { submitting.current = false; setSaving(''); }
   };
 
   return (

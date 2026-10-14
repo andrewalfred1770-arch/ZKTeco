@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
+import { confirmLeaveIfUnsaved } from '../lib/unsavedWork';
+import { useBeforeUnloadGuard } from '../hooks/useBeforeUnloadGuard';
 import {
   LayoutDashboard, Users, CalendarDays, CalendarRange,
   DollarSign, Settings, FileText, BookOpen, Building2,
@@ -83,8 +85,10 @@ function ThemeSwitcher() {
 function SideLink({ item, collapsed }) {
   const [hovered, setHovered] = useState(false);
   const { isLight } = useTheme();
+  const location = useLocation();
   return (
     <NavLink to={item.to} title={collapsed ? item.label : undefined}
+      onClick={(e) => { if (location.pathname !== item.to && !confirmLeaveIfUnsaved()) e.preventDefault(); }}
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
       style={({ isActive }) => (isLight ? {
         /* ── Light theme: restored to the original PETSHROW sidebar identity
@@ -161,6 +165,7 @@ export default function Layout() {
   const brand = useCompanyBrand();
   const { isLight } = useTheme();
   const location = useLocation();
+  useBeforeUnloadGuard();   // plain-browser tab close / reload with unsaved work (not installed inside Electron)
 
   // Close the mobile drawer on every navigation — a drawer that stays open
   // after tapping a nav item would just cover the page it navigated to.

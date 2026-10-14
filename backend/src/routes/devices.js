@@ -17,6 +17,8 @@
  * GET    /realtime-status     realtime listener connection status (all devices)
  * POST   /:id/realtime/restart restart a device's realtime listener
  * GET    /:id/recovery-diagnostics background-recovery health + missing-day report
+ * GET    /new-users           people registered on devices with no matching employee (read-only)
+ * POST   /new-users/scan      run/join the single non-overlapping device-user scan (read-only)
  */
 
 const router = require('express').Router();
@@ -26,6 +28,7 @@ const { getPrisma } = require('../utils/prisma');
 const { pullLogs, pullAllDevices, testConnection, pingDevice, getDeviceUsers } = require('../services/zktecoService');
 const { relinkAttendanceLogs, getRelinkDiagnostics } = require('../services/relinkService');
 const realtimeListener = require('../services/realtimeListenerService');
+const deviceUserDiscovery = require('../services/deviceUserDiscoveryService');
 const { authenticate, authorize } = require('../middleware/auth');
 const { recordDeviceAudit, actorFromReq, pickDeviceFields, ACTION, RESULT } = require('../utils/deviceAudit');
 
@@ -170,6 +173,21 @@ router.get('/realtime-status', authorize('admin', 'hr'), async (req, res) => {
 });
 
 // ── Get single device ─────────────────────────────────────────────────────────
+// ── New (unlinked) people registered on the devices — Employees page section ───
+// Read-only. Declared before '/:id'. The list is derived from the last scan snapshot minus every
+// employee already holding that number (see services/deviceUserDiscoveryService.js).
+router.get('/new-users', authorize('admin', 'hr'), async (req, res) => {
+  try {
+    res.json(await deviceUserDiscovery.getView());
+  } catch (err) { sendError(res, err); }
+});
+// Starts (or joins) the single non-overlapping scan and answers with the fresh view. Reads only.
+router.post('/new-users/scan', authorize('admin', 'hr'), async (req, res) => {
+  try {
+    res.json(await deviceUserDiscovery.scanAll(req.io, { force: true }));   // explicit operator action: bypasses the retry back-off
+  } catch (err) { sendError(res, err); }
+});
+
 router.get('/:id', authorize('admin', 'hr'), async (req, res) => {
   try {
     const device = await prisma.device.findUnique({

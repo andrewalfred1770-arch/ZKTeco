@@ -12,6 +12,7 @@
 const ZKLib  = require('node-zklib');
 const { getPrisma } = require('../utils/prisma');
 const { isValidPunchTimestamp } = require('../utils/timestamps');
+const { summarizeLockedSkips } = require('../utils/lockedPunchConflict');
 const logger = require('../utils/logger');
 const realtimeListener = require('./realtimeListenerService');
 const deviceGate = require('./deviceGate');
@@ -197,6 +198,27 @@ function safeDisconnect(zk) {
   } catch {}
 }
 
+// safeDisconnect() cannot cancel a connect that has not completed (ZKLib.disconnect rejects with "Socket isn't
+// connected!" when no session is established yet), so a caller that must ABORT an in-flight attempt also destroys
+// the underlying TCP socket — and it must do so WITH AN ERROR. node-zklib's ZKLibTCP.createSocket() settles only on the
+// socket's 'connect' (resolve) or 'error' (reject) event; its 'close' handler merely nulls the socket. A plain
+// socket.destroy() on a still-pending connect emits 'close' alone, so the createSocket() promise would never settle,
+// connectDevice() would never return, and everything queued behind it in connectQueues (the next sync, ping, users
+// read, catch-up pull) would wait forever with its device lease held (verified against the installed library).
+// destroy(err) emits 'error' first, which rejects createSocket() and lets the queue drain.
+// Only for the abort path (deadline / shutdown) and for a connection that completed after its owner gave up — a
+// healthy session is always closed gracefully (safeDisconnect → CMD_EXIT → end()). Scoped to the ONE ZKLib instance
+// passed in; every step is individually guarded.
+const FORCE_CLOSE_REASON = 'USER_DISCOVERY_ABORT';
+function forceCloseSocket(zk) {
+  if (!zk) return;
+  safeDisconnect(zk);
+  try {
+    const sock = zk.zklibTcp && zk.zklibTcp.socket;
+    if (sock && !sock.destroyed) sock.destroy(new Error(FORCE_CLOSE_REASON));
+  } catch { /* already closed */ }
+}
+
 // ─── Connect ──────────────────────────────────────────────────────────────────
 // Public entry point — every caller (pullLogs, getDeviceUsers,
 // deleteDeviceUser, and any future one) goes through this. It only ever
@@ -204,14 +226,20 @@ function safeDisconnect(zk) {
 // not change what connectDeviceInner does, how activeConnections/status/
 // timeout/retry/cleanup behave, or the API this function exposes (still an
 // async function returning `zk` or throwing).
-function connectDevice(device) {
+// `opts` (all optional; existing callers pass none and behave exactly as before):
+//   recordStatus:false  — do NOT write Device.status/errorMessage/consecutiveErrors on success (used by the
+//                         read-only user discovery so it can never mask or reset sync-health state)
+//   onSocket(zk)        — receives each ZKLib instance the moment it is created (so a caller can force-close it)
+//   isAbandoned()       — when it returns true the attempt stops: no further retries and a socket that connects
+//                         late is closed instead of being registered in activeConnections
+function connectDevice(device, opts = {}) {
   const key = String(device.id);
   const prevTail = connectQueues.get(key) || Promise.resolve();
 
   // Run this attempt only after the previous one for this device has fully
   // settled (success OR failure) — `.then(fn, fn)` so a prior attempt's
   // rejection can never jam the queue for everyone behind it.
-  const attempt = prevTail.then(() => connectDeviceInner(device), () => connectDeviceInner(device));
+  const attempt = prevTail.then(() => connectDeviceInner(device, opts), () => connectDeviceInner(device, opts));
 
   // Advance the queue with a tail that always resolves, regardless of this
   // attempt's own outcome — the next queued attempt must run whether this
@@ -230,8 +258,9 @@ function connectDevice(device) {
   return attempt;
 }
 
-async function connectDeviceInner(device) {
+async function connectDeviceInner(device, opts = {}) {
   const key = String(device.id);
+  const abandoned = () => typeof opts.isAbandoned === 'function' && opts.isAbandoned();
 
   // If a connection is already active for this device, do NOT yank it out
   // from under whatever is using it (this used to cause "write after end"
@@ -252,16 +281,23 @@ async function connectDeviceInner(device) {
   const MAX_ATTEMPTS = 3;
   let lastErr;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (abandoned()) throw lastErr || new Error('connect abandoned');
     const zk = new ZKLib(device.ipAddress, device.port, 10000, 4000);
+    if (typeof opts.onSocket === 'function') { try { opts.onSocket(zk); } catch { /* observer only */ } }
     try {
       await zk.createSocket();
+      if (abandoned()) {                       // the caller gave up while we were connecting: don't register or leak it
+        forceCloseSocket(zk);
+        throw new Error('connect abandoned');
+      }
       activeConnections.set(key, { zk, device, connectedAt: new Date() });
-      await setDeviceStatus(device.id, STATUS.ONLINE, null, 0);
+      if (opts.recordStatus !== false) await setDeviceStatus(device.id, STATUS.ONLINE, null, 0);
       logger.info(`[ZK] Device "${device.name}" (${device.ipAddress}:${device.port}) connected${attempt > 1 ? ` (attempt ${attempt}/${MAX_ATTEMPTS})` : ''}`);
       return zk;
     } catch (err) {
       lastErr = err;
       safeDisconnect(zk);
+      if (abandoned()) throw err;
       if (attempt < MAX_ATTEMPTS) {
         logger.warn(`[ZK] Connect attempt ${attempt}/${MAX_ATTEMPTS} to "${device.name}" failed (${zkErrorMessage(err, 'unknown')}), retrying...`);
         await new Promise((r) => setTimeout(r, 800));
@@ -648,6 +684,10 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto', actor = null) {
     // them. processDate() is idempotent (it recomputes deterministically from
     // AttendanceLog), so re-running it for every touched employee/date here is
     // safe even when most of those punches were already duplicates.
+    // processDate() skips a row an HR user locked (manualEdit) — see attendanceEngine.js. When that hides valid raw punches
+    // the sync must say so instead of reporting a plain success: collected here, surfaced in the log, a socket event, the
+    // returned result, the device:synced event and the device audit entry. The punches themselves ARE stored.
+    const lockedSkips = [];
     if (matchedDayPairs.size > 0) {
       logger.info(`[SYNC] processing ${matchedDayPairs.size} employee/date pair(s) into AttendanceDaily immediately (device=${deviceId})`);
       emit(io, 'device:sync-step', {
@@ -660,7 +700,8 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto', actor = null) {
       // historical backfill.
       for (const { employeeId, dateStr } of matchedDayPairs.values()) {
         try {
-          await attendanceEngine.processDate(new Date(`${dateStr}T12:00:00`), employeeId);
+          const pr = await attendanceEngine.processDate(new Date(`${dateStr}T12:00:00`), employeeId);
+          if (pr && pr.skipped === 'manual-lock' && pr.ignoredPunches > 0) lockedSkips.push({ employeeId, dateStr, ignoredPunches: pr.ignoredPunches });
         } catch (err) {
           logger.error(`[SYNC] processDate failed employee=${employeeId} date=${dateStr}: ${err.message}`);
         }
@@ -671,6 +712,14 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto', actor = null) {
           });
         }
       }
+    }
+
+    const { punches: lockedIgnored, warning: lockedWarning } = summarizeLockedSkips(lockedSkips);
+    if (lockedWarning) {
+      logger.warn(`[SYNC] device=${deviceId} "${device.name}": ${lockedWarning}: ${lockedSkips.slice(0, 10).map((x) => `employee ${x.employeeId} ${x.dateStr}`).join(', ')}${lockedSkips.length > 10 ? ', …' : ''}`);
+      emit(io, 'attendance:locked-skip', {
+        deviceId, name: device.name, days: lockedSkips.length, punches: lockedIgnored, items: lockedSkips.slice(0, 20),
+      });
     }
 
     if (quarantined > 0) {
@@ -788,6 +837,7 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto', actor = null) {
       emit(io, 'device:synced', {
         deviceId, name: device.name, newLogs: newCount, totalLogs: logs.length,
         duplicates: dupCount, duration, success: false, partial: true, reason,
+        lockedIgnored, ...(lockedWarning ? { warning: lockedWarning } : {}),
       });
 
       await recordDeviceAudit({
@@ -810,7 +860,7 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto', actor = null) {
         logger.error(`[Relink] post-sync relink failed for "${device.name}": ${err.message}`);
       }
 
-      return { count: newCount, total: logs.length, duplicates: dupCount, invalid: invalidCount, duration, deviceId, success: false, partial: true, reason };
+      return { count: newCount, total: logs.length, duplicates: dupCount, invalid: invalidCount, duration, deviceId, success: false, partial: true, reason, lockedIgnored, ...(lockedWarning ? { warning: lockedWarning } : {}) };
     }
 
     // ── Converged success: advance checkpoint ───────────────────────────────
@@ -859,12 +909,15 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto', actor = null) {
       success:   true,
       converged: true,
       passes:    passesRun,
+      lockedIgnored,
+      ...(lockedWarning ? { warning: lockedWarning } : {}),
     });
 
     logger.info(`[ZK] "${device.name}": ${newCount} new / ${logs.length} merged (converged in ${passesRun} pass(es), ${duration}ms)`);
     await recordDeviceAudit({
-      action: ACTION.SYNC_COMPLETED, result: RESULT.SUCCESS, actor: auditActor, device,
-      metadata: { triggeredBy, syncLogId: syncLog.id, newLogs: newCount, totalLogs: logs.length, duplicates: dupCount, invalid: invalidCount, passes: passesRun, durationMs: duration },
+      action: ACTION.SYNC_COMPLETED, result: lockedWarning ? RESULT.PARTIAL : RESULT.SUCCESS, actor: auditActor, device,
+      ...(lockedWarning ? { errorCode: 'LOCKED_ROWS_IGNORED', errorMessage: lockedWarning } : {}),
+      metadata: { triggeredBy, syncLogId: syncLog.id, newLogs: newCount, totalLogs: logs.length, duplicates: dupCount, invalid: invalidCount, passes: passesRun, durationMs: duration, lockedIgnored },
     });
 
     // ── STEP 6: gap detection ────────────────────────────────────────────────
@@ -881,7 +934,7 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto', actor = null) {
       logger.error(`[Relink] post-sync relink failed for "${device.name}": ${err.message}`);
     }
 
-    return { count: newCount, total: logs.length, duplicates: dupCount, invalid: invalidCount, duration, deviceId, success: true, converged: true, passes: passesRun };
+    return { count: newCount, total: logs.length, duplicates: dupCount, invalid: invalidCount, duration, deviceId, success: true, converged: true, passes: passesRun, lockedIgnored, ...(lockedWarning ? { warning: lockedWarning } : {}) };
 
     } catch (err) {
       const msg = watchdogFired
@@ -1103,6 +1156,102 @@ async function getDeviceUsers(deviceId) {
   }
 }
 
+// ─── Read registered users (structured, bounded, never throws) ────────────────
+// Used by deviceUserDiscoveryService. Same mechanism as getDeviceUsers above — the exclusive device
+// lease (pauses the realtime listener, can never overlap a sync), connectDevice(), zk.getUsers() — but:
+//   • it reports WHY a read failed instead of throwing or returning [] (a missing/invalid result is
+//     'unsupported', never fabricated as an empty list);
+//   • it NEVER writes Device status/errors (recordStatus:false): a discovery connection must not mark a
+//     device online, clear its sync error or reset its consecutive-failure count;
+//   • it is BOUNDED: after `deadlineMs` (or when `signal` aborts) the scan gives up. Promise.race alone
+//     cancels nothing, so the scan force-closes the one socket IT created, tells an in-flight connect to
+//     stop (isAbandoned), waits a short grace for the operation to unwind, then releases the lease (which
+//     resumes the listener). The lease and the connection map are ownership-checked: a late completion can
+//     neither release someone else's lease nor delete someone else's activeConnections entry;
+//   • READ-ONLY on the device: only the get-users request is sent.
+// Returns { ok, users?, reason?, paused } — reason ∈ busy|offline|unsupported|error|timeout|aborted|not_found.
+// `paused` is true when the realtime listener was paused for this read (so the caller can arrange a catch-up).
+const USER_READ_DEADLINE_MS = 75 * 1000;
+const USER_READ_GRACE_MS = 3 * 1000;
+
+async function readDeviceUsers(deviceId, io = null, { deadlineMs = USER_READ_DEADLINE_MS, graceMs = USER_READ_GRACE_MS, signal = null } = {}) {
+  let device;
+  try { device = await prisma.device.findUnique({ where: { id: deviceId } }); }
+  catch { return { ok: false, reason: 'error', paused: false }; }
+  if (!device) return { ok: false, reason: 'not_found', paused: false };
+
+  let lease;
+  try { lease = acquireDevice(deviceId, 'users-discovery'); }
+  catch { return { ok: false, reason: 'error', paused: false }; }   // acquireDevice released its claim itself
+  if (!lease) return { ok: false, reason: 'busy', paused: false };
+
+  const key = String(deviceId);
+  const mine = { zk: null, abandoned: false };          // the ONE connection this read may touch
+  let forced = false;                                    // true only once the deadline / abort path has fired
+  // Normal completion (success, "unsupported", read error…) closes the session exactly as before: gracefully.
+  // Only an abandoned read force-closes — and only the ZKLib instance this read created.
+  const closeMine = (force) => {
+    if (force) forceCloseSocket(mine.zk); else safeDisconnect(mine.zk);
+    const entry = activeConnections.get(key);
+    if (entry && mine.zk && entry.zk === mine.zk) activeConnections.delete(key);   // never another operation's entry
+  };
+  let connected = false;
+
+  const work = (async () => {
+    await sleep(500);
+    if (mine.abandoned) return { ok: false, reason: 'timeout' };
+    const zk = await connectDevice(device, {
+      recordStatus: false,
+      isAbandoned: () => mine.abandoned,
+      onSocket: (z) => { mine.zk = z; },
+    });
+    connected = true;
+    if (mine.abandoned) return { ok: false, reason: 'timeout' };
+    if (typeof zk.getUsers !== 'function') return { ok: false, reason: 'unsupported' };
+    const res = await zk.getUsers();
+    if (mine.abandoned) return { ok: false, reason: 'timeout' };
+    if (!res || !Array.isArray(res.data)) return { ok: false, reason: 'unsupported' };
+    if (res.err) return { ok: false, reason: 'error' };
+    return { ok: true, users: res.data.map((u) => ({ userId: u && u.userId, name: u && u.name })) };
+  })().catch((err) => {
+    const msg = zkErrorMessage(err, '');
+    if (/is busy/i.test(msg)) return { ok: false, reason: 'busy' };
+    if (mine.abandoned) return { ok: false, reason: 'timeout' };
+    logger.warn(`[USER-DISCOVERY] device=${deviceId} read failed (${connected ? 'after connect' : 'connect'}): ${msg || 'unknown'}`);
+    return { ok: false, reason: connected ? 'error' : 'offline' };
+  });
+
+  let timer;
+  let onAbort;
+  const guard = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ ok: false, reason: 'timeout' }), deadlineMs);
+    if (signal) {
+      if (signal.aborted) resolve({ ok: false, reason: 'aborted' });
+      else { onAbort = () => resolve({ ok: false, reason: 'aborted' }); signal.addEventListener('abort', onAbort, { once: true }); }
+    }
+  });
+
+  let result;
+  try {
+    const first = await Promise.race([work.then((r) => ({ r, byWork: true })), guard.then((r) => ({ r, byWork: false }))]);
+    result = first.r;
+    if (!first.byWork) {
+      mine.abandoned = true;
+      forced = true;
+      logger.warn(`[USER-DISCOVERY] device=${deviceId} read ${result.reason} — closing this scan's connection and moving on`);
+      closeMine(true);                                  // cancel the underlying socket work, not just the wait
+      await Promise.race([work.then(() => {}, () => {}), sleep(graceMs)]);   // short, bounded unwind window
+    }
+  } finally {
+    clearTimeout(timer);
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+    mine.abandoned = true;                              // anything still running after this point must do nothing
+    closeMine(forced);
+    lease.release(io);                                  // ownership-checked: a no-op if the claim is no longer ours
+  }
+  return { ...result, paused: true };
+}
+
 // ─── Delete a user from one device ────────────────────────────────────────────
 // Finds the device-internal UID matching zkUserId, then sends CMD_DELETE_USER
 // (18) followed by CMD_DELETE_USERTEMP (19, fingerprint templates) and
@@ -1183,6 +1332,8 @@ module.exports = {
   testConnection,
   pingDevice,
   getDeviceUsers,
+  readDeviceUsers,
+  forceCloseSocket,
   deleteDeviceUser,
   isDeviceSyncRunning,
   recoverStaleSyncState,

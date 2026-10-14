@@ -3,7 +3,7 @@ const { sendError } = require('../utils/apiError');
 const moment = require('moment');
 const { getPrisma } = require('../utils/prisma');
 const { authenticate, authorize } = require('../middleware/auth');
-const { calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, withPayrollKeyLock, calculatePayrollImpl, filterProtectedPayrollTargets, syncStoredPayroll, payrollSnapshotDiffers } = require('../engines/payrollEngine');
+const { validatePayrollStatusValue, planPayrollEdit, assertPayrollOpen, replyPayrollPolicyError, calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, withPayrollKeyLock, calculatePayrollImpl, filterProtectedPayrollTargets, syncStoredPayroll, payrollSnapshotDiffers } = require('../engines/payrollEngine');
 const { mergeEffectivePenalty } = require('../engines/attendanceEngine');
 const { getRules, getRulesBatch, isRuleTrue } = require('../engines/rulesEngine');
 const { writeAudit } = require('../utils/manualEditAudit');
@@ -326,10 +326,16 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ error: 'قيمة الخصم الإضافي يجب أن تكون رقمًا موجبًا' });
     }
 
+    // Only the supported statuses are accepted; an arbitrary string is refused before anything is locked or written.
+    let targetStatus;
+    if (status !== undefined) {
+      try { targetStatus = validatePayrollStatusValue(status); } catch (e) { if (replyPayrollPolicyError(res, e)) return; throw e; }
+    }
+
     const data = {};
     if (manualDeductionAdjustment !== undefined) data.manualDeductionAdjustment = parseMoney(manualDeductionAdjustment);
     if (notes !== undefined) data.notes = notes;
-    if (status !== undefined) data.status = status;
+    if (targetStatus !== undefined) data.status = targetStatus;
 
     // "الراتب الأساسي" is sourced from the EMPLOYEE record — the engine derives
     // payroll.basicSalary from employee.salary on every recompute. So persist the
@@ -367,6 +373,31 @@ router.put('/:id', async (req, res) => {
         await tx.$queryRaw`SELECT id FROM payrolls WHERE id = ${payroll.id} FOR UPDATE`;
         const before = await tx.payroll.findUnique({ where: { id: payroll.id } });
         if (!before) { const e = new Error('Payroll not found'); e.statusCode = 404; throw e; }
+
+        // Closed-payroll policy, decided on the row as it is committed RIGHT NOW (locked above), before ANY write:
+        // a finalized/paid record is immutable (no salary, deduction, notes or recalculation — not even "notes only"),
+        // the only legal change is the forward status step finalized → paid, and nothing may skip or reverse a step.
+        // A rejection throws here, so the transaction rolls back with no payroll, employee, totals or audit write.
+        const plan = planPayrollEdit(before.status, {
+          hasSalary: newSalary !== null, hasManual: manualDeductionAdjustment !== undefined,
+          hasNotes: notes !== undefined, target: targetStatus,
+        });
+        if (plan === 'noop') {
+          updated = await tx.payroll.findUnique({ where: { id: payroll.id }, include: { employee: true } });
+          return;
+        }
+        if (plan === 'transition') {
+          // finalized → paid: status only. No recalculation — the approved figures must not move.
+          await tx.payroll.update({ where: { id: payroll.id }, data: { status: targetStatus } });
+          updated = await tx.payroll.findUnique({ where: { id: payroll.id }, include: { employee: true } });
+          await writeAudit({
+            employeeId: payroll.employeeId, payrollId: payroll.id, fieldName: 'status',
+            oldValue: before.status, newValue: updated.status, reason: reason || null,
+            userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole, tx,
+          });
+          return;
+        }
+
         if (newSalary !== null) {
           // F-05/F-07: lock the employee row, THEN read the committed salary — a concurrent salary
           // edit (other month's payroll row, or the Employees page) cannot slip in between the
@@ -377,11 +408,18 @@ router.put('/:id', async (req, res) => {
           await tx.employee.update({ where: { id: payroll.employeeId }, data: { salary: newSalary } });
         }
 
-        if (Object.keys(data).length) {
-          await tx.payroll.update({ where: { id: payroll.id }, data });
+        // The status change is applied LAST: calculatePayrollImpl never writes into a finalized/paid row, so on
+        // draft → finalized the totals are recomputed first and only then locked in.
+        const { status: nextStatus, ...dataNoStatus } = data;
+        if (Object.keys(dataNoStatus).length) {
+          await tx.payroll.update({ where: { id: payroll.id }, data: dataNoStatus });
         }
 
         await calculatePayrollImpl(payroll.employeeId, payroll.month, payroll.year, { tx });
+
+        if (nextStatus !== undefined && nextStatus !== before.status) {
+          await tx.payroll.update({ where: { id: payroll.id }, data: { status: nextStatus } });
+        }
 
         updated = await tx.payroll.findUnique({ where: { id: payroll.id }, include: { employee: true } });
 
@@ -398,6 +436,18 @@ router.put('/:id', async (req, res) => {
               reason: reason || null,
               userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole,
               tx,
+            });
+          }
+        }
+
+        // Before/after financial TOTALS of this edit (the recalculation above may move them even when the edited field
+        // was e.g. the status), so the trail shows what the payroll was worth before and after the change.
+        for (const field of ['deductions', 'netSalary']) {
+          if (Math.abs((Number(before[field]) || 0) - (Number(updated[field]) || 0)) > 0.004) {
+            await writeAudit({
+              employeeId: payroll.employeeId, payrollId: payroll.id, fieldName: field,
+              oldValue: before[field], newValue: updated[field], reason: reason || null,
+              userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole, tx,
             });
           }
         }
@@ -421,6 +471,7 @@ router.put('/:id', async (req, res) => {
 
     res.json(updated);
   } catch (err) {
+    if (replyPayrollPolicyError(res, err)) return;
     sendError(res, err);
   }
 });
@@ -463,15 +514,22 @@ router.put('/:id/advances', async (req, res) => {
     // no schema change. The DB write itself (advance create + payroll upsert
     // + audit) is further wrapped in one prisma.$transaction so it commits or
     // rolls back as a unit, matching PUT /:id's hardening above.
-    let currentTotal, delta, updated;
+    let updated;
     await withPayrollKeyLock(employeeId, month, year, async () => {
-      const existingAdvances = await prisma.advance.findMany({ where: { employeeId, month, year } });
-      currentTotal = existingAdvances.reduce((s, a) => s + a.amount, 0);
-      delta = parseFloat((newTotal - currentTotal).toFixed(2));
-
       // F-04: no business limit on advances — the total is whatever the user enters.
-
       await prisma.$transaction(async (tx) => {
+        // Closed-payroll policy + the cross-process serialisation point: lock the payroll row (FOR UPDATE) and re-read its
+        // status INSIDE this transaction. A finalized/paid month accepts no advance change at all; the rejection throws
+        // before anything is written, so the transaction leaves everything untouched.
+        await assertPayrollOpen(tx, employeeId, month, year, 'إضافة/تعديل');
+        const beforeRow = await tx.payroll.findUnique({ where: { id: payroll.id } });
+
+        // The "desired total" is compared with the monthly total as committed RIGHT NOW (read after the row lock, in this
+        // transaction) — never with a value read before the lock, which another backend process could have changed.
+        const existingAdvances = await tx.advance.findMany({ where: { employeeId, month, year } });
+        const currentTotal = existingAdvances.reduce((s, a) => s + a.amount, 0);
+        const delta = parseFloat((newTotal - currentTotal).toFixed(2));
+
         if (delta !== 0) {
           await tx.advance.create({
             data: {
@@ -486,18 +544,31 @@ router.put('/:id/advances', async (req, res) => {
         updated = await tx.payroll.findUnique({ where: { id: payroll.id }, include: { employee: true } });
 
         if (delta !== 0) {
+          // The monthly total AFTER this write, read in the same locked transaction (the committed result).
+          const agg = await tx.advance.aggregate({ _sum: { amount: true }, where: { employeeId, month, year } });
           await writeAudit({
             employeeId, payrollId: payroll.id, fieldName: 'advances',
-            oldValue: currentTotal, newValue: newTotal, reason: reason || null,
+            oldValue: currentTotal, newValue: agg._sum.amount || 0, reason: reason || null,
             userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole,
             tx,
           });
+          // Before/after financial totals that this advance moved.
+          for (const field of ['deductions', 'netSalary']) {
+            if (beforeRow && Math.abs((Number(beforeRow[field]) || 0) - (Number(updated[field]) || 0)) > 0.004) {
+              await writeAudit({
+                employeeId, payrollId: payroll.id, fieldName: field,
+                oldValue: beforeRow[field], newValue: updated[field], reason: reason || null,
+                userId: modifiedBy, userName: modifiedByName, userRole: modifiedByRole, tx,
+              });
+            }
+          }
         }
       });
     });
 
     res.json(updated);
   } catch (err) {
+    if (replyPayrollPolicyError(res, err)) return;
     if (err.statusCode) return res.status(err.statusCode).json({ error: err.message });
     sendError(res, err);
   }

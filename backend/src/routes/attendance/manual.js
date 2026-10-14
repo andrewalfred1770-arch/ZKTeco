@@ -6,8 +6,9 @@ const { modifier } = require('../../utils/auditActor');
 const moment = require('moment');
 const { authorize } = require('../../middleware/auth');
 const { processDate, buildDayFields, DAILY_RESET, mergeEffectivePenalty, parseTimeRules, withEmployeeDateLock } = require('../../engines/attendanceEngine');
+const { countUnreflectedPunches } = require('../../utils/lockedPunchConflict');
 const { calculatePayroll, computePayroll, applyApprovedAdjustment, filterProtectedPayrollTargets } = require('../../engines/payrollEngine');
-const { getRules, isWeekend, isHoliday, isRuleTrue } = require('../../engines/rulesEngine');
+const { getRules, isWeekend, isHoliday } = require('../../engines/rulesEngine');
 const { calcLatePenalty, calcEarlyCheckout, timeToMinutes } = require('../../engines/policyEngine');
 const { writeAudit, resolveVerifiedManualEditIds } = require('../../utils/manualEditAudit');
 const { buildAttendanceRow } = require('../../utils/attendanceRow');
@@ -81,6 +82,49 @@ function absentWithPunch(manual, rec) {
   const pendingCheckIn  = 'checkIn'  in manual ? manual.checkIn  : rec.checkIn;
   const pendingCheckOut = 'checkOut' in manual ? manual.checkOut : rec.checkOut;
   return manual.status === 'absent' && !!(pendingCheckIn || pendingCheckOut);
+}
+
+// The status a request actually ASKS for. A client that re-sends the row's CURRENT status next to new punch times
+// (the Manual Edit drawer always sends its whole form, status included) has not asked for that status: an ABSENT
+// day that receives a punch must simply become present, and the engine derives that from the punch. Without this,
+// the repeated "absent" together with the new punch was rejected by the absolute policy above, so the correction
+// of a no-punch day never reached AttendanceDaily. Only the unchanged "absent" is dropped, and only when the same
+// request supplies a punch; a status that CHANGES to "absent" while a punch exists is still rejected.
+function namedStatus(status, rec, checkIn, checkOut) {
+  if (!status) return undefined;
+  const addsPunch = !!(checkIn || checkOut);
+  if (addsPunch && status === 'absent' && rec.status === 'absent') return undefined;
+  return status;
+}
+
+// A save that would change nothing must not lock the row. Every field the request names is compared with the row as it
+// is stored RIGHT NOW (the caller evaluates this inside the employee+day lock): times at HH:mm precision with ''/null
+// equal, the status the request actually asks for (see namedStatus — an unchanged "absent" next to no new punch is
+// still compared and found equal), and the numeric overrides. Nothing named differs -> nothing is written: no
+// manualEdit lock, no engine run, no audit rows, no payroll recalculation. A real change locks the row exactly as before.
+function isNoopManualSave(cur, { checkIn, checkOut, status, numeric }) {
+  const hhmm = (d) => (d ? moment(d).format('HH:mm') : null);
+  if (checkIn !== undefined && (checkIn || null) !== hhmm(cur.checkIn)) return false;
+  if (checkOut !== undefined && (checkOut || null) !== hhmm(cur.checkOut)) return false;
+  const named = namedStatus(status, cur, checkIn, checkOut);
+  if (named !== undefined && named !== cur.status) return false;
+  for (const [k, v] of Object.entries(numeric || {})) {
+    if (v !== undefined && Number(v) !== Number(cur[k] ?? 0)) return false;
+  }
+  return true;
+}
+
+// For a LOCKED row: how many valid raw punches of that day the row does not account for (same rule the engine and the
+// monthly view use). Additive response fields only: { lockedPunchConflict, ignoredPunches }.
+async function lockedPunchFields(row) {
+  if (!row || !row.manualEdit) return { lockedPunchConflict: false, ignoredPunches: 0 };
+  const dayStr = moment(row.date).format('YYYY-MM-DD');
+  const logs = await prisma.attendanceLog.findMany({
+    where: { employeeId: row.employeeId, isDuplicate: false, timestamp: { gte: new Date(`${dayStr}T00:00:00`), lte: new Date(`${dayStr}T23:59:59`) } },
+    select: { timestamp: true, createdAt: true },
+  });
+  const n = countUnreflectedPunches(row, logs);
+  return { lockedPunchConflict: n > 0, ignoredPunches: n };
 }
 
 // Explicit numeric overrides — applied on top of the engine recompute. `rules` is only needed
@@ -211,7 +255,7 @@ router.put('/daily/:id', authorize('admin', 'hr'), async (req, res) => {
     const manual = {
       ...(checkIn  !== undefined ? { checkIn:  checkIn  ? new Date(`${dateStr}T${checkIn}`)  : null } : {}),
       ...(checkOut !== undefined ? { checkOut: checkOut ? new Date(`${dateStr}T${checkOut}`) : null } : {}),
-      ...(status ? { status } : {}),
+      ...(namedStatus(status, rec, checkIn, checkOut) ? { status: namedStatus(status, rec, checkIn, checkOut) } : {}),
     };
     // ABSOLUTE POLICY, no exceptions: reject outright rather than let the
     // engine's clamp silently reinterpret it — see manual-penalty above.
@@ -224,7 +268,12 @@ router.put('/daily/:id', authorize('admin', 'hr'), async (req, res) => {
     // first and a failure in the second step left a half-saved, unaudited edit behind while the
     // request reported an error). The date lock is held until commit so a concurrent save of
     // the same row can only start from this edit's committed result.
-    const { updated, auditEntries, before } = await withManualEditSlot(() => withEmployeeDateLock(rec.employeeId, dateStr, () => prisma.$transaction(async (tx) => {
+    const lockResult = await withManualEditSlot(() => withEmployeeDateLock(rec.employeeId, dateStr, async () => {
+    // Re-read INSIDE the lock: whether this save changes anything is judged against the stored row, not the copy read
+    // above (which another save may already have made stale).
+    const fresh = await prisma.attendanceDaily.findUnique({ where: { id: rec.id } });
+    if (fresh && isNoopManualSave(fresh, { checkIn, checkOut, status, numeric: numericOverrideKeys })) return { noop: true, fresh };
+    return prisma.$transaction(async (tx) => {
     const engineResult = await processDate(rec.date, rec.employeeId, { manual, tx, lockHeld: true });
     // The row exactly as it was when this edit was applied (true "old" values for the audit).
     const before = engineResult?.before || { ...rec };
@@ -275,7 +324,11 @@ router.put('/daily/:id', authorize('admin', 'hr'), async (req, res) => {
       }
 
       return { updated, auditEntries, before };
-    }, { maxWait: 10000, timeout: 30000 })));
+    }, { maxWait: 10000, timeout: 30000 }); }));
+    if (lockResult.noop) {
+      return res.json({ ...await buildDailyResponseRow(lockResult.fresh), ...await lockedPunchFields(lockResult.fresh), unchanged: true });
+    }
+    const { updated, auditEntries, before } = lockResult;
 
     // ── Diagnostics + audit trail logging — kept outside the transaction ────
     if (updated.status !== before.status) {
@@ -302,7 +355,7 @@ router.put('/daily/:id', authorize('admin', 'hr'), async (req, res) => {
 
     if (req.io) req.io.emit('attendance:processed', { employeeId: rec.employeeId, source: 'manual-edit' });
 
-    res.json({ ...await buildDailyResponseRow(updated), payroll, payrollError, payrollProtected });
+    res.json({ ...await buildDailyResponseRow(updated), ...await lockedPunchFields(updated), payroll, payrollError, payrollProtected });
   } catch (err) {
     sendError(res, err);
   }
@@ -742,9 +795,9 @@ router.post('/daily/:id/preview', authorize('admin', 'hr'), async (req, res) => 
     const legacyRules = await getRules(employee.branchId, employee.departmentId, employee.id);
     const dayDate = new Date(dateStr);
     const dayOfWeek = dayDate.getDay();
-    const fridayIsWeekend = isRuleTrue(legacyRules.friday_is_weekend);
+    // Friday is always the weekly off (permanent rule — same as attendanceEngine.processDate).
     const configuredWeekend = isWeekend(dayDate, legacyRules.weekend_days);
-    const weekend = configuredWeekend || (fridayIsWeekend && dayOfWeek === 5);
+    const weekend = configuredWeekend || dayOfWeek === 5;
     const holiday = await isHoliday(dayDate, employee.branchId);
 
     // Same inputs the save builds: only the fields this request names are manual input; an
@@ -752,7 +805,7 @@ router.post('/daily/:id/preview', authorize('admin', 'hr'), async (req, res) => 
     const manual = {
       ...(checkIn  !== undefined ? { checkIn:  checkIn  ? new Date(`${dateStr}T${checkIn}`)  : null } : {}),
       ...(checkOut !== undefined ? { checkOut: checkOut ? new Date(`${dateStr}T${checkOut}`) : null } : {}),
-      ...(status ? { status } : {}),
+      ...(namedStatus(status, rec, checkIn, checkOut) ? { status: namedStatus(status, rec, checkIn, checkOut) } : {}),
     };
     // The save rejects this outright (400); the preview must not pretend it would succeed.
     if (absentWithPunch(manual, rec)) {
@@ -841,9 +894,12 @@ router.post('/daily/:id/restore-auto', authorize('admin', 'hr'), async (req, res
 
     const dateStr = moment(rec.date).format('YYYY-MM-DD');
 
-    // Clear the lock so processDate recomputes this row from raw logs.
-    await prisma.attendanceDaily.update({ where: { id: rec.id }, data: { manualEdit: false } });
-    await processDate(rec.date, rec.employeeId);
+    // Clear the lock so processDate recomputes this row from raw logs. Done under the employee+day lock (like every
+    // other writer of this row) so a concurrent sync/manual save cannot interleave between the unlock and the recompute.
+    await withEmployeeDateLock(rec.employeeId, dateStr, async () => {
+      await prisma.attendanceDaily.update({ where: { id: rec.id }, data: { manualEdit: false } });
+      await processDate(rec.date, rec.employeeId, { lockHeld: true });
+    });
 
     const updated = await prisma.attendanceDaily.findUnique({ where: { id: rec.id } });
 

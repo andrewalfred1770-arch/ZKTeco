@@ -225,13 +225,23 @@ export function isHolidayRow(data) {
  *
  * Pass directly as the `getRowClass` prop on <AgGridReact>.
  */
+/**
+ * hasWeeklyOffActivity — true when a weekly-off row carries real evidence (a punch, worked time or
+ * overtime). Such a row must stay readable: only an EMPTY weekly-off row gets the subdued style.
+ * Display only — never changes status or any calculated value.
+ */
+export function hasWeeklyOffActivity(d) {
+  return !!(d && (d.checkIn || d.checkOut || (d.workedMinutes || 0) > 0 || (d.overtimeHours || 0) > 0
+    || (d.effectiveOvertimeUnits || 0) > 0 || (d.totalOT || 0) > 0));
+}
+
 export function attendanceRowClass({ data }) {
   if (!data) return '';
   const classes = [];
   if      (data.isMonitored) classes.push('row-monitored');
   if      (isHolidayRow(data)) classes.push('row-holiday');
-  else if (data.isWeekend)   classes.push('row-weekend');
-  else if (isAbsentRow(data)) classes.push('row-absent');
+  else if (data.isWeekend && !hasWeeklyOffActivity(data)) classes.push('row-weekend');   // subdued: empty weekly-off only
+  else if (isAbsentRow(data) && !data.isWeekend) classes.push('row-absent');
   else if ((data.effectiveLatePenalty   || 0) > 0) classes.push('row-late');
   else if ((data.effectiveOvertimeUnits || 0) > 0) classes.push('row-overtime');
   return classes.join(' ');

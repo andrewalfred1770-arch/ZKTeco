@@ -7,6 +7,8 @@ import {
   CheckCircle, XCircle, Clock, TrendingUp,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useUnsavedWork } from '../hooks/useUnsavedWork';
+import { isSessionLostError } from '../lib/unsavedWork';
 import api, { LONG_OP } from '../lib/api';
 import { useTheme } from '../contexts/ThemeContext';
 import { useIsNarrowViewport } from '../hooks/useIsNarrowViewport';
@@ -34,6 +36,9 @@ import { ACTOR, HHMM_RE, OVERRIDE_FIELD_MAP, normalizeDailyUpdate, replaceAttend
 import { useKeyboardShortcut } from '../hooks/useKeyboardShortcut';
 import PasteAttendanceModal from '../components/PasteAttendanceModal';
 import { useAttendancePaste } from '../hooks/useAttendancePaste';
+import { useGridClipboard } from '../hooks/useGridClipboard';
+import useAuthStore from '../store/authStore';
+import { createBulkSaver } from '../lib/attendanceBulkSave';
 import { MONTHS_AR, getYearRange } from '../lib/constants';
 
 const DAYS_AR   = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
@@ -78,6 +83,22 @@ export default function AttendanceMonthlyPage() {
   // overwrite the month/department the user switched to, or a row saved since.
   const screenKey = `${month}|${year}|${deptId}`;
   const guard = useStaleGuard(screenKey);
+
+  // Excel-style cell range selection, Ctrl+C / Ctrl+V and bulk paste (AG Grid Community has none of these).
+  // The paste handler is defined further down (it needs load()); the hook reaches it through this ref.
+  const pasteHandlerRef = useRef(null);
+  const clip = useGridClipboard({
+    gridRef, rtl: true,
+    lockReason: (row, field) => (field !== 'status' && row.isHoliday ? 'يوم عطلة رسمية — مقفل' : null),
+    onPaste: (plan, ctx) => (pasteHandlerRef.current ? pasteHandlerRef.current(plan, ctx) : undefined),
+  });
+  const bulkSaver = useMemo(() => createBulkSaver({ api, actor: ACTOR }), []);
+  // Background reloads wait while a save is in flight OR a cell holds an unsaved (failed) value, so a reload cannot wipe it.
+  const monthlyBusyRef = useMemo(() => ({ get current() { return editCountRef.current > 0 || clip.stateSummary().failed > 0; } }), []);   // eslint-disable-line react-hooks/exhaustive-deps
+  // Typed-but-not-saved work on this grid: a cell open in the editor, a save still in flight, or a cell whose save failed and awaits an
+  // explicit retry. If the session ends while any of these exist the screen stays mounted under the login overlay (lib/unsavedWork.js).
+  useUnsavedWork('attendance-monthly-editor', 'الحضور الشهري (تعديل غير محفوظ)', () =>
+    !!gridRef.current?.api?.getEditingCells?.().length || savingCellsRef.current.size > 0 || clip.stateSummary().failed > 0);
 
   // ── Filter system ─────────────────────────────────────────────────────────
   const {
@@ -129,16 +150,17 @@ export default function AttendanceMonthlyPage() {
         : value,
     },
     {
-      field: 'date', headerName: 'التاريخ', width: 130, pinned: isNarrow ? undefined : 'right',
+      field: 'date', headerName: 'التاريخ', width: 148, minWidth: 136, pinned: isNarrow ? undefined : 'right',
+      headerClass: 'ag-header-center',
       valueFormatter: p => {
         if (!p.value) return '';
         const d = new Date(p.value + 'T00:00');
         return `${d.getDate()} - ${DAYS_AR[d.getDay()]}`;
       },
-      cellStyle: {
-        fontFamily: 'Consolas, monospace', fontSize: '11.5px',
-        color: 'var(--text-2)', justifyContent: 'center',
-      },
+      // Typography lives in index.css (.cell-date-day): the app's Arabic UI font, 14px/700, theme-aware colour. It cannot be set
+      // here — the global `.ag-cell{font-size/font-weight !important}` and `html.light .ag-cell{color !important}` rules override an
+      // inline cellStyle, which is why the old 11.5px Consolas style never took effect (and Consolas has no Arabic glyphs).
+      cellClass: 'cell-date-day',
     },
     {
       field: 'department', headerName: 'القسم', width: 130,
@@ -230,14 +252,16 @@ export default function AttendanceMonthlyPage() {
       cellEditorParams: {
         values: ['present','late','absent','early_leave','weekend','holiday'],
       },
-      valueFormatter: p => STATUS_LABELS[p.value]?.ar || '—',
+      valueFormatter: p => (STATUS_LABELS[p.value]?.ar || '—') + (p.data?.lockedPunchConflict ? ' ⚠' : ''),
       cellClass: p => [
         editCellClass('status', () => true)(p),
         p.data?.manualEdit ? 'cell-manual-override' : '',
+        p.data?.lockedPunchConflict ? 'cell-lock-conflict' : '',
         p.value === 'absent' ? 'status-absent' : '',
       ].filter(Boolean).join(' '),
-      tooltipValueGetter: p => p.data?.manualEdit
-        ? manualOverrideTooltip(p.data?.manualPenaltyByName, p.data?.manualPenaltyAt) : undefined,
+      tooltipValueGetter: p => p.data?.lockedPunchConflict
+        ? `⚠ توجد ${p.data.ignoredPunches || ''} بصمة خام لم تُطبَّق لأن السجل معدّل يدوياً — استخدم "استرجاع الحساب التلقائي"`
+        : (p.data?.manualEdit ? manualOverrideTooltip(p.data?.manualPenaltyByName, p.data?.manualPenaltyAt) : undefined),
       cellStyle: p => ({
         justifyContent: 'center', fontWeight: '700', fontSize: '12px',
         fontFamily: 'Cairo, sans-serif',
@@ -286,7 +310,7 @@ export default function AttendanceMonthlyPage() {
     },
   ], [isNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
+  const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF, cellClassRules: clip.cellClassRules }), [clip.cellClassRules]);
 
   // Shared priority chain — see gridDefaults.js#attendanceRowClass.
   const getRowClass = useCallback(attendanceRowClass, []);
@@ -364,8 +388,8 @@ export default function AttendanceMonthlyPage() {
 
   useEffect(() => { load(true); }, [load]);
 
-  useRulesLiveSync(load, { isBusyRef: editCountRef });
-  useDeviceLiveSync(load, { silent: true, isBusyRef: editCountRef, reloadOne: loadOne });
+  useRulesLiveSync(load, { isBusyRef: monthlyBusyRef });
+  useDeviceLiveSync(load, { silent: true, isBusyRef: monthlyBusyRef, reloadOne: loadOne });
 
   // Persist filters across navigation
   useEffect(() => {
@@ -438,6 +462,8 @@ export default function AttendanceMonthlyPage() {
       const a = (newValue == null || newValue === '') ? null : Number(newValue);
       const b = (oldValue == null || oldValue === '') ? null : Number(oldValue);
       if (a === b) return;
+    } else if (field === 'checkIn' || field === 'checkOut') {
+      if ((newValue || null) === (oldValue || null)) return;   // clearing an already-empty time cell is not an edit
     } else {
       if (newValue === oldValue) return;
     }
@@ -457,11 +483,14 @@ export default function AttendanceMonthlyPage() {
         // it's authoritative for instead of clobbering the sibling's
         // in-flight value with a stale full-row replace.
         const rowKeyPrefix = `${data.id}:`;
-        const hasOtherFieldsInFlight = Array.from(savingCellsRef.current)
-          .some(k => k.startsWith(rowKeyPrefix) && k !== rowKey);
+        const inFlightFields = Array.from(savingCellsRef.current)
+          .filter(k => k.startsWith(rowKeyPrefix) && k !== rowKey).map(k => k.slice(rowKeyPrefix.length));
+        const hasOtherFieldsInFlight = inFlightFields.length > 0;
         if (hasOtherFieldsInFlight) pendingReloadRef.current = true;
         guard.markFresh([data.id]);   // the PUT result is now the newest data for this row
-        setRows(rs => applyRowFieldUpdate(rs, updated, field, hasOtherFieldsInFlight));
+        // The WHOLE server row is applied (so status / isAbsent / worked time derived from this edit are current — a
+        // row can no longer show a time next to a stale "absent"); only the siblings still saving keep their own value.
+        setRows(rs => applyRowFieldUpdate(rs, updated, field, inFlightFields));
         primaryOk = true;
         if (field === 'status' && newValue === 'absent') {
           setAbsenceModal({
@@ -475,6 +504,20 @@ export default function AttendanceMonthlyPage() {
         }
       }
     } catch (err) {
+      if (isSessionLostError(err) && ['checkIn', 'checkOut', 'status'].includes(field)) {
+        // The session ended while this edit was in flight (or was refused before sending). Do NOT silently revert the typed value:
+        // keep it in the cell, flag the cell as NOT saved, and remember it in memory as a retryable op. It is re-sent only when the
+        // user signs in again and presses «إعادة المحاولة» — never automatically. Nothing is reported as saved.
+        clip.setCellState(data.id, field, 'failed', {
+          op: { rowId: data.id, employeeId: data.employeeId, employeeName: data.employeeName, date: data.date, field, value: newValue },
+          error: 'انتهت الجلسة — لم يُحفظ',
+        });
+        toast.error('انتهت الجلسة — التعديل لم يُحفظ بعد. سجّل الدخول ثم اضغط «إعادة المحاولة» أسفل الشاشة', { id: 'edit-not-saved', duration: 9000 });
+        savingCellsRef.current.delete(rowKey);
+        guard.endEdit([data.id]);
+        editCountRef.current--;
+        return;
+      }
       toast.error(err?.response?.data?.error || 'فشل التحديث');
       node.setDataValue(field, oldValue);
       savingCellsRef.current.delete(rowKey);
@@ -626,6 +669,112 @@ export default function AttendanceMonthlyPage() {
     }
   }, [month, year, deptId, departments, collectFilteredRows]);
 
+  // ── Excel-style paste: validated plan → the existing PUT /attendance/daily/:id → per-cell states ────────
+  const runPasteOps = useCallback(async (ops) => {
+    const c = clip;
+    const ids = [...new Set(ops.map(o => o.rowId))];
+    editCountRef.current += ids.length;                 // background reloads wait until every save has finished
+    ids.forEach(id => guard.beginEdit([id]));
+    ops.forEach(o => c.setCellState(o.rowId, o.field, 'saving', { op: o }));
+    let res = null;
+    try {
+      res = await bulkSaver.save(ops, {
+        onCell: (op, state, info = {}) => c.setCellState(op.rowId, op.field, state, { op, ...info }),
+        onRowSaved: (updated, rowId) => { guard.markFresh([rowId]); setRows(rs => replaceAttendanceRow(rs, updated)); },
+      });
+    } finally {
+      ids.forEach(id => guard.endEdit([id]));
+      editCountRef.current -= ids.length;
+    }
+    const nSaved = res.saved.length, nAdj = res.adjusted.length, nFail = res.failed.length;
+    if (nFail === 0 && nAdj === 0) toast.success(`تم حفظ ${nSaved} خلية في ${res.rows} سجل`);
+    else if (nSaved + nAdj > 0) toast(`تم حفظ ${nSaved + nAdj} من ${ops.length} — فشل ${nFail}${nAdj ? ` — ${nAdj} بقيمة مختلفة` : ''}`, { icon: '⚠️', duration: 6000 });
+    else toast.error(`لم يتم حفظ أي خلية (${nFail} فشل)`);
+    if (res.protectedRows > 0) toast(`${res.protectedRows} سجل ضمن مرتب معتمد/مدفوع: تم تعديل الحضور ولم يُعاد احتساب الراتب`, { icon: 'ℹ️', duration: 7000 });
+    setTimeout(() => c.clearCellStates((k, v) => v.state !== 'saved'), 2500);   // the green "saved" mark fades; failures stay
+    if (editCountRef.current === 0) { pendingReloadRef.current = false; load(false); }   // re-read AttendanceDaily: what is shown is what is stored
+    return res;
+  }, [clip, guard, bulkSaver, load]);
+
+  const handlePastePlan = useCallback(async (plan) => {
+    const c = clip;
+    c.clearCellStates((k, v) => v.state === 'failed');             // earlier failures stay retryable; everything else resets
+    if (plan.errors.length) {
+      plan.errors.forEach(er => c.setCellState(er.rowId, er.field, 'invalid', { error: er.reason, text: er.text }));
+      const first = plan.errors.slice(0, 3).map(er => `${er.employeeName || ''} ${er.date || ''}: "${er.text}" — ${er.reason}`).join(' | ');
+      toast.error(`لم يتم اللصق: ${plan.errors.length} قيمة غير صالحة. ${first}`, { duration: 9000 });
+      return;
+    }
+    if (!plan.ops.length) {
+      toast(plan.skipped.length
+        ? `لا توجد خلايا قابلة للكتابة (${plan.skipped.length} تم تخطيها: ${plan.skipped[0].reason})`
+        : (plan.unchanged ? 'القيم الملصوقة مطابقة للموجودة — لا تغييرات' : 'لا توجد بيانات للصق'), { icon: 'ℹ️' });
+      return;
+    }
+    const rowsN = new Set(plan.ops.map(o => o.rowId)).size;
+    if (plan.ops.length > 20 && !window.confirm(`سيتم تعديل ${plan.ops.length} خلية في ${rowsN} سجل حضور وتسجيلها في سجل التدقيق. متابعة؟`)) return;
+    const notes = [];
+    if (plan.skipped.length) notes.push(`${plan.skipped.length} تم تخطيها`);
+    if (plan.unchanged) notes.push(`${plan.unchanged} بدون تغيير`);
+    if (plan.clipped) notes.push(`${plan.clipped} خارج الجدول`);
+    if (notes.length) toast(notes.join(' · '), { icon: 'ℹ️', duration: 4000 });
+    await runPasteOps(plan.ops);
+  }, [clip, runPasteOps]);
+  pasteHandlerRef.current = handlePastePlan;
+
+  const retryFailedPaste = useCallback(() => {
+    const ops = clip.stateSummary().failedItems.map(v => v.op).filter(Boolean);
+    if (ops.length) runPasteOps(ops);
+  }, [clip, runPasteOps]);
+
+  // ── Restore automatic calculation (admin / hr) ────────────────────────────────
+  // A row an HR user edited is locked (manualEdit) and every automatic path skips it, so punches that arrive later never
+  // reach it. This calls the EXISTING POST /attendance/daily/:id/restore-auto per row: it clears the lock, recomputes the
+  // row from the raw punches (through the same engine, Friday / holiday rules included), writes the audit entry
+  // (manualEdit true -> false, who, why) and leaves finalized / paid payroll untouched. Server-side authorisation is
+  // unchanged; this only hides the button from roles the server would reject anyway.
+  const authEnabled = useAuthStore((s) => s.authEnabled);
+  const authUser = useAuthStore((s) => s.user);
+  const canRestoreAuto = authEnabled !== true || ['admin', 'hr'].includes(authUser?.role);
+  const [restoring, setRestoring] = useState(false);
+  const restoreAuto = useCallback(async (targets) => {
+    if (!targets.length || restoring) return;
+    const sample = targets.slice(0, 5).map(r => `• ${r.employeeName || ''}  ${r.date || ''}`).join('\n');
+    const ok = window.confirm(
+      `استرجاع الحساب التلقائي لـ ${targets.length} سجل؟\n\n${sample}${targets.length > 5 ? '\n…' : ''}\n\n` +
+      'سيُلغى قفل التعديل اليدوي وتُعاد حسابات هذه الأيام من البصمات الخام. الأوقات والحالة المعدّلة يدوياً ستُستبدل بنتيجة البصمات ' +
+      '(الجمعة والعطلات تبقى حسب القواعد الثابتة)، ويُسجَّل الاسترجاع في سجل التدقيق. الرواتب المعتمدة/المدفوعة لا تتأثر.\n\nمتابعة؟'
+    );
+    if (!ok) return;
+    setRestoring(true);
+    editCountRef.current += 1;               // hold background reloads until every restore has finished
+    let done = 0, protectedN = 0; const failed = [];
+    try {
+      for (const r of targets) {
+        try {
+          const res = await api.post(`/attendance/daily/${r.id}/restore-auto`, {
+            reason: 'استرجاع الحساب التلقائي من شاشة الحضور الشهري', modifiedByName: ACTOR,
+          });
+          done++;
+          if (res?.data?.payrollProtected) protectedN++;
+        } catch (err) {
+          failed.push(`${r.employeeName || ''} ${r.date || ''}: ${err.response?.data?.error || err.message}`);
+        }
+      }
+    } finally {
+      editCountRef.current -= 1;
+      setRestoring(false);
+    }
+    if (done) toast.success(`تم استرجاع الحساب التلقائي لـ ${done} سجل`);
+    if (protectedN) toast(`${protectedN} سجل ضمن راتب معتمد/مدفوع: حُدّث الحضور ولم يُعاد احتساب الراتب`, { icon: 'ℹ️', duration: 7000 });
+    if (failed.length) toast.error(`تعذّر استرجاع ${failed.length} سجل — ${failed.slice(0, 2).join(' | ')}`, { duration: 9000 });
+    pendingReloadRef.current = false;
+    load(false);
+  }, [restoring, load]);
+
+  // A different month / department / sort / filter changes which cell is at which index → drop the selection.
+  useEffect(() => { clip.resetSelection(); }, [month, year, deptId]);   // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Copy / paste a manual attendance entry (shared workflow) ──────────────
   const paste = useAttendancePaste({
     selected: selectedRows,
@@ -654,7 +803,7 @@ export default function AttendanceMonthlyPage() {
           <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
             {MONTHS_AR[month - 1]} {year}
             &nbsp;·&nbsp;{rows.length} سجل
-            &nbsp;·&nbsp;انقر مرتين أو اكتب مباشرة لتعديل أي خلية
+            &nbsp;·&nbsp;انقر مرتين أو اكتب مباشرة لتعديل أي خلية &nbsp;·&nbsp;حدّد نطاقاً (سحب / Shift) ثم Ctrl+C / Ctrl+V للنسخ واللصق
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -741,8 +890,61 @@ export default function AttendanceMonthlyPage() {
         departments={departments.map(d => d.name)}
       />
 
+      {(() => {
+        const conflictRows = rows.filter(r => r.lockedPunchConflict);
+        const selectedLocked = selectedRows.filter(r => r.manualEdit || r.lockedPunchConflict);
+        if (!conflictRows.length && !selectedLocked.length) return null;
+        return (
+          <div className="card px-3 py-2 flex flex-wrap items-center gap-3 text-xs" role="alert" data-testid="locked-punch-banner"
+            style={{ borderInlineStart: '3px solid var(--c-penalty, #d97706)' }}>
+            {conflictRows.length > 0 && (
+              <span>
+                ⚠ <b>{conflictRows.length}</b> سجل معدّل يدوياً توجد له بصمات خام لم تُحتسب في الحضور
+                {conflictRows.length <= 3 && ' (' + conflictRows.map(r => `${r.employeeName} ${r.date}`).join('، ') + ')'}
+              </span>
+            )}
+            {canRestoreAuto && conflictRows.length > 0 && (
+              <button disabled={restoring} onClick={() => restoreAuto(conflictRows)} className="btn-secondary text-xs py-0.5 px-2" data-testid="restore-conflicts">
+                استرجاع الحساب التلقائي للسجلات المتأثرة ({conflictRows.length})
+              </button>
+            )}
+            {canRestoreAuto && selectedLocked.length > 0 && (
+              <button disabled={restoring} onClick={() => restoreAuto(selectedLocked)} className="btn-secondary text-xs py-0.5 px-2" data-testid="restore-selected">
+                استرجاع الحساب التلقائي للمحدد ({selectedLocked.length})
+              </button>
+            )}
+            {!canRestoreAuto && conflictRows.length > 0 && <span style={{ color: 'var(--text-3)' }}>الاسترجاع متاح لمدير النظام أو الموارد البشرية فقط</span>}
+          </div>
+        );
+      })()}
+
+      {(() => {
+        const st = clip.stateSummary();
+        const show = clip.selectionCount > 1 || clip.copiedCount > 0 || st.saving || st.saved || st.adjusted || st.failed || st.invalid;
+        if (!show) return null;
+        return (
+          <div className="card px-3 py-1.5 flex flex-wrap items-center gap-3 text-xs" role="status" aria-live="polite" data-testid="grid-clip-status"
+            style={{ borderInlineStart: '3px solid var(--accent)' }}>
+            {clip.selectionCount > 1 && <span>المحدد: <b>{clip.selectionCount}</b> خلية</span>}
+            {clip.copiedCount > 0 && <span>منسوخ: <b>{clip.copiedCount}</b> (Esc للإلغاء)</span>}
+            {st.saving > 0 && <span className="flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> جاري الحفظ… ({st.saving})</span>}
+            {st.saved > 0 && <span style={{ color: 'var(--c-green)' }}>✔ تم الحفظ: {st.saved}</span>}
+            {st.adjusted > 0 && <span style={{ color: 'var(--c-penalty)' }}>⚠ حُفظ بقيمة مختلفة: {st.adjusted}</span>}
+            {st.invalid > 0 && <span style={{ color: 'var(--c-red)' }}>✖ قيم غير صالحة: {st.invalid}</span>}
+            {st.failed > 0 && (
+              <span className="flex items-center gap-2" style={{ color: 'var(--c-red)' }}>
+                ✖ فشل الحفظ: {st.failed}
+                <button onClick={retryFailedPaste} className="btn-secondary text-xs py-0.5 px-2">إعادة المحاولة</button>
+                <button onClick={() => clip.clearCellStates(() => false)} className="btn-ghost text-xs py-0.5 px-2">إخفاء</button>
+              </span>
+            )}
+            {st.failed > 0 && <span style={{ color: 'var(--text-3)' }}>{st.failedItems.slice(0, 2).map(v => `${v.op?.employeeName || ''} ${v.op?.date || ''}: ${v.error}`).join(' | ')}</span>}
+          </div>
+        );
+      })()}
+
       <div className="flex-1 overflow-hidden" style={{ minHeight: 0 }}>
-        <div className={`${agGridTheme} h-full`}>
+        <div className={`${agGridTheme} h-full`} {...clip.wrapperProps}>
           <AgGridReact
             ref={gridRef}
             rowData={rows}
@@ -754,10 +956,16 @@ export default function AttendanceMonthlyPage() {
             getRowStyle={getRowStyle}
             onCellEditingStopped={handleCellEdit}
             onSelectionChanged={() => setSelectedRows(gridRef.current?.api?.getSelectedRows() ?? [])}
-            onGridReady={handleGridReady}
+            onGridReady={(p) => { handleGridReady(p); clip.refreshColMap(); }}
+            onCellMouseDown={clip.gridProps.onCellMouseDown}
+            onCellMouseOver={clip.gridProps.onCellMouseOver}
+            onCellFocused={clip.gridProps.onCellFocused}
+            onDisplayedColumnsChanged={clip.gridProps.onDisplayedColumnsChanged}
+            onSortChanged={clip.resetSelection}
+            onFilterChanged={clip.resetSelection}
             isExternalFilterPresent={gridIsExternalFilterPresent}
             doesExternalFilterPass={gridDoesExternalFilterPass}
-            singleClickEdit={true}
+            singleClickEdit={false}
             tabToNextCell={tabToNextCell}
             stopEditingWhenCellsLoseFocus={true}
             enterNavigatesVertically={true}
@@ -769,7 +977,7 @@ export default function AttendanceMonthlyPage() {
             animateRows={false}
             rowSelection="multiple"
             suppressRowClickSelection
-            enableCellTextSelection
+            enableCellTextSelection={false}
             loading={loading}
           />
         </div>

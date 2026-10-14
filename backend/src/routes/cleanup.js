@@ -23,6 +23,7 @@ const path = require('path');
 const { authenticate, authorize } = require('../middleware/auth');
 const { currentMonthRange } = require('../utils/monthRange');
 const recalcEngine = require('../engines/recalcEngine');
+const { CLOSED_PAYROLL_STATUSES } = require('../engines/payrollEngine');
 const { getConfigDir } = require('../utils/configDir');
 
 const prisma = getPrisma();
@@ -38,6 +39,70 @@ const TYPE_LABELS = {
 const BACKUP_DIR = path.join(getConfigDir(), 'backups');
 
 function emit(io, event, payload) { if (io) io.emit(event, payload); }
+
+// ─── Closed-payroll protection (policy A) ───────────────────────────────────────────────────────────────────────────────
+// A finalized / paid Payroll row is the only stored record of what was approved and paid, and nothing in the app can restore it
+// (no restore feature; the Excel backup is a partial snapshot). So this tool NEVER deletes one, whatever the client sends:
+//   • 'payroll'  — refused (HTTP 409) when ANY finalized/paid row exists in the months the range touches;
+//   • 'daily'    — refused for the same months: the daily results are the basis of those approved payrolls, and deleting them
+//                  would leave the approved statements without their supporting data;
+//   • 'rawLogs'  — allowed (raw punches are not the payroll's basis), but the recalculation that follows is NOT run for an
+//                  employee in a month where that employee's payroll is closed, so no attendance row behind it is rewritten.
+// Enforced here on the server for every caller; confirmFinalizedPayroll is no longer a way around it. Re-validated inside the
+// delete transaction on locked rows (SELECT … FOR UPDATE), and the payroll DELETE itself carries a status predicate, so a payroll
+// finalized concurrently can never be removed.
+class CleanupProtectedError extends Error {
+  constructor(protectedPayroll, message) {
+    super(message);
+    this.name = 'CleanupProtectedError';
+    this.statusCode = 409;
+    this.code = 'CLEANUP_PAYROLL_PROTECTED';
+    this.protectedPayroll = protectedPayroll;
+  }
+}
+const isClosedStatus = (s) => CLOSED_PAYROLL_STATUSES.includes(String(s || '').toLowerCase());
+
+function summarizeProtected(rows) {
+  const out = { finalized: 0, paid: 0, total: 0, months: [] };
+  const byMonth = new Map();
+  for (const r of rows) {
+    const st = String(r.status).toLowerCase();
+    const key = `${r.year}-${r.month}`;
+    if (!byMonth.has(key)) byMonth.set(key, { month: r.month, year: r.year, finalized: 0, paid: 0 });
+    const m = byMonth.get(key);
+    if (st === 'paid') { out.paid++; m.paid++; } else { out.finalized++; m.finalized++; }
+    out.total++;
+  }
+  out.months = [...byMonth.values()].sort((a, b) => a.year - b.year || a.month - b.month);
+  return out;
+}
+const protectedCountsText = (p) => `${p.total} سجل (${p.finalized} معتمد، ${p.paid} مدفوع)`;
+const BLOCK_REASONS = {
+  payroll: (p) => `لا يمكن حذف المرتبات: توجد مرتبات معتمدة/مدفوعة ضمن الفترة المحددة — ${protectedCountsText(p)}. المرتبات المعتمدة والمدفوعة محمية ولا تُحذف عبر أداة التنظيف مهما كان التأكيد. اختر أشهراً لا تتضمنها.`,
+  daily: (p) => `لا يمكن حذف نتائج الحضور اليومية: توجد مرتبات معتمدة/مدفوعة ضمن الفترة المحددة — ${protectedCountsText(p)} — ونتائج الحضور هي أساس هذه المرتبات. احذف السجلات الخام فقط أو اختر أشهراً لا تتضمن مرتبات معتمدة/مدفوعة.`,
+};
+function protectionVerdict(types, protectedPayroll) {
+  const blockedTypes = [];
+  if (protectedPayroll.total > 0 && types.payroll) blockedTypes.push('payroll');
+  if (protectedPayroll.total > 0 && types.daily) blockedTypes.push('daily');
+  const blockedReasons = {};
+  blockedTypes.forEach(k => { blockedReasons[k] = BLOCK_REASONS[k](protectedPayroll); });
+  return { blocked: blockedTypes.length > 0, blockedTypes, blockedReasons, blockedMessage: blockedTypes.map(k => blockedReasons[k]).join(' | ') || null };
+}
+
+/** The blocked attempt is part of the audit trail too (status 'blocked', who tried, what range, how many protected rows). */
+async function logBlocked(req, range, types, protectedPayroll, message, startedAt) {
+  try {
+    await prisma.cleanupLog.create({
+      data: {
+        fromDate: range.from.toDate(), toDate: range.to.toDate(), dataTypes: JSON.stringify(types || {}),
+        status: 'blocked', durationMs: Date.now() - startedAt,
+        executedByName: String((req.user ? resolveActor(req).name : req.body?.executedByName) || '—').trim(),
+        notes: `رُفض بسبب مرتبات معتمدة/مدفوعة: ${protectedCountsText(protectedPayroll)} — ${message}`.slice(0, 60000),
+      },
+    });
+  } catch { /* audit-trail best effort */ }
+}
 
 /** Parse + validate a {from, to} request range into moment day-boundaries. */
 function parseRange(from, to) {
@@ -110,36 +175,32 @@ async function analyzeImpact({ f, t, types }) {
   const monthsOr = months.map(({ month, year }) => ({ month, year }));
 
   if (types.payroll) {
-    counts.payroll = monthsOr.length ? await prisma.payroll.count({ where: { OR: monthsOr } }) : 0;
+    // Only rows the tool is allowed to delete (not finalized/paid) are counted; protected rows are reported separately.
+    const deletable = { OR: monthsOr, status: { notIn: CLOSED_PAYROLL_STATUSES.slice() } };
+    counts.payroll = monthsOr.length ? await prisma.payroll.count({ where: deletable }) : 0;
     if (monthsOr.length) {
-      (await prisma.payroll.findMany({ where: { OR: monthsOr }, distinct: ['employeeId'], select: { employeeId: true } }))
+      (await prisma.payroll.findMany({ where: deletable, distinct: ['employeeId'], select: { employeeId: true } }))
         .forEach(r => employeeIds.add(r.employeeId));
     }
   }
 
-  // C1 FIX: finalized/paid Payroll rows for the months this range spans are
-  // at risk from TWO paths, not just an explicit Payroll-type deletion —
-  // the recalculation cascade below (types.rawLogs || types.daily) also
-  // reaches them via recalcEngine.recalcScope() -> payrollEngine.
-  // calculatePayroll(), which unconditionally upserts over the existing row
-  // regardless of its status. This check previously ran only inside the
-  // `if (types.payroll)` block above, so a Daily/Raw-Logs-only cleanup could
-  // trigger that cascade against a finalized/paid month with no warning and
-  // no confirmation gate. Computing it here — independent of which types
-  // were selected — means the SAME confirmFinalizedPayroll gate at /execute
-  // (which reads impact.finalizedPayroll) now protects both paths from one
-  // canonical check, instead of duplicating a second check per caller.
+  // Finalized/paid Payroll rows in the months this range spans — computed whatever the selected types are, because they decide
+  // which types are refused (policy A, see the block near the top) and which employee-months are excluded from the recalculation.
   if (monthsOr.length) {
     finalizedPayroll = await prisma.payroll.findMany({
-      where: { OR: monthsOr, status: { in: ['finalized', 'paid'] } },
+      where: { OR: monthsOr, status: { in: CLOSED_PAYROLL_STATUSES.slice() } },
       select: {
         employeeId: true, month: true, year: true, status: true,
         employee: { select: { name: true, code: true } },
       },
     });
-    if (finalizedPayroll.length) {
-      warnings.push(`⚠️ توجد ${finalizedPayroll.length} سجلات مرتبات معتمدة/مدفوعة ضمن هذه الفترة — قد تتأثر بإعادة الاحتساب أو الحذف، وتتطلب تأكيدًا إضافيًا.`);
-    }
+  }
+  const protectedPayroll = summarizeProtected(finalizedPayroll);
+  const verdict = protectionVerdict(types, protectedPayroll);
+  if (verdict.blocked) {
+    verdict.blockedTypes.forEach(k => warnings.push('⛔ ' + verdict.blockedReasons[k]));
+  } else if (protectedPayroll.total > 0) {
+    warnings.push(`🛡️ توجد ${protectedCountsText(protectedPayroll)} من المرتبات المعتمدة/المدفوعة ضمن الفترة: هي محمية — لن تُحذف ولن تُعاد احتسابها، ولن يُعاد احتساب الحضور لهؤلاء الموظفين في تلك الأشهر.`);
   }
 
   const overlap = currentPeriodOverlap(f, t);
@@ -152,7 +213,9 @@ async function analyzeImpact({ f, t, types }) {
     // scope a post-delete recalc to exactly the employees touched, instead
     // of recalcScope() falling back to its "every active employee" default.
     employeeIds: Array.from(employeeIds),
-    currentPeriodOverlap: overlap, finalizedPayroll, warnings,
+    currentPeriodOverlap: overlap, warnings,
+    // `finalizedPayroll` (the protected rows) is kept for existing consumers; it is informational only now — it can no longer be confirmed away.
+    finalizedPayroll, protectedPayroll, ...verdict, canExecute: !verdict.blocked,
   };
 }
 
@@ -237,7 +300,8 @@ router.post('/execute', authorize('admin'), async (req, res) => {
   try {
     const {
       from, to, types = {}, backupFirst = true, confirmText,
-      confirmCurrentPeriod = false, confirmFinalizedPayroll = false,
+      confirmCurrentPeriod = false,
+      // confirmFinalizedPayroll is still ACCEPTED (older clients send it) but ignored: closed payroll is protected regardless.
     } = req.body;
     // F-10: with auth on, the executor is the authenticated user, never a body-claimed name.
     const executedByName = req.user ? resolveActor(req).name : req.body.executedByName;
@@ -262,16 +326,17 @@ router.post('/execute', authorize('admin'), async (req, res) => {
 
     // ── Re-validate guards server-side — never trust the client ─────────────
     const impact = await analyzeImpact({ f, t, types });
+    if (impact.blocked) {
+      await logBlocked(req, range, types, impact.protectedPayroll, impact.blockedMessage, startedAt);
+      return res.status(409).json({
+        error: impact.blockedMessage, code: 'CLEANUP_PAYROLL_PROTECTED',
+        blockedTypes: impact.blockedTypes, protectedPayroll: impact.protectedPayroll, impact,
+      });
+    }
     if (impact.currentPeriodOverlap && !confirmCurrentPeriod) {
       return res.status(409).json({
         error: 'الفترة المحددة تشمل الشهر الحالي — يلزم تأكيد إضافي (confirmCurrentPeriod)',
         requiresConfirmation: 'currentPeriod', impact,
-      });
-    }
-    if (impact.finalizedPayroll.length && !confirmFinalizedPayroll) {
-      return res.status(409).json({
-        error: 'توجد مرتبات معتمدة/مدفوعة ضمن هذه الفترة — يلزم تأكيد إضافي (confirmFinalizedPayroll)',
-        requiresConfirmation: 'finalizedPayroll', impact,
       });
     }
 
@@ -303,6 +368,22 @@ router.post('/execute', authorize('admin'), async (req, res) => {
     emit(req.io, 'cleanup:start', { from: impact.from, to: impact.to, types, totalSteps, employeesAffected: impact.employeesAffected });
 
     await prisma.$transaction(async (tx) => {
+      // Re-validate the protection INSIDE the transaction, on locked rows: SELECT … FOR UPDATE on the payroll rows of every
+      // month the range touches stops a concurrent finalization until this transaction ends, and the statuses are read AFTER
+      // the lock is granted. Anything closed → throw before a single row is deleted (the whole transaction rolls back).
+      const draftRowsByMonth = new Map();
+      if (types.payroll || types.daily) {
+        for (const { month, year } of impact.months) {
+          const rows = await tx.$queryRaw`SELECT id, status FROM payrolls WHERE month = ${month} AND year = ${year} FOR UPDATE`;
+          const closedNow = rows.filter(r => isClosedStatus(r.status));
+          if (closedNow.length) {
+            const p = summarizeProtected(closedNow.map(r => ({ status: r.status, month, year })));
+            const kind = types.payroll ? 'payroll' : 'daily';
+            throw new CleanupProtectedError(p, BLOCK_REASONS[kind](p));
+          }
+          draftRowsByMonth.set(`${year}-${month}`, rows.length);
+        }
+      }
       for (const stage of stages) {
         for (const slice of stage.slices) {
           if (stage.key === 'rawLogs') {
@@ -323,7 +404,12 @@ router.post('/execute', authorize('admin'), async (req, res) => {
             counts.dailyDeleted += r.count;
           } else if (stage.key === 'payroll') {
             const { month, year } = slice[0];
-            const r = await tx.payroll.deleteMany({ where: { month, year } });
+            // The status predicate is evaluated by MySQL at delete time: a closed row is never deleted, even by mistake.
+            const r = await tx.payroll.deleteMany({ where: { month, year, status: { notIn: CLOSED_PAYROLL_STATUSES.slice() } } });
+            if (r.count !== draftRowsByMonth.get(`${year}-${month}`)) {
+              const p = summarizeProtected([{ status: 'finalized', month, year }]);
+              throw new CleanupProtectedError(p, BLOCK_REASONS.payroll(p));   // a row changed state under us → roll everything back
+            }
             counts.payrollDeleted += r.count;
           }
           doneSteps++;
@@ -360,27 +446,25 @@ router.post('/execute', authorize('admin'), async (req, res) => {
     // AND triggers the existing useRulesLiveSync/recalc:done live-refresh on
     // every dependent screen for free (no new frontend wiring needed). ───────
     let recalcTriggered = false;
-    // Recalc after deleting raw logs OR daily rows — deleting daily rows
-    // without regenerating left payroll aggregates referencing data that no
-    // longer existed (stale derived state until someone manually recalculated).
+    // Employee-months whose payroll is finalized/paid are EXCLUDED from the recalculation: their attendance rows are not rewritten
+    // (so the data behind an approved payroll is never invalidated) and their payroll rows are never touched. Done month by month so
+    // an employee can be left out of exactly the months where his payroll is closed.
+    const closedKeys = new Set(impact.finalizedPayroll.map(r => `${r.employeeId}|${r.month}|${r.year}`));
+    let recalcSkippedEmployeeMonths = 0;
     if (types.rawLogs || types.daily) {
-      // EP-020: scope the recalc to exactly the employees analyzeImpact()
-      // found in this range — previously omitted, so recalcScope() fell
-      // back to its "every active employee" default and regenerated
-      // placeholder AttendanceDaily/Payroll rows company-wide for every
-      // cleanup, even ones touching a single employee.
-      await recalcEngine.recalcScope({
-        from: f.toDate(), to: t.toDate(), io: req.io,
-        employeeIds: impact.employeeIds,
-        reason: `تنظيف الحركات: إعادة احتساب بعد الحذف (${impact.from} → ${impact.to})`,
-        // This route already re-validated finalized/paid exposure above
-        // (impact.finalizedPayroll) and returned HTTP 409 unless the admin
-        // explicitly confirmed via confirmFinalizedPayroll — recalcScope's
-        // own protective default would otherwise silently skip those same
-        // rows even after that explicit confirmation, contradicting it.
-        allowFinalizedPayroll: true,
-      });
-      recalcTriggered = true;
+      for (const { month, year } of impact.months) {
+        const mStart = moment({ year, month: month - 1, day: 1 }).startOf('month');
+        const from = moment.max(f, mStart), to = moment.min(t, mStart.clone().endOf('month'));
+        const ids = impact.employeeIds.filter(id => !closedKeys.has(`${id}|${month}|${year}`));
+        recalcSkippedEmployeeMonths += impact.employeeIds.length - ids.length;
+        if (!ids.length) continue;
+        // EP-020: scoped to exactly the employees analyzeImpact() found. No allowFinalizedPayroll: closed payroll stays protected.
+        await recalcEngine.recalcScope({
+          from: from.toDate(), to: to.toDate(), io: req.io, employeeIds: ids,
+          reason: `تنظيف الحركات: إعادة احتساب بعد الحذف (${impact.from} → ${impact.to})`,
+        });
+        recalcTriggered = true;
+      }
     }
 
     const durationMs = Date.now() - startedAt;
@@ -398,6 +482,7 @@ router.post('/execute', authorize('admin'), async (req, res) => {
         executedByName: String(executedByName).trim(),
         notes: [
           backupFile ? `نسخة احتياطية: ${backupFile}` : null,
+          impact.protectedPayroll.total > 0 ? `مرتبات معتمدة/مدفوعة محمية (لم تُمسّ): ${protectedCountsText(impact.protectedPayroll)} — استُبعد ${recalcSkippedEmployeeMonths} موظف-شهر من إعادة الاحتساب` : null,
           ...consistencyNotes,
         ].filter(Boolean).join(' | ') || null,
       },
@@ -409,10 +494,18 @@ router.post('/execute', authorize('admin'), async (req, res) => {
       deleted: counts, employeesAffected: impact.employeesAffected,
       backupFile, recalcTriggered, optimizeRun, durationMs,
       consistencyNotes,
+      // protected closed payroll that this run left untouched (always 0 deleted), and what was excluded from the recalculation
+      protectedPayroll: impact.protectedPayroll, recalcSkippedEmployeeMonths,
     };
     emit(req.io, 'cleanup:done', summary);
     res.json(summary);
   } catch (err) {
+    if (err instanceof CleanupProtectedError) {
+      const r = parseRange(req.body?.from, req.body?.to);
+      if (r) await logBlocked(req, r, req.body?.types, err.protectedPayroll, err.message, startedAt);
+      emit(req.io, 'cleanup:done', { error: err.message });
+      return res.status(409).json({ error: err.message, code: err.code, protectedPayroll: err.protectedPayroll });
+    }
     // Failed runs belong in the audit trail too — the schema always supported
     // status='failed' but nothing ever wrote it.
     try {

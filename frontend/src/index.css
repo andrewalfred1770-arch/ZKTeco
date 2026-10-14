@@ -832,6 +832,19 @@ html.dark .ag-body-vertical-scroll-viewport::-webkit-scrollbar-thumb:hover { bac
   background:var(--accent-soft) !important;
 }
 
+/* Excel-style range selection / copy / bulk-paste feedback (monthly attendance grid) */
+.ag-theme-quartz .ag-cell, .ag-theme-alpine .ag-cell { user-select:none; -webkit-user-select:none; }
+.ag-cell.ag-cell-inline-editing { user-select:text; -webkit-user-select:text; }
+.cell-range { background:var(--accent-soft) !important; box-shadow:inset 0 0 0 1px var(--accent) !important; }
+.cell-range-anchor { box-shadow:inset 0 0 0 2px var(--accent) !important; }
+.cell-copied { outline:2px dashed var(--accent); outline-offset:-2px; }
+.cell-paste-saving { opacity:.6; background-image:repeating-linear-gradient(45deg,transparent 0 6px,rgba(37,99,235,.12) 6px 12px) !important; }
+.cell-paste-saved { box-shadow:inset 0 0 0 2px #16a34a !important; }
+.cell-paste-adjusted { box-shadow:inset 0 0 0 2px #d97706 !important; }
+.cell-paste-failed, .cell-paste-invalid { box-shadow:inset 0 0 0 2px #dc2626 !important; background:rgba(220,38,38,.12) !important; }
+/* Locked (manually edited) row that is hiding raw punches the row does not account for */
+.cell-lock-conflict { box-shadow:inset 0 0 0 2px #d97706 !important; }
+
 /* In-flight inline edit — brief visual feedback while the PATCH is pending */
 .cell-saving { opacity:.7; transition:opacity .1s ease; }
 
@@ -871,6 +884,27 @@ html.dark  .ag-cell.cell-manual-override {
    bold. Add `cellClass:'cell-emphasis'` instead of fighting the cascade
    per-column. */
 .ag-cell.cell-emphasis { font-weight: 800 !important; }
+
+/* Date + Arabic weekday cell (Monthly attendance report: "5 - الأحد").
+   Why a class and not cellStyle: the base `.ag-cell` rule pins font-size/weight with !important and `html.light .ag-cell` pins the
+   colour, so an inline cellStyle on this column was silently ignored (only its font-family survived — Consolas, which has no Arabic
+   glyphs, so the weekday fell back to an unrelated face). Same specificity pattern as .cell-emphasis / .cell-manual-override.
+   The text itself (valueFormatter) is untouched, so copy/paste and export are unchanged. */
+.ag-cell.cell-date-day,
+html.light .ag-cell.cell-date-day,
+html.dark  .ag-cell.cell-date-day {
+  font-family: var(--font-ui) !important;
+  font-size: 14px !important;
+  font-weight: 700 !important;
+  color: var(--text) !important;
+  justify-content: center;
+  text-align: center;
+  padding: 0 12px !important;
+  white-space: nowrap;
+  direction: rtl;             /* digits first (right), then the weekday: logical order, deterministic in both themes */
+  unicode-bidi: isolate;
+  letter-spacing: 0;
+}
 
 /* ── Light mode — extra enforcement ─────────────────────────────────────── */
 html.light .ag-row { background-color: transparent; color: var(--c-val) !important; }

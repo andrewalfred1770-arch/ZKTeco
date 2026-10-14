@@ -113,6 +113,15 @@ export function replaceAttendanceRows(rows, updatedRows) {
 export function applyRowFieldUpdate(rows, updatedRow, field, rowHasOtherFieldsInFlight) {
   return rows.map(r => {
     if (r.id !== updatedRow.id) return r;
+    if (Array.isArray(rowHasOtherFieldsInFlight)) {
+      // The caller knows WHICH sibling fields are still saving: take the whole server row — so every field the
+      // backend derives from this edit (status, isAbsent, worked/late minutes, penalties…) is current and a row
+      // can never show a time next to a stale "absent" — and keep only the in-flight siblings' own pending values.
+      if (rowHasOtherFieldsInFlight.length === 0) return updatedRow;
+      const merged = { ...updatedRow };
+      for (const f of rowHasOtherFieldsInFlight) if (f !== field && f in r) merged[f] = r[f];
+      return merged;
+    }
     return rowHasOtherFieldsInFlight ? { ...r, [field]: updatedRow[field] } : updatedRow;
   });
 }

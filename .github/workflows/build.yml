@@ -1080,7 +1080,7 @@ jobs:
       - name: Upload Mojave DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: petshrow-macos-mojave-x64-20.26.10
+          name: petshrow-erp-macos-legacy-10.13-x64-electron-26.6.10-v10.10.10
           path: dist-electron-legacy/*.dmg
           if-no-files-found: error
 

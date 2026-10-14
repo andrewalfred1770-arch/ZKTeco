@@ -26,12 +26,32 @@ function isPortListening(port) {
 // missing/unreadable or the key isn't present — callers treat null as
 // "can't verify" and fall back to the previous trusting behavior rather than
 // disrupting a healthy backend on a false alarm.
+// Mirrors backend/src/config/securityConfig.js#parseAuthEnabled: authentication is ON only for the
+// value "true" (any case, surrounding quotes/whitespace/inline comment ignored). Anything else that is
+// present — "false", "yes", a typo — is OFF, exactly as the backend treats it (and the backend then
+// binds loopback-only), so the expectation below can never disagree with what the backend does.
+// A scratch parity test compares this against the real dotenv parser + the backend function.
+function parseAuthEnabledValue(rawValue) {
+  let v = String(rawValue).trim();
+  const q = v[0];
+  if (q === '"' || q === "'") {
+    const end = v.indexOf(q, 1);
+    v = end > 0 ? v.slice(1, end) : v.slice(1);
+  } else {
+    v = v.replace(/\s+#.*$/, '');
+  }
+  return v.trim().toLowerCase() === 'true';
+}
 function readExpectedAuthEnabled(envFile) {
   if (!envFile || !existsSync(envFile)) return null;
   try {
     const text = readFileSync(envFile, 'utf8');
-    const match = text.match(/^\s*AUTH_ENABLED\s*=\s*"?(true|false)"?\s*$/mi);
-    return match ? match[1].toLowerCase() === 'true' : null;
+    let found = null;   // dotenv semantics: the last assignment wins
+    for (const line of text.split(/\r?\n/)) {
+      const m = line.match(/^\s*(?:export\s+)?AUTH_ENABLED\s*=(.*)$/);
+      if (m) found = m[1];
+    }
+    return found === null ? null : parseAuthEnabledValue(found);
   } catch {
     return null;
   }
@@ -347,7 +367,7 @@ export function startBackend(paths, extraEnv = null) {
     // surfaces as the renderer's "backend unreachable" state; the next app
     // launch (or a manual relaunch) retries.
     if (!app.isQuitting && c === BACKEND_EXIT_STARTUP_BLOCKED) {
-      console.error('[Backend] startup blocked (database/migration not verified) — NOT restarting; fix the database issue and relaunch');
+      console.error('[Backend] startup blocked (database/migration not verified, or an unsafe security configuration such as authentication disabled with a network HOST) — NOT restarting; fix the cause (see the backend log) and relaunch');
       return;
     }
 

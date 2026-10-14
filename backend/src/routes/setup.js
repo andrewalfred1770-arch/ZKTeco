@@ -24,6 +24,7 @@ const { checkDbConnection, classifyDbError } = require('../utils/prisma');
 const { getConfigDir } = require('../utils/configDir');
 const logger = require('../utils/logger');
 const rateLimiter = require('../middleware/rateLimiter');
+const { loopbackOnly } = require('../middleware/loopbackOnly');
 
 function currentEnvPath() {
   return process.env.DOTENV_CONFIG_PATH || path.join(getConfigDir(), '.env');
@@ -84,6 +85,13 @@ function validateFields(body) {
   }
   return null;
 }
+
+// Local machine only. These routes are unauthenticated, and with authentication enabled the backend listens on
+// the LAN: without this, any computer on the network could — during a database outage — use /save to point the
+// server at a database it controls. The check uses the TCP peer address only (never X-Forwarded-For) and runs
+// before the self-disabling check below, so a remote caller cannot even learn whether setup is open.
+// Single-machine use is unaffected: the Electron app and the wizard reach the backend through localhost.
+router.use(loopbackOnly());
 
 // Self-disabling: once the main app's own DB connection is healthy, this
 // entire router 403s — closes the surface automatically, no auth-system

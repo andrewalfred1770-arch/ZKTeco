@@ -5,6 +5,8 @@ import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-quartz.css';
 import { Plus, RefreshCw, X, Loader2, UserCheck, UserX, Trash2, Monitor, AlertTriangle, Search } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useUnsavedWork } from '../hooks/useUnsavedWork';
+import { describeSaveFailure } from '../lib/saveFailure';
 import api from '../lib/api';
 import { fmtMoney } from '../lib/formatters';
 import { todayStr } from '../lib/businessDate';
@@ -13,6 +15,7 @@ import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS } from '../lib/gridDefaults';
 import { fmtDate } from '../lib/formatters';
 import Dialog from '../components/ui/Dialog';
+import NewDeviceUsersPanel, { employeePrefillFromPerson } from '../components/NewDeviceUsersPanel';
 import { useGridPagination } from '../hooks/useGridPagination';
 import { searchTokens, matchesTokens, rowHaystack } from '../lib/searchText';
 
@@ -169,20 +172,30 @@ const MONITOR_COLORS = [
   { value: '#ec4899', label: 'وردي'   },
 ];
 
-function EmployeeModal({ open, onClose, onSaved, emp, branches, departments }) {
+function EmployeeModal({ open, onClose, onSaved, emp, branches, departments, prefill = null }) {
   const empty = { name:'', zkUserId:'', code:'', phone:'', email:'',
                   position:'', salary:'', departmentId:'', branchId:'', status: true,
                   isMonitored: false, monitorColor: '#f59e0b' };
   const [form, setForm]   = useState(empty);
   const [saving, setSaving] = useState(false);
+  // Unsaved-edit protection (lib/unsavedWork.js): the form counts as modified when it differs from what it was opened with.
+  // Only a boolean is ever reported; the field values are never copied anywhere.
+  const formRef = useRef(form); formRef.current = form;
+  const baselineRef = useRef(null);
+  const submitting = useRef(false);   // a second Save while one is running does nothing (no duplicated mutation)
+  useUnsavedWork('employee-form', 'نموذج الموظف', () => open && baselineRef.current !== null && JSON.stringify(formRef.current) !== baselineRef.current);
 
   useEffect(() => {
-    setForm(emp
+    // A person picked from "أشخاص جدد على أجهزة البصمة" arrives as `prefill` (never together with `emp`): only the device's own id and name
+    // are filled in. Nothing is saved until the user presses حفظ — and the server still applies every normal validation / duplicate rule.
+    const next = emp
       ? { ...empty, ...emp, departmentId: emp.departmentId || '',
           isMonitored: emp.isMonitored || false,
           monitorColor: emp.monitorColor || '#f59e0b' }
-      : empty);
-  }, [emp, open]);
+      : (prefill ? { ...empty, name: prefill.name, zkUserId: prefill.zkUserId, code: prefill.code } : empty);
+    baselineRef.current = JSON.stringify(next);
+    setForm(next);
+  }, [emp, open, prefill]);
 
   // Phase 13.9: accessible-dialog semantics (focus trap/restore + Escape).
   const titleId = useId();
@@ -195,15 +208,17 @@ function EmployeeModal({ open, onClose, onSaved, emp, branches, departments }) {
   }, [open, onClose]);
 
   const save = async (e) => {
-    e.preventDefault(); setSaving(true);
+    e.preventDefault();
+    if (submitting.current) return;
+    submitting.current = true; setSaving(true);
     try {
       const payload = { ...form };
       if (emp) await api.put(`/employees/${emp.id}`, payload);
       else     await api.post('/employees', payload);
       toast.success(emp ? 'تم تحديث بيانات الموظف' : 'تم إضافة الموظف بنجاح');
       onSaved(); onClose();
-    } catch (err) { toast.error(err.response?.data?.error || 'فشل الحفظ'); }
-    finally { setSaving(false); }
+    } catch (err) { toast.error(describeSaveFailure(err)); }   // the form stays open with everything typed
+    finally { submitting.current = false; setSaving(false); }
   };
 
   if (!open) return null;
@@ -230,6 +245,15 @@ function EmployeeModal({ open, onClose, onSaved, emp, branches, departments }) {
         </div>
 
         <form onSubmit={save} className="p-6 grid grid-cols-2 gap-4">
+          {!emp && prefill && (
+            <div className="col-span-2 text-xs" role="status" data-testid="employee-form-device-note"
+              style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px', color: 'var(--text-2)' }}>
+              تمت تعبئة رقم البصمة {prefill.name ? 'والاسم ' : ''}من جهاز البصمة ({prefill.deviceNames.join('، ')}).
+              {prefill.name ? ' الاسم قادم من الجهاز وقد لا يكون مقروءاً — راجعه قبل الحفظ.' : ' الجهاز لم يُبلغ باسم — اكتب اسم الموظف.'}
+              {prefill.nameConflict ? ' ⚠ الاسم يختلف بين الأجهزة.' : ''}
+              {' '}لن يُحفظ شيء حتى تضغط «حفظ».
+            </div>
+          )}
           <div className="col-span-2">
             <label className="label">الاسم الكامل *</label>
             <input className="input" required value={form.name}
@@ -241,6 +265,7 @@ function EmployeeModal({ open, onClose, onSaved, emp, branches, departments }) {
                 field drives both, no separate "كود الموظف" input. */}
             <label className="label">رقم الموظف / كود البصمة *</label>
             <input className="input font-mono" required value={form.zkUserId}
+              readOnly={!emp && !!prefill} title={!emp && prefill ? 'الرقم مأخوذ من الجهاز ولا يُغيَّر هنا (لو تغيّر لن تُنسب البصمات لهذا الشخص)' : undefined}
               onChange={e => setForm({...form, zkUserId: e.target.value, code: e.target.value})}
               placeholder="الرقم في جهاز البصمة" />
           </div>
@@ -340,6 +365,8 @@ export default function EmployeesPage() {
   const [filterStatus, setFilterStatus] = useState('active'); // 'all'|'active'|'inactive'
   const [modal,       setModal]       = useState(false);
   const [editing,     setEditing]     = useState(null);
+  const [prefill,     setPrefill]     = useState(null);   // person chosen from the new-device-users panel (null = ordinary add/edit)
+  const [panelReload,  setPanelReload]  = useState(0);      // bumped after a CONFIRMED save so the panel re-reads (GET only)
   const [deleteInfo,  setDeleteInfo]  = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [stopTarget, setStopTarget] = useState(null); // employee being stopped — Phase 22.1
@@ -551,11 +578,21 @@ export default function EmployeesPage() {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
           <button className="btn-primary text-xs py-1.5 px-3"
-            onClick={() => { setEditing(null); setModal(true); }}>
+            onClick={() => { setEditing(null); setPrefill(null); setModal(true); }}>
             <Plus className="w-3.5 h-3.5" /> إضافة موظف
           </button>
         </div>
       </div>
+
+      {/* People registered on fingerprint devices with no employee yet. "إضافة موظف" opens the normal form pre-filled; saving is the user's call. */}
+      <NewDeviceUsersPanel
+        reloadToken={panelReload}
+        onAdd={(person) => {
+          const pf = employeePrefillFromPerson(person);
+          if (!pf) return;               // not addable (id too long / has spaces): the panel does not offer the button either
+          setEditing(null); setPrefill(pf); setModal(true);
+        }}
+      />
 
       {/* ── Search + Filters ─────────────────────────────────────────── */}
       <div className="card p-2.5 flex flex-wrap items-center gap-2">
@@ -622,9 +659,10 @@ export default function EmployeesPage() {
 
       <EmployeeModal
         open={modal}
-        onClose={() => { setModal(false); setEditing(null); }}
-        onSaved={loadAll}
+        onClose={() => { setModal(false); setEditing(null); setPrefill(null); }}
+        onSaved={() => { loadAll(); setPanelReload((n) => n + 1); }}
         emp={editing}
+        prefill={prefill}
         branches={branches}
         departments={departments}
       />

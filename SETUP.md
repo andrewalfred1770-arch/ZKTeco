@@ -200,16 +200,57 @@ it over a LAN**, you must secure that Server before doing so:
    The backend refuses to start with `AUTH_ENABLED=true` and no real
    `JWT_SECRET` — this is enforced in code, not just documented here.
 2. Restart the Server. Every Manager Client connecting to it will now be
-   required to log in with a valid user account (created via the same
-   **Employees**/user-management flow as any other account) before it can
-   use the app.
+   required to log in with a valid user account before it can use the app.
+   The Server edition's own window shows the same login screen once
+   authentication is on. The application has no screen that creates an
+   `admin`/`hr` account (the Employees form only creates `employee`-role
+   accounts, which can read company-wide attendance — do not use it in LAN
+   mode). Create the first account once, on the Server PC, with the
+   operator-run script (never run automatically; it prompts for the password
+   at a hidden terminal prompt and never prints it or its hash):
+   ```
+   cd backend
+   node scripts/create-admin-user.js --dotenv-path "%APPDATA%\PETSHROW ERP\.env" ^
+        --confirm-database <database name> --username <login> --role admin --dry-run
+   ```
+   Run it with `--dry-run` first to check the target, then again without it.
+   It refuses a remote database host, an ambiguous `DATABASE_URL`, an
+   existing username and any role other than `admin`/`hr`. The database
+   setup endpoints (`/api/setup/*`) answer only to requests from the Server
+   PC itself.
 3. On each Manager Client, run the app once — it shows a first-run
    **Connection Wizard** asking for the Server's address (e.g.
    `http://192.168.1.10:5000`). Test the connection, then Connect; the app
    relaunches pointed at that Server and, since `AUTH_ENABLED=true`, prompts
    for login.
 
-If you skip step 1, Manager Clients can still connect and use the app, but
-with **no login enforced** — anyone who can reach the Server's IP on the LAN
-can use the API. The Manager app shows a visible warning banner in this case
-to make the unsecured state obvious, but does not block usage on its own.
+If you skip step 1, the Server is **not reachable from the LAN at all**: with
+authentication disabled the backend binds to loopback (`127.0.0.1`) only, so
+Manager Clients cannot connect. This is deliberate — an unauthenticated API is
+never exposed to the network. If `HOST` is explicitly set to a LAN address
+(or `0.0.0.0`) while `AUTH_ENABLED` is not `true`, the backend refuses to
+start (exit code 78) and prints what to fix. `AUTH_ENABLED` accepts `true` /
+`false` in any letter case; any other value is treated as `false` and logged
+as a warning. With `AUTH_ENABLED=true` and `HOST` unset the Server listens on
+all interfaces (`0.0.0.0`) as before. Windows Firewall rules are not managed
+by the app — open the port only on networks you trust.
+
+---
+
+## Data Cleanup tool and approved payroll
+
+The admin-only **Data Cleanup** page ("تنظيف الحركات") deletes old raw punches, daily attendance results and payroll rows for a
+date range. **Finalized and paid payroll is protected and can never be deleted with this tool**, whatever is sent to the API:
+
+- **Payroll (monthly totals):** refused if *any* finalized/paid payroll exists in the months the range touches (even if the same
+  month also contains draft rows — the whole request is refused and nothing is deleted). Ranges that contain only draft payroll
+  can still be cleaned as before.
+- **Daily attendance results:** refused for the same months, because they are the basis of the approved payroll.
+- **Raw punches:** still allowed. The follow-up recalculation is **not** run for an employee in a month where that employee's
+  payroll is finalized/paid, so the approved payroll and the attendance rows behind it are never rewritten.
+- The Preview step shows the protected counts per status and month; the Execute step re-checks inside the database transaction
+  (rows are locked), and a refused attempt is recorded in the cleanup history with status `blocked`.
+- There is no confirmation checkbox that bypasses this (`confirmFinalizedPayroll` is ignored). To purge old approved payroll you
+  need a separate, deliberate archive procedure — it is intentionally not part of this tool.
+- Unchanged safeguards: admin only, typed confirmation, executor name, extra confirmation for the current month, optional Excel
+  backup of what is deleted (partial snapshot — it is not a restore point; take a database backup first).

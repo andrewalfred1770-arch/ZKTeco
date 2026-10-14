@@ -9,6 +9,8 @@
  *  • Internally still stores the canonical formula string the engine expects.
  */
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useUnsavedWork } from '../hooks/useUnsavedWork';
+import { describeSaveFailure } from '../lib/saveFailure';
 import {
   X, Save, Loader2, Info, Calculator, Sliders,
   FileText, History, Delete, RotateCcw, Clock3,
@@ -319,6 +321,17 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
   });
   const [saving, setSaving] = useState(false);
   const [audit, setAudit]   = useState(null);
+  // Unsaved-edit protection (lib/unsavedWork.js): modified = differs from what the drawer opened with. Boolean only, never stored.
+  const baselineRef = useRef(null);
+  if (baselineRef.current === null) baselineRef.current = JSON.stringify(form);
+  const isDirty = () => JSON.stringify(form) !== baselineRef.current;
+  useUnsavedWork('rule-drawer', 'نموذج القاعدة', isDirty);
+  const submitting = useRef(false);   // a second Save while one is running does nothing (no duplicated mutation)
+  const requestClose = () => {
+    if (!saving && isDirty() && !window.confirm('لديك تعديلات غير محفوظة في هذه القاعدة. إغلاق النافذة سيتجاهلها. هل تريد الإغلاق؟')) return;
+    onClose();
+  };
+  const requestCloseRef = useRef(requestClose); requestCloseRef.current = requestClose;
 
   // HR users only choose from plain value types — "معادلة" needs the visual
   // builder and stays reserved for "إعدادات متقدمة" (existing rules of this
@@ -345,8 +358,10 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
   }, [tab, isEdit, rule, audit]);
 
   const save = async () => {
+    if (submitting.current) return;
     if (!form.name.trim()) { toast.error('اسم القاعدة مطلوب'); setTab('basic'); return; }
     if (!form.key.trim())  { toast.error('المفتاح مطلوب');     setTab('basic'); return; }
+    submitting.current = true;
     setSaving(true);
     const payload = {
       ...form,
@@ -360,8 +375,8 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
       toast.success(isEdit ? 'تم حفظ التعديلات' : 'تم إنشاء القاعدة بنجاح');
       onSaved();
     } catch (err) {
-      toast.error(err.response?.data?.error || 'فشل الحفظ');
-    } finally { setSaving(false); }
+      toast.error(describeSaveFailure(err));   // typed values stay in the drawer; a lost session is reported as NOT saved
+    } finally { submitting.current = false; setSaving(false); }
   };
 
   const catColor = CAT_COLOR[form.category] || '#2563eb';
@@ -374,7 +389,7 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
   const titleId = useId();
   const containerRef = useFocusTrap(true);
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    const onKey = (e) => { if (e.key === 'Escape') requestCloseRef.current?.(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -435,7 +450,7 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
 
   return (
     <>
-      <div onClick={onClose} style={{ position:'fixed', inset:0, zIndex:60,
+      <div onClick={requestClose} style={{ position:'fixed', inset:0, zIndex:60,
         background:'rgba(0,0,0,0.55)', backdropFilter:'blur(3px)' }} />
 
       <div
@@ -470,7 +485,7 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
                 </p>
               </div>
             </div>
-            <button onClick={onClose} style={{ border:'none', background:'var(--surface)', borderRadius:8,
+            <button onClick={requestClose} style={{ border:'none', background:'var(--surface)', borderRadius:8,
               padding:8, color:'var(--text-3)', cursor:'pointer' }}>
               <X style={{ width:16, height:16 }} />
             </button>
@@ -667,7 +682,7 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
                     : <Save style={{ width:15, height:15 }} />}
             {isEdit ? 'حفظ التعديلات' : 'إنشاء القاعدة'}
           </button>
-          <button onClick={onClose}
+          <button onClick={requestClose}
             style={{ padding:'10px 18px', borderRadius:9, border:'1px solid var(--border)',
               background:'transparent', color:'var(--text-2)', fontWeight:600, fontSize:13.5, cursor:'pointer' }}>
             إلغاء

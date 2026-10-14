@@ -14,7 +14,7 @@ const { sendError } = require('../utils/apiError');
 const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
 const { getPrisma }    = require('../utils/prisma');
-const { authenticate, JWT_SECRET } = require('../middleware/auth');
+const { authenticate, JWT_SECRET, AUTH_ENABLED } = require('../middleware/auth');
 const rateLimiter      = require('../middleware/rateLimiter');
 
 const prisma     = getPrisma();
@@ -62,7 +62,7 @@ router.post('/login', rateLimiter(10, 60_000), async (req, res) => {
 
 // ── Me — verify current token ─────────────────────────────────────────────────
 router.get('/me', authenticate, (req, res) => {
-  if (process.env.AUTH_ENABLED !== 'true') {
+  if (!AUTH_ENABLED) {
     return res.json({ authEnabled: false, user: null });
   }
   res.json({ authEnabled: true, user: req.user });

@@ -50,7 +50,8 @@ const DEFAULT_RULES = {
   // Company policy (2026-10): Friday is the official weekly day off — a Friday with no
   // punches is a weekly off (never an absence) and a Friday with punches is overtime
   // (all worked hours, no late/early penalties). Saturday is a normal workday.
-  // Set friday_is_weekend to 'false' from the UI to make Friday an ordinary workday.
+  // PERMANENT: friday_is_weekend is forced to 'true' by getRules()/getRulesBatch() (PERMANENT_RULES
+  // below) and the engines no longer read it — Friday can not be made an ordinary workday.
   weekend_days:       '',      // e.g. 'fri', 'sat', 'fri,sat'
   friday_is_weekend:  'true',  // true → Friday = non-working day (weekly off)
 
@@ -61,6 +62,10 @@ const DEFAULT_RULES = {
 // Boolean rule values. ruleValidation.js (case 'boolean') accepts true/false/1/0/'' in any case, so every
 // engine reader must understand the SAME set — otherwise a value the validator accepted (e.g. '1')
 // would silently be read as false.
+// Business rules that are not configurable: applied AFTER the dynamic (DB) rules so a stored value
+// (e.g. an old friday_is_weekend='false' row) can never override them.
+const PERMANENT_RULES = Object.freeze({ friday_is_weekend: 'true' });
+
 function isRuleTrue(v) {
   return ['true', '1'].includes(String(v ?? '').trim().toLowerCase());
 }
@@ -94,7 +99,7 @@ function noteLegacyScopedRules() {
 async function getRules(_branchId, _departmentId, _employeeId) {
   noteLegacyScopedRules();
   const dynamic = await ruleStore.getRuleMap().catch(() => ({}));
-  return { ...DEFAULT_RULES, ...dynamic };
+  return { ...DEFAULT_RULES, ...dynamic, ...PERMANENT_RULES };
 }
 
 // ─── Batched rules lookup (Perf Batch 1) ────────────────────────────────────
@@ -104,7 +109,7 @@ async function getRules(_branchId, _departmentId, _employeeId) {
 async function getRulesBatch(employees) {
   noteLegacyScopedRules();
   const dynamic = await ruleStore.getRuleMap().catch(() => ({}));
-  const baseRules = { ...DEFAULT_RULES, ...dynamic };
+  const baseRules = { ...DEFAULT_RULES, ...dynamic, ...PERMANENT_RULES };
   const result = new Map();
   for (const emp of employees) result.set(emp.id, { ...baseRules });
   return result;

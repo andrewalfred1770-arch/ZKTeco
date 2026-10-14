@@ -19,10 +19,15 @@ import {
   GripVertical, Info, Zap,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useUnsavedWork } from '../hooks/useUnsavedWork';
+import { isSessionLostError } from '../lib/unsavedWork';
+import { describeSaveFailure } from '../lib/saveFailure';
 import api, { LONG_OP } from '../lib/api';
 import { todayStr } from '../lib/businessDate';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
+import { getSocket } from '../lib/socket';
 import { validateAttendanceConfig } from '../lib/attendanceConfigValidator';
+import { nextTier, coverage, to12h } from '../lib/tierEditing';
 
 // ── Default tiers (mirrors policyEngine.js) ───────────────────────────────────
 export const DEFAULT_LATE_TIERS = [
@@ -52,6 +57,81 @@ const ALL_KEYS = [
   'weekend_days', 'friday_is_weekend',
 ];
 
+// Rules that live in the 'overtime' category (seed-rules.js). Anything else on this page is 'attendance'.
+const OVERTIME_KEYS = ['overtime_minimum', 'overtime_multiplier', 'overtime_cap_hours', 'friday_ot_multiplier', 'holiday_ot_multiplier'];
+const ruleCategoryFor = (key) => (OVERTIME_KEYS.includes(key) ? 'overtime' : 'attendance');
+
+// Plain-language summary of a recalc result: real counts, and the finalized/paid payrolls it skipped.
+// Older responses may omit the failure counters — treat a missing/invalid one as 0.
+const failCount = (n) => (Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : 0);
+const recalcHasFailures = (r) => !!r && (failCount(r.attendanceFailed) > 0 || failCount(r.payrollFailed) > 0);
+
+function formatRecalcSummary(r) {
+  if (!r) return 'تمت إعادة الاحتساب';
+  const parts = [`نطاق: ${r.employeeCount ?? 0} موظف`, `${r.dayCount ?? 0} يوم`];
+  if (r.payrollRecalculated != null) parts.push(`${r.payrollRecalculated} كشف راتب`);
+  let msg = `${recalcHasFailures(r) ? 'اكتملت إعادة الاحتساب مع أخطاء' : 'تمت إعادة الاحتساب'}: ${parts.join(' · ')}`;
+  const skipped = r.protectedPayroll || [];
+  if (skipped.length) msg += ` — تم تخطي ${skipped.length} كشف راتب نهائي/مدفوع (لم يُعدَّل)`;
+  if (failCount(r.attendanceFailed)) msg += ` — فشل احتساب الحضور لـ ${failCount(r.attendanceFailed)} يوم/موظف`;
+  if (failCount(r.payrollFailed)) msg += ` — فشل احتساب ${failCount(r.payrollFailed)} كشف راتب`;
+  return msg;
+}
+
+// Green toast only when nothing failed; any attendance/payroll failure is a visible error.
+function toastRecalcResult(r) {
+  if (recalcHasFailures(r)) toast.error(`⚠ ${formatRecalcSummary(r)} — راجع السجلات`, { duration: 12000 });
+  else toast.success(`✓ ${formatRecalcSummary(r)}`, { duration: 8000 });
+}
+
+// Post-save recalc outcome tracker, keyed by the server's `recalcRunId`. Every rule save returns the id of
+// the run that covers it (saves in one debounce window share one id); a terminal event is accepted ONLY
+// when its id is one we are tracking, so a run already in flight, an unrelated run, or a stale/mismatched
+// event can never be shown as this save's result. Each id settles exactly once (first terminal event wins;
+// duplicates and late opposite signals are dropped). Terminal events that arrive BEFORE their id is
+// registered (response slower than the socket) are kept in a small bounded buffer and resolved on arm().
+// No timers: an id settles on its own done/failed event, or all pending ids settle on a lost connection.
+function createRecalcTracker({ onDone, onFailed, onDisconnected }) {
+  const pending = new Set();
+  const seen = new Map();   // runId -> { kind, payload, claimed }  (bounded, oldest dropped)
+  const SEEN_MAX = 50;
+  const remember = (id, entry) => {
+    if (seen.has(id)) return;
+    seen.set(id, entry);
+    if (seen.size > SEEN_MAX) seen.delete(seen.keys().next().value);
+  };
+  const deliver = (kind, payload) => { if (kind === 'done') onDone(payload); else onFailed(); };
+  const terminal = (kind, ev) => {
+    const id = ev && ev.recalcRunId;
+    if (!id) return;                                   // untagged event: cannot be attributed
+    if (pending.delete(id)) {
+      remember(id, { kind, payload: ev, claimed: true });
+      deliver(kind, ev);
+    } else {
+      remember(id, { kind, payload: ev, claimed: false });
+    }
+  };
+  return {
+    get pendingCount() { return pending.size; },
+    // runIds = ids the server returned for this save. Returns how many are now awaiting an outcome.
+    arm(runIds) {
+      let armed = 0;
+      for (const id of runIds || []) {
+        if (!id || pending.has(id)) continue;
+        const prior = seen.get(id);
+        if (prior && prior.claimed) continue;           // that run's outcome was already reported once
+        if (prior) { prior.claimed = true; deliver(prior.kind, prior.payload); }   // outcome already arrived
+        else { pending.add(id); armed++; }
+      }
+      return armed;
+    },
+    done(r) { terminal('done', r); },
+    failed(e) { terminal('failed', e); },
+    disconnected() { if (pending.size) { pending.clear(); onDisconnected(); } },
+    reset() { pending.clear(); seen.clear(); },
+  };
+}
+
 const DEFAULTS = {
   work_start: '09:00', work_end: '17:00',
   checkin_window_start: '05:00', checkin_window_end: '12:00',
@@ -64,11 +144,14 @@ const DEFAULTS = {
 };
 
 // ── Time-rule table editor ────────────────────────────────────────────────────
-function RuleTable({ tiers, onChange, defaultTiers, label }) {
+function RuleTable({ tiers, onChange, defaultTiers, label, requireDayEnd = false }) {
   const update = (i, field, val) =>
     onChange(tiers.map((t, idx) => idx === i ? { ...t, [field]: val } : t));
   const remove = (i) => onChange(tiers.filter((_, idx) => idx !== i));
-  const add = () => onChange([...tiers, { fromTime: '00:00', toTime: '23:59', units: 0 }]);
+  // The new row starts right after the last covered minute and runs to 23:59 (lib/tierEditing.js), so a table that ends at, say,
+  // 16:00 is extended in one click instead of by hand-editing a full-day row that overlaps everything.
+  const add = () => onChange([...tiers, nextTier(tiers)]);
+  const cov = coverage(tiers);
   const reset = () => onChange([...defaultTiers]);
 
   return (
@@ -102,6 +185,14 @@ function RuleTable({ tiers, onChange, defaultTiers, label }) {
           </div>
         ))}
       </div>
+
+      {/* Coverage: the late table must reach 23:59 (same rule the server enforces). Shown, never auto-fixed. */}
+      {requireDayEnd && cov.lastTo && !cov.reachesDayEnd && (
+        <p data-testid="tier-coverage-hint" role="status" style={{ fontSize: 12, color: '#b45309', margin: '8px 0 0', lineHeight: 1.6 }}>
+          ⚠ التغطية تنتهي عند <b dir="ltr">{cov.lastTo}</b> ({to12h(cov.lastTo)}) — الحضور بعد هذا الوقت بلا قاعدة تأخير، والحفظ يتطلب تغطية حتى 23:59.
+          اضغط «إضافة شريحة» لإضافة شريحة تبدأ بعدها مباشرة وتمتد حتى 23:59، ثم راجع ساعات الخصم.
+        </p>
+      )}
 
       {/* Actions */}
       <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
@@ -267,6 +358,13 @@ export default function AttendanceSettingsPage() {
   const [lateTiers,  setLateTiers]  = useState([...DEFAULT_LATE_TIERS]);
   const [earlyTiers, setEarlyTiers] = useState([...DEFAULT_EARLY_TIERS]);
   const [dirty,      setDirty]      = useState(false);
+  // If the session ends while settings are unsaved, the app keeps this screen mounted under the login overlay (lib/unsavedWork.js).
+  useUnsavedWork('attendance-settings', 'إعدادات الحضور', () => dirty);
+  const submitting = useRef(false);   // a second Save while one is running does nothing (no duplicated mutations)
+  const dirtyRef = useRef(false); dirtyRef.current = dirty;
+  // Live rule updates (another window's save, a recalculation) must not overwrite what the user is typing: while edits are unsaved the
+  // reload is deferred (useRulesLiveSync polls this) and happens once they are saved or discarded.
+  const unsavedBusyRef = useMemo(() => ({ get current() { return dirtyRef.current; } }), []);
   const [saving,     setSaving]     = useState(false);
   const [loading,    setLoading]    = useState(true);
   const [recalcFrom, setRecalcFrom] = useState('');
@@ -274,20 +372,52 @@ export default function AttendanceSettingsPage() {
   const [recalcBusy, setRecalcBusy] = useState(false);
   const [showLiveTest, setShowLiveTest] = useState(false);
   const savedRef = useRef({ ...DEFAULTS });
+  const recalcTrackerRef = useRef(null);
+  if (!recalcTrackerRef.current) {
+    recalcTrackerRef.current = createRecalcTracker({
+      onDone: toastRecalcResult,
+      onFailed: () => toast.error('⚠ فشلت إعادة الاحتساب التلقائية بعد الحفظ — القواعد حُفظت لكن السجلات لم تُحتسب. أعد الاحتساب يدوياً أو راجع السجلات', { duration: 12000 }),
+      onDisconnected: () => toast.error('⚠ انقطع الاتصال قبل ظهور نتيجة إعادة الاحتساب — تحقق من حالة السجلات وأعد المحاولة عند الحاجة', { duration: 12000 }),
+    });
+  }
+
+  // The post-save auto-recalc runs in the background; report its real result when it finishes.
+  useEffect(() => {
+    const socket = getSocket();
+    const t = recalcTrackerRef.current;
+    const onDone = (r) => t.done(r);
+    const onFailed = (e) => t.failed(e);
+    const onDisconnect = () => t.disconnected();
+    socket.on('recalc:done', onDone);
+    socket.on('recalc:failed', onFailed);
+    socket.on('disconnect', onDisconnect);
+    return () => {
+      socket.off('recalc:done', onDone); socket.off('recalc:failed', onFailed);
+      socket.off('disconnect', onDisconnect);
+      t.reset();
+    };
+  }, []);
 
   const load = useCallback(async () => {
     try {
-      const { data } = await api.get('/rules', { params: { category: 'attendance' } });
+      // All categories: the overtime rules live under 'overtime', so a category filter would miss them
+      // and the save would create duplicates instead of updating the existing rows.
+      const { data } = await api.get('/rules');
       const map = {}, merged = { ...DEFAULTS };
       for (const r of data) {
-        if (ALL_KEYS.includes(r.key)) {
-          map[r.key] = { id: r.id, isActive: r.isActive };
-          if (r.value != null && r.value !== '') merged[r.key] = r.value;
-        }
+        if (!ALL_KEYS.includes(r.key)) continue;
+        // Duplicate keys: the active row is the one the engines read; otherwise keep the first.
+        if (map[r.key] && (map[r.key].isActive || !r.isActive)) continue;
+        map[r.key] = { id: r.id, isActive: r.isActive };
+        if (r.value != null && r.value !== '') merged[r.key] = r.value;
       }
+      // Friday is a PERMANENT weekly off (not configurable): the page always shows/saves 'true'. The
+      // saved snapshot keeps the stored value, so a stale stored 'false' is corrected on the next save.
+      const storedFriday = merged.friday_is_weekend;
+      merged.friday_is_weekend = 'true';
       setRuleMap(map);
       setVals(merged);
-      savedRef.current = { ...merged };
+      savedRef.current = { ...merged, friday_is_weekend: storedFriday };
 
       // Parse tier JSON
       try {
@@ -314,7 +444,7 @@ export default function AttendanceSettingsPage() {
     setRecalcTo(today);
   }, [load]);
 
-  useRulesLiveSync(load, { silent: true });
+  useRulesLiveSync(load, { silent: true, isBusyRef: unsavedBusyRef });
 
   const set = (key, val) => { setVals(p => ({ ...p, [key]: val })); setDirty(true); };
 
@@ -328,10 +458,12 @@ export default function AttendanceSettingsPage() {
   const hasErrors = validation.errors.length > 0;
 
   const saveAll = async () => {
+    if (submitting.current) return;
     if (hasErrors) {
       toast.error('لا يمكن الحفظ — صحّح أخطاء الإعدادات المعروضة أولاً');
       return;
     }
+    submitting.current = true;
     setSaving(true);
     try {
       const toSave = {
@@ -341,7 +473,10 @@ export default function AttendanceSettingsPage() {
       };
 
       let saved = 0;
+      let scheduled = 0;   // saves the server confirmed scheduled a recalculation
+      const runIds = new Set();   // ids of the runs covering them (saves in one debounce window share one)
       const errs = [];
+      let sessionLostErr = null;   // a rejected key because the SESSION ended (not because the value is invalid)
 
       // D6/R1: every PUT is validated against the CURRENT saved rules. The saved late_rules must always cover
       // work_start → 23:59, so when work_start moves EARLIER the (already-validated) late rules that start earlier
@@ -358,33 +493,52 @@ export default function AttendanceSettingsPage() {
         const ex = ruleMap[key];
         try {
           if (ex?.id) {
-            await api.put(`/rules/${ex.id}`, { value: newVal, isActive: true, changedByName: 'مدير النظام' });
+            const { data: pr } = await api.put(`/rules/${ex.id}`, { value: newVal, isActive: true, changedByName: 'مدير النظام' });
+            if (pr?.recalcScheduled !== false) scheduled++;   // older backend (no field) = assume scheduled
+            if (pr?.recalcRunId) runIds.add(pr.recalcRunId);
           } else {
             const { data: cr } = await api.post('/rules', {
               name: key, key,
-              category: ['overtime_multiplier','friday_ot_multiplier','holiday_ot_multiplier','overtime_minimum','overtime_cap_hours'].includes(key) ? 'payroll' : 'attendance',
+              category: ruleCategoryFor(key),
               type: (key.endsWith('_rules') || key === 'weekend_days') ? 'text' : (key.endsWith('_start') || key.endsWith('_end') || key === 'work_start' || key === 'work_end' || key.includes('window')) ? 'time' : 'number',
               value: newVal, isActive: true, changedByName: 'مدير النظام',
             });
             setRuleMap(m => ({ ...m, [key]: { id: cr.id, isActive: true } }));
+            if (cr?.recalcScheduled !== false) scheduled++;
+            if (cr?.recalcRunId) runIds.add(cr.recalcRunId);
           }
           saved++;
-        } catch (err) { errs.push(`${key}: ${err?.response?.data?.error || err.message}`); }
+        } catch (err) { if (isSessionLostError(err)) sessionLostErr = err; errs.push(`${key}: ${err?.response?.data?.error || err.message}`); }
       }
 
+      // Armed even when some saves were rejected: the accepted ones still triggered a recalculation.
+      // If the socket is already down no outcome can arrive, so say so now instead of waiting.
+      let awaiting = recalcTrackerRef.current.arm([...runIds]) > 0;
+      if (awaiting && !getSocket().connected) {
+        recalcTrackerRef.current.disconnected();   // shows the connection warning
+        awaiting = false;                          // ...so the save toast must not also promise a result
+      }
       if (errs.length) {
         // Surface the REAL backend error(s) — not a generic "check your values"
         // message. Each entry is already "<key>: <actual backend error>".
-        errs.forEach(e => toast.error(e, { duration: 6000 }));
+        // A lost session rejects every remaining key the same way: say so ONCE, clearly, instead of one error per key.
+        if (sessionLostErr) toast.error(describeSaveFailure(sessionLostErr), { duration: 9000 });
+        else errs.forEach(e => toast.error(e, { duration: 6000 }));
       }
       else {
-        toast.success(`✓ حُفظت ${saved} قاعدة — سيتم إعادة احتساب الشهر الحالي تلقائياً`);
+        toast.success(awaiting
+          ? `✓ حُفظت ${saved} قاعدة — جاري إعادة احتساب الشهر الحالي، ستظهر النتيجة عند الانتهاء`
+          : scheduled > 0
+            ? `✓ حُفظت ${saved} قاعدة — ستُعاد الحسابات تلقائياً`
+            : `✓ حُفظت ${saved} قاعدة — لا يلزم إعادة احتساب`);
         savedRef.current = { ...toSave };
         setDirty(false);
       }
-      await load();
-    } catch (err) { toast.error(err?.response?.data?.error || 'فشل الحفظ'); }
-    finally { setSaving(false); }
+      // Server values are re-read ONLY after a fully successful save. After a rejected / partial save the typed values stay exactly as the
+      // user left them (Save stays enabled to retry): reloading here used to overwrite them and clear the dirty flag, losing the edits.
+      if (!errs.length) await load();
+    } catch (err) { toast.error(describeSaveFailure(err)); }
+    finally { submitting.current = false; setSaving(false); }
   };
 
   const runRecalc = async () => {
@@ -392,7 +546,7 @@ export default function AttendanceSettingsPage() {
     setRecalcBusy(true);
     try {
       const { data } = await api.post('/rules/recalculate-full', { from: recalcFrom, to: recalcTo }, LONG_OP);
-      toast.success(`✓ ${data.message || 'تمت إعادة الاحتساب'}`);
+      toastRecalcResult(data);
     } catch (err) { toast.error(err?.response?.data?.error || 'فشلت إعادة الاحتساب'); }
     finally { setRecalcBusy(false); }
   };
@@ -517,6 +671,7 @@ export default function AttendanceSettingsPage() {
             tiers={lateTiers}
             onChange={t => { setLateTiers(t); setDirty(true); }}
             defaultTiers={DEFAULT_LATE_TIERS}
+            requireDayEnd
             label="قواعد التأخير"
           />
           <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'rgba(180,83,9,0.06)', border: '1px solid rgba(180,83,9,0.15)', fontSize: 11.5, color: 'var(--text-3)' }}>
@@ -571,11 +726,9 @@ export default function AttendanceSettingsPage() {
         <Card title="إعدادات نهاية الأسبوع" icon={Calendar} accent="#0369a1" subtitle="تحديد أيام الراحة الأسبوعية">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <Field label="يوم الجمعة" ruleKey="friday_is_weekend" ruleMap={ruleMap}>
-              <SegBtn
-                options={[['false','يوم عمل + إضافي'],['true','يوم إجازة']]}
-                value={vals.friday_is_weekend}
-                onChange={v => set('friday_is_weekend', v)}
-              />
+              <span style={{ fontSize: 13, fontWeight: 600 }}>
+                إجازة أسبوعية دائمة — بدون بصمات: لا غياب ولا خصم · مع بصمات: كل الساعات إضافي (ثابت، لا يمكن تغييره)
+              </span>
             </Field>
             <Field label="أيام الإجازة الأسبوعية الثابتة" ruleKey="weekend_days" ruleMap={ruleMap}>
               <SegBtn

@@ -20,6 +20,20 @@ const http      = require('http');
 const path      = require('path');
 const { Server }= require('socket.io');
 const logger    = require('./utils/logger');
+
+// ─── Security gate (config/securityConfig.js) ────────────────────────────────
+// Decided BEFORE anything else loads or can listen: with authentication disabled the API may only bind
+// to loopback; an explicit non-loopback HOST is refused. Exit code 78 (EXIT_STARTUP_BLOCKED) so the
+// Electron shell does NOT keep restarting a configuration error every few seconds.
+const { AUTH_ENABLED, AUTH_STATUS, AUTH_RAW } = require('./middleware/auth');
+const { resolveSecureHost } = require('./config/securityConfig');
+const secureBind = resolveSecureHost({ authEnabled: AUTH_ENABLED, authStatus: AUTH_STATUS, authRaw: AUTH_RAW, host: process.env.HOST });
+if (!secureBind.ok) {
+  try { require('fs').writeSync(2, secureBind.error.message + '\n'); } catch { /* stderr unavailable */ }
+  logger.error(secureBind.error.message);
+  process.exit(require('./init/bootstrapResult').EXIT_STARTUP_BLOCKED);
+}
+secureBind.warnings.forEach((w) => logger.warn(w));
 const { startSyncScheduler, stopSyncScheduler } = require('./services/syncScheduler');
 const realtimeListener = require('./services/realtimeListenerService');
 const historicalRebuildService = require('./services/historicalRebuildService');
@@ -43,7 +57,7 @@ const isProd = process.env.NODE_ENV === 'production';
 // for this trust model — unchanged here). Restricting desktop mode to
 // no-origin + localhost closes that path without touching auth or breaking
 // either packaged or dev-mode Electron.
-const AUTH_ENABLED  = process.env.AUTH_ENABLED === 'true';
+// AUTH_ENABLED: parsed once in middleware/auth.js (imported above) — never re-read from process.env here.
 const corsAllowList = (process.env.CORS_ORIGINS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 const isLocalhostOrigin = (origin) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
@@ -112,20 +126,17 @@ io.use((_socket, next) => (startup.isReady() ? next() : next(new Error('NOT_READ
 // (frontend/src/lib/socket.js); Local Mode's desktop socket connections never
 // set one and are unaffected while AUTH_ENABLED stays false (the default).
 {
-  const jwt = require('jsonwebtoken');
-  const { AUTH_ENABLED, JWT_SECRET } = require('./middleware/auth');
-  io.use((socket, next) => {
-    if (!AUTH_ENABLED) return next();
-    const token = socket.handshake.auth?.token;
-    if (!token) return next(new Error('غير مصرح — يجب تسجيل الدخول أولاً'));
-    try {
-      socket.user = jwt.verify(token, JWT_SECRET);
-      next();
-    } catch {
-      next(new Error('token غير صالح'));
-    }
-  });
+  // Same token check AND the same "account still exists and is active" check as the HTTP middleware.
+  const { authenticateSocket } = require('./middleware/auth');
+  io.use(authenticateSocket);
 }
+
+// Connected sockets are re-checked periodically (deactivated / deleted / re-roled users are disconnected; see
+// services/socketSessionGuard.js). One shared unref'd timer, a no-op when authentication is disabled, stopped on shutdown.
+const socketSessionGuard = require('./services/socketSessionGuard').createSocketSessionGuard({ io });
+socketSessionGuard.start();
+// An HTTP request that proves an account is invalid also ends that user's live sockets immediately (no waiting for the next tick).
+require('./middleware/auth').onAccountRejected((userId) => socketSessionGuard.dropUser(userId, 'http-rejected'));
 
 // ─── Security ─────────────────────────────────────────────────────────────────
 app.use(require('./middleware/securityHeaders'));
@@ -303,9 +314,10 @@ const PORT = parseInt(process.env.PORT) || 5000;
 // network interface, which still includes localhost/127.0.0.1 — so local
 // Electron/dev usage is unaffected. Still fully overridable via HOST for a
 // deployment that wants to bind to one specific interface instead.
-// Network binding is intentionally independent of AUTH_ENABLED — Local Mode
-// and Server Mode are both selected via HOST, never coupled to auth.
-const HOST = process.env.HOST || '0.0.0.0';
+// SECURITY (Phase 25.1 F2 restored): binding IS now coupled to authentication — see the security gate near
+// the top of this file and config/securityConfig.js. Auth disabled → loopback only (HOST unset =
+// 127.0.0.1; an explicit LAN HOST aborts startup). Auth enabled → HOST unset = 0.0.0.0 (LAN server).
+const HOST = secureBind.host;
 
 // Attached before the async init gap below so it's guaranteed live before
 // .listen() is actually called (event listeners are safe to attach any time
@@ -428,6 +440,7 @@ async function shutdown(reason) {
   }, 5000);
   failsafe.unref();
 
+  try { socketSessionGuard.stop(); } catch {}
   try { stopSyncScheduler(); } catch (err) { logger.warn(`[SHUTDOWN] scheduler stop failed: ${err.message}`); }
   try { realtimeListener.stopAll(); } catch (err) { logger.warn(`[SHUTDOWN] listener stop failed: ${err.message}`); }
   try { io.close(); } catch {}

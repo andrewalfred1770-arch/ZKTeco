@@ -200,6 +200,11 @@ function validateRuleValue(rule, value, allRules) {
   if (rule.key === 'weekend_days') {
     return validateWeekendDays(label, v);
   }
+  // Permanent business rule: Friday is always the weekly off day (the engines ignore this rule's
+  // value). Refuse any other value instead of letting it look like a working setting.
+  if (rule.key === 'friday_is_weekend' && !['true', '1'].includes(v.trim().toLowerCase())) {
+    return [`${label}: الجمعة إجازة أسبوعية دائمة ولا يمكن تغيير ذلك`];
+  }
 
   switch (rule.type) {
     case 'time': {

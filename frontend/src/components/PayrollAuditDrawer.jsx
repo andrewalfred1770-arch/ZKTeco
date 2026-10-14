@@ -25,6 +25,8 @@ const FIELD_LABELS = {
   bonus: 'مكافأة / بدل (سجل قديم)',
   manualDeductionAdjustment: 'خصم إداري',
   advances: 'السلف',
+  deductions: 'إجمالي الخصومات',
+  netSalary: 'صافي الراتب',
   notes: 'ملاحظات',
   status: 'الحالة',
 };
@@ -33,7 +35,7 @@ const STATUS_VALUE_LABELS = { draft: 'مسودة', finalized: 'معتمد', paid
 function fmtFieldValue(field, value) {
   if (value == null || value === '') return '—';
   if (field === 'status') return STATUS_VALUE_LABELS[value] || value;
-  if (['basicSalary', 'bonus', 'manualDeductionAdjustment', 'advances'].includes(field)) {
+  if (['basicSalary', 'bonus', 'manualDeductionAdjustment', 'advances', 'deductions', 'netSalary'].includes(field)) {
     const n = Number(value);
     return Number.isFinite(n) ? fmtMoney(n) : value;
   }

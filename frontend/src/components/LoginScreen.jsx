@@ -13,6 +13,9 @@ export default function LoginScreen() {
   const { isLight } = useTheme();
   const brand = useCompanyBrand();
   const login = useAuthStore((s) => s.login);
+  const sessionMessage = useAuthStore((s) => s.sessionMessage);
+  const unsavedLabels = useAuthStore((s) => s.unsavedLabels) || [];
+  const discardUnsaved = useAuthStore((s) => s.discardUnsaved);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -78,6 +81,26 @@ export default function LoginScreen() {
             <p style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>تسجيل الدخول · {brand.product}</p>
           </div>
         </div>
+
+        {sessionMessage && (
+          <div role="alert" data-testid="session-message" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderRadius: 8, marginBottom: 14,
+            background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.35)' }}>
+            <XCircle style={{ width: 15, height: 15, color: '#d97706', flexShrink: 0 }} />
+            <span style={{ fontSize: 12, color: '#b45309', fontWeight: 600 }}>{sessionMessage}</span>
+          </div>
+        )}
+
+        {unsavedLabels.length > 0 && (
+          <div role="alert" data-testid="unsaved-notice" style={{ padding: '9px 12px', borderRadius: 8, marginBottom: 14,
+            background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.30)', fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>
+            <div style={{ fontWeight: 700 }}>لديك تعديلات غير محفوظة ({unsavedLabels.join('، ')})</div>
+            <div>سُجّل الخروج قبل حفظها، لكنها ما زالت محفوظة في الذاكرة خلف هذه الشاشة. سجّل الدخول بالحساب نفسه لمتابعتها ثم اضغط «حفظ» من جديد — لن يُعاد إرسال أي شيء تلقائياً. تسجيل الدخول بحساب مختلف يتجاهل هذه التعديلات.</div>
+            <button type="button" data-testid="discard-unsaved" onClick={discardUnsaved}
+              style={{ marginTop: 6, fontSize: 11.5, fontWeight: 700, color: '#ef4444', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}>
+              تجاهل التعديلات غير المحفوظة
+            </button>
+          </div>
+        )}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>

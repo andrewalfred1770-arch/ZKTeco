@@ -7,6 +7,7 @@ const { applyApprovedAdjustment } = require('../../engines/payrollEngine');
 const { monthRange, getEffectiveMonthEndDate } = require('../../utils/monthRange');
 const { resolveVerifiedManualEditIds } = require('../../utils/manualEditAudit');
 const { buildAttendanceRow } = require('../../utils/attendanceRow');
+const { countUnreflectedPunches } = require('../../utils/lockedPunchConflict');
 const { pLimit } = require('../../utils/pLimit');
 const { attendanceScopeWhere, monthPeriod } = require('../../utils/employmentEligibility');
 
@@ -191,6 +192,7 @@ router.get('/monthly-detail', async (req, res) => {
             manualPenaltyBy: true, manualPenaltyByName: true, manualPenaltyReason: true,
             manualOvertimeUnits: true, overtimeRulesUnits: true, absenceType: true,
             penaltyDays: true, absenceReason: true, absenceSetBy: true, absenceSetAt: true,
+            updatedAt: true,   // only to tell punches stored after the last write of a LOCKED row (utils/lockedPunchConflict.js)
           },
         }))
       : [];
@@ -204,6 +206,32 @@ router.get('/monthly-detail', async (req, res) => {
     // EF-014: resolve manualEdit against real evidence — see resolveVerifiedManualEditIds.
     const verifiedManualIds = await attendanceQueryLimit(() => resolveVerifiedManualEditIds(records.filter(r => r.manualEdit).map(r => r.id)));
 
+    // Locked (manualEdit) rows are skipped by every automatic recompute, so a raw punch that arrived after the lock
+    // never reaches them. For THOSE rows only, count the valid raw punches the row does not account for (one batched
+    // query, no per-row work for unlocked rows) so the screen can warn instead of showing an absent day beside a punch.
+    const lockedRecs = records.filter(r => r.manualEdit);
+    const ignoredByRecId = new Map();
+    if (lockedRecs.length) {
+      const dayKey = (d) => moment(d).format('YYYY-MM-DD');
+      const lockedEmpIds = [...new Set(lockedRecs.map(r => r.employeeId))];
+      const rawLogs = await attendanceQueryLimit(() => prisma.attendanceLog.findMany({
+        where: {
+          employeeId: { in: lockedEmpIds }, isDuplicate: false,
+          timestamp: { gte: new Date(`${dayKey(startDate)}T00:00:00`), lte: new Date(`${dayKey(endDate)}T23:59:59`) },
+        },
+        select: { employeeId: true, timestamp: true, createdAt: true },
+      }));
+      const byEmpDay = new Map();
+      for (const l of rawLogs) {
+        const k = `${l.employeeId}|${dayKey(l.timestamp)}`;
+        if (!byEmpDay.has(k)) byEmpDay.set(k, []);
+        byEmpDay.get(k).push({ timestamp: l.timestamp, createdAt: l.createdAt });
+      }
+      for (const r of lockedRecs) {
+        ignoredByRecId.set(r.id, countUnreflectedPunches(r, byEmpDay.get(`${r.employeeId}|${dayKey(r.date)}`) || []));
+      }
+    }
+
     const result = records.map(r => {
       const adj = adjByDailyId.get(r.id);
       const merged = mergeEffectivePenalty(applyApprovedAdjustment(r, adj));
@@ -212,7 +240,13 @@ router.get('/monthly-detail', async (req, res) => {
       // mid-request still yields a row with blank identity fields instead
       // of throwing.
       const emp = empMap.get(r.employeeId) || { id: r.employeeId, name: '', code: '' };
-      return buildAttendanceRow({ employee: emp, merged, verifiedManualIds, adj });
+      const row = buildAttendanceRow({ employee: emp, merged, verifiedManualIds, adj });
+      if (r.manualEdit) {   // additive fields, present only on locked rows
+        const n = ignoredByRecId.get(r.id) || 0;
+        row.lockedPunchConflict = n > 0;
+        row.ignoredPunches = n;
+      }
+      return row;
     });
 
     res.json(result);

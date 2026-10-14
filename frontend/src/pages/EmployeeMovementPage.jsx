@@ -9,6 +9,11 @@ import {
   Zap, ZapOff, Filter, ChevronDown, ChevronUp, Copy, ClipboardPaste,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useUnsavedWork } from '../hooks/useUnsavedWork';
+import { useFailedEdits } from '../hooks/useFailedEdits';
+import FailedEditsBanner from '../components/FailedEditsBanner';
+import { handleEditFailure } from '../lib/failedEdits';
+import { runBulkRow, tallyBulk, summarizeBulk } from '../lib/bulkApply';
 import api from '../lib/api';
 import PasteAttendanceModal from '../components/PasteAttendanceModal';
 import { useAttendancePaste } from '../hooks/useAttendancePaste';
@@ -238,7 +243,17 @@ const StatusCell = ({ data }) => {
 export default function EmployeeMovementPage() {
   const { agGridTheme, isLight } = useTheme();
   const gridRef = useRef();
+  // An open cell editor or a save still in flight must survive a session expiry (lib/unsavedWork.js).
+  useUnsavedWork('movement-editor', 'حركة الموظف (خلية قيد التحرير)', () => !!gridRef.current?.api?.getEditingCells?.().length);
   const editCountRef   = useRef(0);
+  // Edits typed but NOT saved because the session ended (lib/failedEdits.js): kept in the cell, flagged, re-sent only on request.
+  // Discard restores the previous value through the page's own revertField (defined further down), hence the ref.
+  const revertFieldRef = useRef(null);
+  const failed = useFailedEdits({
+    id: 'movement-failed', label: 'حركة الموظف (تعديلات لم تُحفظ)', gridRef, editCountRef,
+    revert: (e) => revertFieldRef.current && revertFieldRef.current(e.rowId, e.field, e.oldValue),
+    resync: () => load(false),   // after discarding edits whose outcome was unknown: re-read what the server really holds
+  });
   const pendingReloadRef = useRef(false);
   const moneyRefreshTokenRef = useRef(0); // EF-004.1: discard out-of-order money-summary responses
 
@@ -373,8 +388,8 @@ export default function EmployeeMovementPage() {
   }, [empId, month, branchId, departmentId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(true); }, [load]);
-  useRulesLiveSync(load, { isBusyRef: editCountRef });
-  useDeviceLiveSync(load, { silent: true, isBusyRef: editCountRef });
+  useRulesLiveSync(load, { isBusyRef: failed.busyRef });
+  useDeviceLiveSync(load, { silent: true, isBusyRef: failed.busyRef });
 
   const shiftMonth = (d) => {
     const [y, m] = month.split('-').map(Number);
@@ -698,7 +713,7 @@ export default function EmployeeMovementPage() {
     },
   ], [isLight, isNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
+  const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF, cellClassRules: failed.cellClassRules }), [failed]);
 
   // Shared priority chain — see gridDefaults.js#attendanceRowClass.
   const getRowClass = useCallback(attendanceRowClass, []);
@@ -861,8 +876,23 @@ export default function EmployeeMovementPage() {
     });
   }, []);
 
+  // Save ONE row of a bulk apply (lib/bulkApply.js holds the decision logic and the reasoning). AG Grid only edits the cell the user
+  // typed in, so a bulk row never displayed the typed value: a failure leaves it with the value it had, and the intended value is
+  // remembered in the failed-edits registry for an explicit retry. The caller owns the in-flight counters.
+  const saveBulkRow = useCallback(async (n, field, newValue) => {
+    markSaving(n.data.id, field, n, true);
+    try {
+      const r = await runBulkRow({ row: n.data, field, newValue, save: (row) => saveRecord(row, field, newValue), failed });
+      if (r.status === 'ok') { try { applyUpdate(r.updated, n.data, field); markSaved(n.data.id, field, n); } catch { /* the server already confirmed this row: a display error must not turn it into a failure */ } }
+      return r;
+    } finally {
+      markSaving(n.data.id, field, n, false);
+    }
+  }, [saveRecord, applyUpdate, markSaving, markSaved, failed]);
+
   // ── Cell edit handler ─────────────────────────────────────────────────────
-  const handleCellEdit = useCallback(async ({ data: rowData, colDef, newValue, oldValue, node }) => {
+  revertFieldRef.current = revertField;
+  const handleCellEdit = useCallback(async ({ data: rowData, colDef, newValue, oldValue, node, noBulk = false }) => {
     // A cancelled edit (Escape) also fires cellEditingStopped, with
     // newValue === undefined (a cleared field commits '' instead) — without
     // this guard the workedMinutes branch coerces undefined → 0 and saves it.
@@ -913,6 +943,7 @@ export default function EmployeeMovementPage() {
         applyUpdate(updated, rowData, field);
         performance.mark('applyUpdate'); // Chromium tracing: observational only
         markSaved(rowData.id, field, node);
+        failed.clear(rowData.id, field);   // the server confirmed this cell: it is no longer an unsaved edit
         performance.mark('markSaved'); // Chromium tracing: observational only
         primaryOk = true;
         if (field === 'status' && newValue === 'absent') {
@@ -928,9 +959,15 @@ export default function EmployeeMovementPage() {
         }
       }
     } catch (err) {
-      toast.error(err?.response?.data?.error || 'فشل التحديث');
-      revertField(rowData.id, field, oldValue);
-      markError(rowData.id, field, node);
+      handleEditFailure({
+        failed, err, idempotent: true,   // PUT of an absolute value: re-sending it cannot duplicate anything
+        entry: { rowId: rowData.id, field, value: newValue, oldValue, label: rowData.employeeName },
+        retain: (e) => revertField(e.rowId, e.field, e.value),   // revertField(row, field, X) simply writes X into the row state: here the typed value
+        revert: () => { revertField(rowData.id, field, oldValue); markError(rowData.id, field, node); },
+        notifyKept: () => toast.error('انتهت الجلسة — التعديل لم يُحفظ بعد. سجّل الدخول ثم اضغط «إعادة المحاولة» أعلى الجدول', { id: 'edit-not-saved', duration: 9000 }),
+        notifyUnknown: () => toast.error('انقطع الاتصال — لم يُتأكد هل حُفظ هذا التعديل. القيمة محفوظة في الجدول: راجع الشريط أعلى الجدول (إعادة المحاولة / تجاهل)', { id: 'edit-not-saved', duration: 9000 }),
+        notifyFailed: (e2) => toast.error(e2?.response?.data?.error || 'فشل التحديث'),
+      });
     } finally {
       guard.endEdit([rowData.id]);
       editCountRef.current--;
@@ -941,7 +978,7 @@ export default function EmployeeMovementPage() {
     if (!primaryOk) return;
 
     // Bulk: apply same change to all other selected rows
-    const otherNodes = (gridRef.current?.api?.getSelectedNodes() || [])
+    const otherNodes = (noBulk ? [] : (gridRef.current?.api?.getSelectedNodes() || []))
       .filter(n => n.data?.id !== rowData.id && !n.data?.isHoliday && n.data?.id != null);
 
     if (otherNodes.length === 0) {
@@ -952,27 +989,20 @@ export default function EmployeeMovementPage() {
 
     editCountRef.current += otherNodes.length;
     guard.beginEdit(otherNodes.map(n => n.data.id));
-    let bulkCount = 1;
-    await Promise.all(otherNodes.map(async n => {
-      markSaving(n.data.id, field, n, true);
+    const results = await Promise.all(otherNodes.map(async n => {
       try {
-        const updated = await saveRecord(n.data, field, newValue);
-        if (updated) {
-          applyUpdate(updated, n.data, field);
-          markSaved(n.data.id, field, n);
-          bulkCount++;
-        }
-      } catch {
-        markSaving(n.data.id, field, n, false);
+        return await saveBulkRow(n, field, newValue);
       } finally {
         guard.endEdit([n.data.id]);
         editCountRef.current--;
-        markSaving(n.data.id, field, n, false);
         if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }
       }
     }));
-    toast.success(`تم تطبيق القيمة على ${bulkCount} سجل`);
-  }, [saveRecord, markSaving, markSaved, markError, applyUpdate, revertField, load]);
+    // Success is reported ONLY when every row was confirmed saved; otherwise say exactly what happened to the rest.
+    const summary = summarizeBulk(tallyBulk(results));
+    if (summary.type === 'success') toast.success(summary.text);
+    else toast.error(summary.text, { id: 'bulk-apply-result', duration: 12000 });
+  }, [saveRecord, saveBulkRow, markSaving, markSaved, markError, applyUpdate, revertField, load, failed]);
 
   const handleAbsenceSave = useCallback(async ({ absenceType, penaltyDays, absenceReason }) => {
     if (!absenceModal?.id) return;
@@ -1264,6 +1294,22 @@ export default function EmployeeMovementPage() {
           ))}
         </div>
       )}
+
+      <FailedEditsBanner
+        count={failed.count} unknown={failed.unknown} retrying={failed.retrying}
+        onDiscard={() => failed.discard()}
+        onRetry={() => failed.retryAll(async (e) => {
+          const node = gridRef.current?.api?.getRowNode(String(e.rowId));
+          if (!node?.data) { toast.error('السجل لم يعد معروضاً — تعذّرت إعادة المحاولة (يمكنك تجاهل التعديل)'); return; }
+          if (e.bulk) {   // a row that failed during a bulk apply: re-send just that row (never fan out to the current selection again)
+            editCountRef.current++; guard.beginEdit([e.rowId]);
+            try { await saveBulkRow(node, e.field, e.value); }
+            finally { guard.endEdit([e.rowId]); editCountRef.current--; if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); } }
+            return;
+          }
+          await handleCellEdit({ data: node.data, colDef: { field: e.field }, newValue: e.value, oldValue: e.oldValue, node, noBulk: true });   // the page's normal save path: same validation, same request; it clears the entry only on a confirmed save
+        })}
+      />
 
       {/* AG Grid */}
       <div className="flex-1 overflow-hidden" style={{ minHeight:0 }}>

@@ -106,8 +106,12 @@ export function useDeviceLiveSync(reload, opts = {}) {
       }, 400);
     };
 
-    const onSynced = ({ name, newLogs, partial } = {}) => {
-      if (!silent && newLogs) {
+    const onSynced = ({ name, newLogs, partial, lockedIgnored } = {}) => {
+      // Punches that were stored but could not be applied because the day's row is locked by a manual edit: never a
+      // plain success, and shown even on silent pages (the monthly page is one) — the user must be able to act on it.
+      if (lockedIgnored > 0) {
+        toast(`⚠ ${lockedIgnored} بصمة من "${name || 'الجهاز'}" حُفظت لكنها لم تُطبَّق على الحضور (سجل معدّل يدوياً) — استرجع الحساب التلقائي لتلك الأيام`, { id: 'device-locked-skip', duration: 10000, icon: '⚠️' });
+      } else if (!silent && newLogs) {
         toast.success(
           partial
             ? `🔄 ${newLogs} سجل جديد من "${name || 'الجهاز'}" (مزامنة جزئية)`
@@ -143,13 +147,21 @@ export function useDeviceLiveSync(reload, opts = {}) {
       else requestReload();
     };
 
+    // A live punch (or a sync) hit a manually-locked day: reload so the row shows its warning.
+    const onLockedSkip = ({ employeeName, date, punches } = {}) => {
+      if (employeeName) toast(`⚠ بصمة جديدة لـ ${employeeName}${date ? ' (' + date + ')' : ''} لم تُطبَّق: السجل معدّل يدوياً${punches > 1 ? ' — ' + punches + ' بصمات' : ''}`, { id: `locked-${employeeName}-${date}`, duration: 8000, icon: '⚠️' });
+      requestReload();
+    };
+
     socket.on('device:synced', onSynced);
+    socket.on('attendance:locked-skip', onLockedSkip);
     socket.on('relink:done', onRelinkDone);
     socket.on('attendance:processed', onProcessed);
     socket.on('attendance:realtime', onRealtime);
 
     return () => {
       socket.off('device:synced', onSynced);
+      socket.off('attendance:locked-skip', onLockedSkip);
       socket.off('relink:done', onRelinkDone);
       socket.off('attendance:processed', onProcessed);
       socket.off('attendance:realtime', onRealtime);

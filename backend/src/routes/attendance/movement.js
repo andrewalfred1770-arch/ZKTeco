@@ -3,7 +3,7 @@ const { sendError } = require('../../utils/apiError');
 const { getPrisma } = require('../../utils/prisma');
 const moment = require('moment');
 const { mergeEffectivePenalty } = require('../../engines/attendanceEngine');
-const { applyApprovedAdjustment, selectOvertimeMultiplier, computeRates } = require('../../engines/payrollEngine');
+const { applyApprovedAdjustment, selectOvertimeMultiplier, computeRates, safeMultiplier } = require('../../engines/payrollEngine');
 const { getRulesBatch } = require('../../engines/rulesEngine');
 const { buildAttendanceRow } = require('../../utils/attendanceRow');
 const { attendanceScopeWhere, monthPeriod } = require('../../utils/employmentEligibility');
@@ -291,12 +291,12 @@ router.get('/movement', async (req, res) => {
       // EF-008 Finding #4: read the same rule keys payrollEngine.js's computePayroll
       // reads, with the same fallback-to-general-multiplier behavior, so
       // selectOvertimeMultiplier resolves identically in both places.
-      const overtimeMultiplier = parseFloat(rules.overtime_multiplier || '1.5');
+      const overtimeMultiplier = safeMultiplier(rules.overtime_multiplier, 1.5);
       const multipliers = {
         otMultiplier: overtimeMultiplier,
-        fridayOTMultiplier: parseFloat(rules.friday_ot_multiplier || overtimeMultiplier),
-        holidayOTMultiplier: parseFloat(rules.holiday_ot_multiplier || overtimeMultiplier),
-        weekendOTMultiplier: parseFloat(rules.weekend_work_multiplier || overtimeMultiplier),
+        fridayOTMultiplier: safeMultiplier(rules.friday_ot_multiplier, overtimeMultiplier),
+        holidayOTMultiplier: safeMultiplier(rules.holiday_ot_multiplier, overtimeMultiplier),
+        weekendOTMultiplier: safeMultiplier(rules.weekend_work_multiplier, overtimeMultiplier),
       };
       // EF-010: single source of truth — same function payrollEngine.computePayroll
       // uses, eliminating the previously-duplicated formula.

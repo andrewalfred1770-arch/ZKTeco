@@ -1,6 +1,6 @@
 const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
-const { getRules, parseTime, isWeekend, isHoliday, isRuleTrue } = require('./rulesEngine');
+const { getRules, parseTime, isWeekend, isHoliday } = require('./rulesEngine');
 const {
   calcMorningOT, calcEveningOT, calcLatePenalty, calcEarlyCheckout, calcOvertimeUnits,
   timeToMinutes, hoursWithTolerance,
@@ -30,6 +30,8 @@ function parseTimeRules(raw) {
   } catch { return null; }
 }
 const logger = require('../utils/logger');
+const { writeAudit } = require('../utils/manualEditAudit');
+const { countUnreflectedPunches } = require('../utils/lockedPunchConflict');
 
 const prisma = getPrisma();
 
@@ -54,6 +56,63 @@ async function isManuallyEdited(employeeId, dateStr) {
   return !!existing?.manualEdit;
 }
 
+// What the engine reports when it skips a locked row: { skipped: 'manual-lock', ignoredPunches }.
+// ignoredPunches = valid raw punches of that day the locked row does not account for (see utils/lockedPunchConflict.js).
+// 0 means the lock is hiding nothing (e.g. HR's times already cover every punch). Never throws: a failed look-up
+// reports ignoredPunches=null ("unknown") rather than turning a skip into an error.
+async function lockedSkipReport(employeeId, dateStr) {
+  try {
+    const row = await prisma.attendanceDaily.findUnique({
+      where: { employeeId_date: { employeeId, date: new Date(dateStr) } },
+      select: { checkIn: true, checkOut: true, updatedAt: true },
+    });
+    const logs = await prisma.attendanceLog.findMany({
+      where: {
+        employeeId, isDuplicate: false,
+        timestamp: { gte: new Date(`${dateStr}T00:00:00`), lte: new Date(`${dateStr}T23:59:59`) },
+      },
+      select: { timestamp: true, createdAt: true },
+    });
+    return { skipped: 'manual-lock', ignoredPunches: countUnreflectedPunches(row || {}, logs) };
+  } catch (err) {
+    logger.warn(`[MANUAL-LOCK] employee=${employeeId} date=${dateStr} could not count ignored punches: ${err.message}`);
+    return { skipped: 'manual-lock', ignoredPunches: null };
+  }
+}
+
+// ─── Permanent weekly-off rule vs a manually edited/locked row ────────────────────
+// A locked row (manualEdit=true) is skipped by every automatic recompute. If such a row is ABSENT on a
+// weekly-off day (Friday, or a configured weekend day) it violates the permanent rule — it would show
+// as Absent and cost a day's pay. This heals ONLY that contradiction: status -> weekend, isAbsent ->
+// false, absence type/penalty days cleared. The lock itself (manualEdit), every other HR-entered value
+// (times, manual penalty/overtime units) and the audit history are preserved, and the change is audited.
+async function healLockedWeeklyOffAbsence(employee, dateStr) {
+  try {
+    const existing = await prisma.attendanceDaily.findUnique({
+      where: { employeeId_date: { employeeId: employee.id, date: new Date(dateStr) } },
+    });
+    if (!existing || !(existing.isAbsent || existing.status === 'absent')) return false;
+    const rules = await getRules(employee.branchId, employee.departmentId, employee.id);
+    const dayDate = new Date(dateStr);
+    if (!(isWeekend(dayDate, rules.weekend_days) || dayDate.getDay() === 5)) return false;
+    await prisma.attendanceDaily.update({
+      where: { id: existing.id },
+      data: { status: 'weekend', isAbsent: false, isWeekend: true, absenceType: null, penaltyDays: null, totalDeductionUnits: 0 },
+    });
+    await writeAudit({
+      employeeId: employee.id, attendanceDailyId: existing.id, fieldName: 'status',
+      oldValue: existing.status, newValue: 'weekend',
+      reason: 'قاعدة ثابتة: الجمعة/الإجازة الأسبوعية لا تُحتسب غياباً — تصحيح تلقائي لسجل معدَّل يدوياً',
+      userName: 'System (weekly-off rule)', userRole: 'system', source: 'system-weekly-off',
+    });
+    logger.info(`[WEEKLY-OFF-HEAL] employee=${employee.id} date=${dateStr} locked row was ${existing.status}/isAbsent=${existing.isAbsent} -> weekend (lock + audit kept)`);
+    return true;
+  } catch (err) {
+    logger.warn(`[WEEKLY-OFF-HEAL] employee=${employee.id} date=${dateStr} skipped: ${err.message}`);
+    return false;
+  }
+}
+
 // ─── Process a single employee's attendance for a single date ─────────────────
 // opts.manual — manual-override mode used by PUT /attendance/daily/:id:
 //   { checkIn?: Date|null, checkOut?: Date|null, status?: string }
@@ -76,9 +135,15 @@ async function processDateImpl(date, employeeId, opts = {}) {
   if (!employee) return null;
 
   if (!manual && await isManuallyEdited(employeeId, dateStr)) {
+    // The lock protects HR's data, but never an ABSENCE on a weekly-off day (permanent rule).
+    await healLockedWeeklyOffAbsence(employee, dateStr);
     logger.info(`[MANUAL-EDIT] preserved: employee=${employeeId} date=${dateStr} — engine recompute skipped (manualEdit=true)`);
     logger.info(`[REBUILD-SKIP-MANUAL] employee=${employeeId} date=${dateStr} — row frozen by manual edit`);
-    return null;
+    const report = await lockedSkipReport(employeeId, dateStr);
+    if (report.ignoredPunches > 0) {
+      logger.warn(`[MANUAL-LOCK-IGNORED-PUNCH] employee=${employeeId} date=${dateStr} — ${report.ignoredPunches} valid raw punch(es) are NOT reflected in the locked row (restore automatic calculation to apply them)`);
+    }
+    return report;   // was null: callers that ignore the result are unaffected; new callers can tell a skip from a recompute
   }
 
   // ── F-02: pre-hire eligibility gate ─────────────────────────────────────────
@@ -112,18 +177,18 @@ async function processDateImpl(date, employeeId, opts = {}) {
   const legacyRules = await getRules(employee.branchId, employee.departmentId, employee.id);
   const dayDate = new Date(dateStr);
   const dayOfWeek = dayDate.getDay(); // 0=Sun .. 5=Fri, 6=Sat
-  // friday_is_weekend: ONLY governs whether Friday is a non-working day for
-  // attendance/payroll working-day counts. Company policy (2026-06): Friday is
-  // a special overtime workday, NOT a closed holiday — so this defaults to
-  // false. Saturday has no special flag; it is governed purely by weekend_days
+  // PERMANENT business rule: Friday is ALWAYS the weekly off day. A Friday with no punches is a
+  // weekly off (never an absence, no deduction); a Friday with punches is overtime (all worked
+  // hours, Friday multiplier, penalties zeroed). This does NOT depend on any rule value — the
+  // friday_is_weekend rule is no longer read, so a stored 'false'/'' can never turn Friday into a
+  // working day. Saturday has no special flag; it is governed purely by weekend_days
   // (default '' — no automatic weekly off-day).
-  const fridayIsWeekend = isRuleTrue(legacyRules.friday_is_weekend);
   const configuredWeekend = isWeekend(dayDate, legacyRules.weekend_days);
-  const weekend = configuredWeekend || (fridayIsWeekend && dayOfWeek === 5);
+  const weekend = configuredWeekend || dayOfWeek === 5;
   const holiday = await isHoliday(dayDate, employee.branchId);
 
   if (dayOfWeek === 5) {
-    logger.info(`[WEEKEND-RULE] employee=${employeeId} date=${dateStr} Friday: friday_is_weekend=${fridayIsWeekend}, weekend_days="${legacyRules.weekend_days}" → weekend=${weekend}${weekend ? '' : ' — treated as special overtime workday'}`);
+    logger.info(`[WEEKEND-RULE] employee=${employeeId} date=${dateStr} Friday: always weekly off, weekend_days="${legacyRules.weekend_days}" → weekend=${weekend}${weekend ? '' : ' — treated as special overtime workday'}`);
   } else if (dayOfWeek === 6) {
     logger.info(`[WEEKEND-RULE] employee=${employeeId} date=${dateStr} Saturday: weekend_days="${legacyRules.weekend_days}" → weekend=${weekend}${weekend ? '' : ' — treated as normal workday'}`);
   }
@@ -172,6 +237,10 @@ async function processDateImpl(date, employeeId, opts = {}) {
   const checkinWindowEndMin   = parseTime(legacyRules.checkin_window_end   || '12:00');
   const windowLabel = `${legacyRules.checkin_window_start || '05:00'}-${legacyRules.checkin_window_end || '12:00'}`;
   const inCheckinWindow = (ts) => {
+    // The check-in window models the weekday shift start. Friday is the permanent weekly off (no shift):
+    // the first punch is the check-in and the last punch the check-out, whatever the hour. Scoped to
+    // Friday on purpose — configured weekend days and holidays keep their existing window behaviour.
+    if (dayOfWeek === 5) return true;
     const m = ts.getHours() * 60 + ts.getMinutes();
     return m >= checkinWindowStartMin && m <= checkinWindowEndMin;
   };
@@ -276,7 +345,8 @@ async function buildDayFields(employee, dateStr, { checkIn: effCheckIn, checkOut
     // themselves are untouched — still sourced only from the real
     // calendar/Holiday-table lookup above, never from a manual override, so
     // this cannot fabricate a fake official-holiday record.
-    const finalStatus = manual?.status || absentStatus;
+    // Permanent weekly-off rule: a manual "absent" can never stick on a weekly-off day.
+    const finalStatus = (weekend && manual?.status === 'absent') ? absentStatus : (manual?.status || absentStatus);
     const isAbsentFinal = finalStatus === 'absent';
     if (!manual) {
       logger.info(`[RULE-MATCH] employee=${employeeId} date=${dateStr} → status=${absentStatus} (no punches)`);
@@ -718,6 +788,12 @@ async function processToday(branchId, targetDate = null) {
 // approval-gated overlay). Adds effective* fields used by payroll/UI/reports.
 function mergeEffectivePenalty(record) {
   if (!record) return record;
+  // PERMANENT weekly-off rule, read side: a record on a weekly-off day (Friday, or a flagged weekend)
+  // can never count as an absence, even if it is stale (computed under an older rule) or manually
+  // locked. This is the one overlay every attendance view and payroll computation goes through.
+  if ((record.isAbsent || record.status === 'absent') && (record.isWeekend || (record.date != null && moment(record.date).day() === 5))) {
+    record = { ...record, isAbsent: false, isWeekend: true, status: 'weekend', absenceType: null, penaltyDays: null, totalDeductionUnits: 0 };
+  }
   const baseLat  = record.latePenaltyUnits        || 0;
   const baseEar  = record.earlyCheckoutUnits      || 0;
   const baseTot  = record.totalDeductionUnits     || 0;

@@ -12,6 +12,8 @@ import UpdateNotifications from './components/UpdateNotifications';
 import DatabaseSetupWizard from './components/DatabaseSetupWizard';
 import ConnectionWizard from './components/ConnectionWizard';
 import LoginScreen from './components/LoginScreen';
+import ServerAuthGate from './components/ServerAuthGate';
+import { gateView } from './lib/authGate';
 import ServerReadyGate from './components/ServerReadyGate';
 
 import { isManager } from './lib/edition';
@@ -165,6 +167,8 @@ function ManagerGate({ children }) {
   const authEnabled = useAuthStore((s) => s.authEnabled);
   const token = useAuthStore((s) => s.token);
   const checkAuthRequired = useAuthStore((s) => s.checkAuthRequired);
+  const unsavedLabels = useAuthStore((s) => s.unsavedLabels);
+  const appEpoch = useAuthStore((s) => s.appEpoch);
   const [probeAttempt, setProbeAttempt] = useState(0);
   const [showWizard, setShowWizard] = useState(false);
 
@@ -214,7 +218,8 @@ function ManagerGate({ children }) {
 
   if (!isManager) {
     trace("Server Edition");
-    return children;
+    // Shows LoginScreen only when this PC's own backend reports AUTH_ENABLED=true; otherwise renders children unchanged.
+    return <ServerAuthGate>{children}</ServerAuthGate>;
   }
 
   if (connSettings === undefined) {
@@ -244,7 +249,10 @@ function ManagerGate({ children }) {
     );
   }
 
-  if (authEnabled === true && !token) {
+  // Session over: normally ONLY the login screen renders. When screens hold unsaved edits the app stays mounted under the login
+  // overlay (see lib/authGate.js, lib/unsavedWork.js) so nothing typed is lost.
+  const view = gateView({ authEnabled, token, unsavedCount: (unsavedLabels || []).length });
+  if (view === 'login') {
     trace("Authentication required");
     return <LoginScreen />;
   }
@@ -270,7 +278,8 @@ function ManagerGate({ children }) {
         </div>
       )}
 
-      {children}
+      <React.Fragment key={appEpoch}>{children}</React.Fragment>
+      {view === 'app+login' && <LoginScreen />}
     </>
   );
 }

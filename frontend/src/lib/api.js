@@ -27,6 +27,22 @@ const api = axios.create({
 let authToken = null;
 export function setAuthToken(token) { authToken = token; }
 
+// Expired / invalid / deactivated session. The backend answers 401 to any protected request whose token no longer works
+// (expired JWT, bad signature, account deactivated or deleted). authStore registers a handler here that signs the user
+// out locally so the gate shows the login screen again — registered (not imported) because authStore imports this file.
+// Only a request that actually CARRIED a token can mean "your session ended"; 401s on pre-login calls, on the login
+// request itself (wrong password) and on the /auth/me probe (owned by authStore.checkAuthRequired) are not handled here.
+// 403 (authorization denied) is deliberately not an authentication failure and is never handled here.
+let unauthorizedHandler = null;
+export function setUnauthorizedHandler(fn) { unauthorizedHandler = fn; }
+
+// While the session is over (authStore raises this when a 401 ends it, and lowers it only after a successful login) screens that stay
+// mounted under the login overlay must not fire MUTATIONS with no valid session: they would only bounce off the server, and a stale
+// operation must never be sent once the user signs back in. Reads still go out (they are harmless); /auth/* is never blocked.
+let sessionBlocked = false;
+export function setSessionBlocked(v) { sessionBlocked = !!v; }
+const isAuthEndpoint = (url) => /\/auth\/(login|me|logout)(\?|$)/.test(String(url || ''));
+
 // EP-025 — Enterprise Connection Recovery: block writes (not reads) while the
 // shared socket reports the backend is down, instead of letting them fail
 // individually mid-flight against a dead connection. Mutates `config` (not a
@@ -35,6 +51,13 @@ export function setAuthToken(token) { authToken = token; }
 // also fire on this synchronous, pre-network rejection.
 api.interceptors.request.use((config) => {
   const method = (config.method || 'get').toLowerCase();
+  if (sessionBlocked && !['get', 'head', 'options'].includes(method) && !isAuthEndpoint(config.url)) {
+    const err = new Error('Session expired: the request was not sent');
+    err.isSessionExpired = true;
+    err.config = config;
+    config._noRetry = true;
+    return Promise.reject(err);
+  }
   if (method !== 'get' && shouldBlockWrites()) {
     toast.error('لا يمكن الحفظ الآن — جارٍ إعادة الاتصال بالخادم', { id: 'write-blocked-offline' });
     config._noRetry = true;
@@ -44,6 +67,7 @@ api.interceptors.request.use((config) => {
     return Promise.reject(err);
   }
   if (authToken) config.headers.Authorization = `Bearer ${authToken}`;
+  config._hadToken = !!authToken;
   return config;
 });
 
@@ -57,6 +81,10 @@ api.interceptors.response.use(
   (res) => res,
   async (err) => {
     const config = err.config || {};
+
+    if (err.response && err.response.status === 401 && config._hadToken && unauthorizedHandler && !isAuthEndpoint(config.url)) {
+      try { unauthorizedHandler(err.response.data && err.response.data.error); } catch { /* never let session handling mask the original error */ }
+    }
 
     // Only retry network errors (no response) — never retry 4xx/5xx (those are
     // intentional server responses that the caller must handle).
