@@ -64,8 +64,15 @@ const CSS = `
    own edge and the card's own cell edge). No card WIDTH, color, border,
    icon, or payroll value is touched — only page/grid geometry plus the
    two documented internal reserves above. */
+/* Page height is 209mm, NOT the full 210mm of the sheet. Measured on Electron
+   26.6.10 (Chromium 116, the legacy macOS 10.13/10.14 build): a .cps-page of
+   209.85mm or more makes that engine treat the page box as taller than the
+   sheet, so every page prints blank and the cards collapse into stray letters
+   (6 pages instead of 3); 209.8mm and below prints correctly. Newer Chromium
+   (Electron 30/32) prints either way. 209mm keeps ~0.8mm of margin under the
+   measured threshold; regression test: tests/print/compact-sheet-page-height.test.mjs. */
 .cps-page{
-  width:297mm; height:210mm; padding:3mm 9mm;
+  width:297mm; height:209mm; padding:3mm 9mm;
   margin:0 auto; background:#fff;
   display:flex; flex-direction:column;
   page-break-after:always; break-after:page;
