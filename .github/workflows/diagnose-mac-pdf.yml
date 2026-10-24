@@ -1,0 +1,93 @@
+name: Diagnose macOS PDF and print (on-demand)
+
+# Manual, on-demand DIAGNOSTIC for the "blank page" report when exporting PDF / printing from CheckIn on macOS. It builds the app's REAL report and
+# payroll HTML (tools/pdf-diagnostic), replays what electron/ipc.js does for `pdf:export` and `print:html` on Electron 32.3.3 (modern build) and
+# Electron 26.6.10 (legacy build), then inspects every PDF (pages, extracted Arabic text, rendered pixels, images, fonts) and records Electron and
+# macOS logs. It changes nothing in the app and builds no installer.
+# LIMITS - read before drawing conclusions: the runner is a modern macOS (15) on Intel. It shows what these Electron versions do on macOS with this
+# HTML. Each PDF is also redrawn with macOS's OWN PDF engine (sips) so a file that MuPDF draws but Preview would show blank is caught. It can NOT prove
+# anything about macOS 10.13 / 10.14 (CoreText, fonts, CUPS) nor about the native print dialog (no printer, no person),
+# nor the installed, unsigned CheckIn Mac.app. A green run is not a compatibility proof; the iMac 2011 / 2013 / 27" tests remain required.
+# workflow_dispatch only: never fires on push / PR / release.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref (tag/branch/sha) holding tools/pdf-diagnostic'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Electron ${{ matrix.electron }} on macOS
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        electron: ['32.3.3', '26.6.10']
+    steps:
+      - name: Checkout requested ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install frontend dependencies (esbuild + react, used only to build the fixtures)
+        working-directory: frontend
+        run: npm ci --ignore-scripts
+
+      - name: Install Electron ${{ matrix.electron }} (outside the repo) and PyMuPDF
+        run: |
+          set -e
+          mkdir -p "$RUNNER_TEMP/electron-${{ matrix.electron }}"
+          cd "$RUNNER_TEMP/electron-${{ matrix.electron }}"
+          npm init -y >/dev/null
+          npm install --no-save --no-audit --no-fund electron@${{ matrix.electron }}
+          pip install --quiet "pymupdf==1.28.2"
+          node -e "console.log('electron package', require('electron/package.json').version)"
+
+      - name: Record the macOS environment
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          { echo "## sw_vers"; sw_vers; echo; echo "## uname"; uname -a; echo; echo "## printers (lpstat)"; lpstat -p 2>&1 || true; echo; echo "## default printer"; lpstat -d 2>&1 || true; } | tee "$RUNNER_TEMP/out/macos-environment.txt"
+
+      - name: Run the PDF diagnostic (fixtures -> Electron -> PDF analysis)
+        run: |
+          set -e
+          ELECTRON="$RUNNER_TEMP/electron-${{ matrix.electron }}/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
+          "$ELECTRON" --version
+          node tools/pdf-diagnostic/run-local.mjs --electron "$ELECTRON" --out "$RUNNER_TEMP/out" --logging 2>&1 | tee "$RUNNER_TEMP/out/run-${{ matrix.electron }}.log"
+
+      - name: Collect macOS system log for the run
+        if: always()
+        run: log show --last 20m --style compact --predicate 'process CONTAINS[c] "Electron" OR subsystem CONTAINS[c] "print" OR process == "cupsd"' > "$RUNNER_TEMP/out/macos-system-log-${{ matrix.electron }}.txt" 2>&1 || true
+
+      - name: Summarise
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/out/report.md" ]; then cat "$RUNNER_TEMP/out/report.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> Diagnostic only. macOS 15 runner: does NOT prove behaviour on macOS 10.13 / 10.14, the native print dialog, or the installed CheckIn Mac.app." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload PDFs, page images, reports and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf-diagnostic-electron-${{ matrix.electron }}
+          path: ${{ runner.temp }}/out
+          if-no-files-found: error
+          retention-days: 14
