@@ -33,6 +33,7 @@
     ],
     "icon": "assets/icon.png",
     "category": "public.app-category.business",
+    "minimumSystemVersion": "10.15.0",
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
     "extraResources": [

@@ -98,13 +98,13 @@ export default function ConnectionWizard({ initialUrl = '' }) {
             <Server style={{ width: 20, height: 20, color: isLight ? 'var(--accent)' : 'var(--accent)' }} />
           </div>
           <div>
-            <h2 style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-1)' }}>الاتصال بخادم PETSHROW ERP</h2>
-            <p style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>PETSHROW ERP Manager — Connect to Server</p>
+            <h2 style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-1)' }}>الاتصال بخادم CheckIn</h2>
+            <p style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>CheckIn — Connect to Server</p>
           </div>
         </div>
 
         <p style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.6, margin: '10px 0 18px' }}>
-          هذا الجهاز عبارة عن عميل (Manager) ولا يحتوي على قاعدة بيانات خاصة به. أدخل عنوان خادم PETSHROW ERP المشغّل على الشبكة.
+          هذا الجهاز عبارة عن عميل (Manager) ولا يحتوي على قاعدة بيانات خاصة به. أدخل عنوان خادم CheckIn المشغّل على الشبكة.
         </p>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>

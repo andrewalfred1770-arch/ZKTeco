@@ -8,8 +8,10 @@
 //   - Node reports only addresses that are currently assigned; it cannot report link state, gateway or metric. "Active" therefore means
 //     "assigned right now on a non-virtual private-range adapter". When more than one such adapter exists the answer is AMBIGUOUS and
 //     every candidate is listed — no address is invented or guessed.
-//   - The HTTPS proxy (Caddy) is not part of this app. Its port is taken from the https origins in CORS_ORIGINS (the backend only accepts
-//     browser origins listed there). No https origin => the port is unknown and no URL is produced (443 is never assumed).
+//   - The LAN proxy (Caddy) is not part of this app. Its scheme and port are taken from the origins in CORS_ORIGINS (the backend only accepts
+//     browser origins listed there): https origins, and http origins ONLY when the host is a private-LAN IPv4 literal (never localhost, a
+//     name or a public address). No usable origin => the port is unknown and no URL is produced (443 is never assumed). An http URL is
+//     plain text on the wire; the UI says so.
 //   - `listening` (see probePort) only proves that something accepts TCP connections on this PC at that address. It does NOT prove that
 //     other devices can reach it (firewall/router/Wi-Fi isolation/allow-list/certificate trust are all unchecked).
 import net from 'net';
@@ -77,22 +79,40 @@ function envValue(text, key) {
   return v.trim();
 }
 
-/** Mirrors backend/src/config/corsPolicy.js#parseCorsOrigins for https origins only. */
-export function parseHttpsOrigins(envText) {
+/**
+ * Mirrors backend/src/config/corsPolicy.js#parseCorsOrigins for the origins a LAN client can be given.
+ * https: any bare https origin. http: only a bare http origin whose host is a private-LAN IPv4 literal (so http://localhost:5000, http://name
+ * and any public host are ignored, exactly as before). Each entry: { origin, scheme, host, port } (default ports: https 443, http 80).
+ */
+export function parseProxyOrigins(envText) {
   const raw = envValue(envText, 'CORS_ORIGINS') || '';
   const out = [];
   for (const entry of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
     let u;
     try { u = new URL(entry); } catch { continue; }
-    const bare = u.protocol === 'https:' && !entry.includes('*') && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash && !/\/$/.test(entry);
+    const scheme = u.protocol === 'https:' ? 'https' : (u.protocol === 'http:' ? 'http' : null);
+    const bare = scheme && !entry.includes('*') && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash && !/\/$/.test(entry);
     if (!bare) continue;
-    const port = u.port ? Number(u.port) : 443;
-    if (!out.some((o) => o.origin === u.origin)) out.push({ origin: u.origin, host: u.hostname.replace(/^\[|\]$/g, ''), port });
+    const host = u.hostname.replace(/^\[|\]$/g, '');
+    if (scheme === 'http') {
+      const p = ipv4Parts(host);
+      if (!p || !isPrivate(p)) continue;
+    }
+    const port = u.port ? Number(u.port) : (scheme === 'https' ? 443 : 80);
+    if (!out.some((o) => o.origin === u.origin)) out.push({ origin: u.origin, scheme, host, port });
   }
   return out;
 }
 
-const urlFor = (address, port) => (port === 443 ? `https://${address}` : `https://${address}:${port}`);
+/** https origins only (kept for callers/tests written before http support). */
+export function parseHttpsOrigins(envText) {
+  return parseProxyOrigins(envText).filter((o) => o.scheme === 'https').map(({ origin, host, port }) => ({ origin, host, port }));
+}
+
+const urlFor = (address, port, scheme = 'https') => {
+  const isDefault = (scheme === 'https' && port === 443) || (scheme === 'http' && port === 80);
+  return isDefault ? `${scheme}://${address}` : `${scheme}://${address}:${port}`;
+};
 
 /**
  * @param {{nets:object, envText?:string|null, backendPort?:number}} input
@@ -100,21 +120,22 @@ const urlFor = (address, port) => (port === 443 ? `https://${address}` : `https:
  */
 export function describeLanAddress({ nets, envText = null, backendPort = 5000 } = {}) {
   const { candidates, excluded } = classifyInterfaces(nets);
-  const origins = parseHttpsOrigins(envText);
-  const ports = [...new Set(origins.map((o) => o.port))];
+  const origins = parseProxyOrigins(envText);
+  // One (scheme, port) pair is required: two different pairs (e.g. https:443 and http:8080) are ambiguous and no URL is guessed.
+  const pairs = [...new Set(origins.map((o) => `${o.scheme}:${o.port}`))];
 
   let proxy;
-  if (!origins.length) proxy = { state: 'not-configured', port: null, origins: [] };
-  else if (ports.length > 1) proxy = { state: 'conflicting', port: null, origins: origins.map((o) => o.origin) };
-  else proxy = { state: 'configured', port: ports[0], origins: origins.map((o) => o.origin) };
+  if (!origins.length) proxy = { state: 'not-configured', scheme: null, port: null, origins: [] };
+  else if (pairs.length > 1) proxy = { state: 'conflicting', scheme: null, port: null, origins: origins.map((o) => o.origin) };
+  else proxy = { state: 'configured', scheme: origins[0].scheme, port: origins[0].port, origins: origins.map((o) => o.origin) };
 
   const status = candidates.length === 0 ? 'no-lan' : candidates.length === 1 ? 'ok' : 'ambiguous';
   const activeAddress = status === 'ok' ? candidates[0].address : null;
-  const shareUrl = status === 'ok' && proxy.state === 'configured' ? urlFor(activeAddress, proxy.port) : null;
+  const shareUrl = status === 'ok' && proxy.state === 'configured' ? urlFor(activeAddress, proxy.port, proxy.scheme) : null;
 
   // The backend accepts a browser origin only if it is listed exactly in CORS_ORIGINS. If the live address is not, a browser opening
   // the shown URL would be refused — report it; the owner changes the list (never done automatically).
-  const originListed = (addr) => proxy.origins.some((o) => o === urlFor(addr, proxy.port));
+  const originListed = (addr) => proxy.origins.some((o) => o === urlFor(addr, proxy.port, proxy.scheme));
   const originMismatch = status === 'ok' && proxy.state === 'configured' && !originListed(activeAddress);
 
   return {
@@ -123,12 +144,14 @@ export function describeLanAddress({ nets, envText = null, backendPort = 5000 } 
     activeAddress,
     candidates: candidates.map((c) => ({
       ...c,
-      url: proxy.state === 'configured' ? urlFor(c.address, proxy.port) : null,
+      url: proxy.state === 'configured' ? urlFor(c.address, proxy.port, proxy.scheme) : null,
     })),
     excludedCount: excluded.length,
     excluded: excluded.map(({ name, address, reason }) => ({ name, address, reason })),
     proxy,
     shareUrl,
+    // true => the shown URL is plain http: nothing on the wire is encrypted (the UI must say so).
+    plainHttp: proxy.state === 'configured' && proxy.scheme === 'http',
     originMismatch,
     // Shown so the owner can tell "this PC's own backend" apart from the shareable address. Never shareable.
     localOnly: { backendUrl: `http://127.0.0.1:${backendPort}`, shareable: false },

@@ -36,6 +36,7 @@
   "electron:build:mac:legacy": "npm run assets:gate && npm run build:mojave-main && npm run build:manager && npm run dist:verify && npm run verify:mojave-main && electron-builder --mac --config electron-builder.legacy-mac.json",
   "electron:build:manager": "npm run assets:gate && npm run build:manager && npm run dist:verify && electron-builder --mac --config electron-builder.manager.json",
   "electron:build:manager:mac": "npm run assets:gate && npm run build:manager && npm run dist:verify && electron-builder --mac --config electron-builder.manager.json",
+  "electron:build:manager:mac:intel": "npm run assets:gate && npm run build:manager && npm run dist:verify && electron-builder --mac --x64 --config electron-builder.mac-intel.json --publish=never",
   "fetch:mysql:mac": "node scripts/fetch-mysql-macos.mjs",
   "electron:build:standalone:mac": "npm run assets:gate && npm run fetch:mysql:mac && npm run build:standalone && npm run dist:verify && electron-builder --mac --config electron-builder.standalone.json"
 },
@@ -169,6 +170,7 @@
       ],
       "icon": "assets/icon.png",
       "category": "public.app-category.business",
+      "minimumSystemVersion": "10.15.0",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "extraResources": [

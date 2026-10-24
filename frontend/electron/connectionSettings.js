@@ -2,7 +2,7 @@ import { app } from 'electron';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import os from 'os';
-import { BACKEND_PORT } from './constants.js';
+import { BACKEND_PORT, DEFAULT_SERVER_URL } from './constants.js';
 import { isManager, isStandalone } from './edition.js';
 
 // ─── Connection Layer settings (EP-003 Hybrid Client/Server) ─────────────────
@@ -27,9 +27,11 @@ import { isManager, isStandalone } from './edition.js';
 // Mac Standalone: ALWAYS 'local' — there is no server/remote mode for this
 // edition at all (see readConnectionSettings() below, which hard-pins it
 // even against a tampered/legacy settings file on disk).
+// serverUrl: only a Manager client starts with a pre-filled address (constants.js DEFAULT_SERVER_URL); it is replaced by whatever the user
+// saves (an explicitly saved empty value is honoured too, which brings the first-run wizard back). Server edition keeps '' (local mode).
 const DEFAULTS = {
   mode: isStandalone ? 'local' : (isManager ? 'server' : 'local'),
-  serverUrl: '',
+  serverUrl: (isManager && !isStandalone) ? DEFAULT_SERVER_URL : '',
 };
 
 function settingsFile() {

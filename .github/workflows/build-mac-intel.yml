@@ -1,0 +1,97 @@
+name: Build macOS Intel Client (on-demand)
+
+# Manual, on-demand build of "CheckIn Mac" (the Manager/client edition; productName "CheckIn Mac", version from frontend/package.json = 1.1.5)
+# for Intel Macs running macOS 10.15 (Catalina) or newer. appId (com.petshrow.erp.manager) and the packaged name (petshrow-erp-manager) are
+# deliberately UNCHANGED: they decide the bundle identifier, the user-data folder, the Keychain/update-cache names and the Manager edition
+# detection (frontend/electron/edition.js), so settings left on a Mac by the previous app keep working:
+#   npm run electron:build:manager:mac:intel   (frontend/electron-builder.mac-intel.json - Electron 32.3.3, x64 only, minimumSystemVersion 10.15.0)
+# Electron 27+ no longer runs on macOS 10.13 / 10.14 (Electron breaking-changes, 27.0) and Electron 33+ needs macOS 11+, so 32.x is the newest
+# line that still runs on Catalina. For High Sierra / Mojave use the separate Legacy job in build.yml (Electron 26.6.10) or the web client.
+# workflow_dispatch only: never fires on push / PR / release and never competes with the jobs in build.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref (tag/branch/sha) to build'
+        required: true
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  build-macos-intel:
+    name: Build macOS Intel Client (Electron 32.3.3, macOS 10.15+)
+    runs-on: macos-15-intel
+
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Checkout requested ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build macOS Intel client (assets gate -> vite build --mode manager -> electron-builder)
+        working-directory: frontend
+        # Artifacts are intentionally UNSIGNED and NOT notarized (no Apple credentials configured); Gatekeeper will ask for
+        # "Open" on first launch. CSC_IDENTITY_AUTO_DISCOVERY=false stops electron-builder from picking up a local identity.
+        run: npm run electron:build:manager:mac:intel
+
+      - name: Inspect packaged app (arch, minimum macOS, Electron runtime, edition, default server)
+        working-directory: frontend
+        run: |
+          set -e
+          APP_DIR=$(find ../dist-electron-mac-intel -type d -name "*.app" -not -path "*/Contents/*" | head -n1)
+          [ -n "$APP_DIR" ] || { echo "FAIL: no .app bundle produced"; exit 1; }
+          echo "App bundle: $APP_DIR"
+          [ "$(basename "$APP_DIR")" = "CheckIn Mac.app" ] && echo "OK: bundle is CheckIn Mac.app" || { echo "FAIL: bundle is '$(basename "$APP_DIR")', expected 'CheckIn Mac.app'"; exit 1; }
+          BUNDLE_ID=$(plutil -extract CFBundleIdentifier raw "$APP_DIR/Contents/Info.plist")
+          [ "$BUNDLE_ID" = "com.petshrow.erp.manager" ] && echo "OK: CFBundleIdentifier unchanged ($BUNDLE_ID)" || { echo "FAIL: CFBundleIdentifier is '$BUNDLE_ID'"; exit 1; }
+          MIN_OS=$(plutil -extract LSMinimumSystemVersion raw "$APP_DIR/Contents/Info.plist")
+          [ "$MIN_OS" = "10.15.0" ] && echo "OK: LSMinimumSystemVersion is 10.15.0" || { echo "FAIL: LSMinimumSystemVersion is '$MIN_OS', expected 10.15.0"; exit 1; }
+          file "$APP_DIR/Contents/MacOS/"* | grep -q "x86_64" && echo "OK: main binary is x86_64" || { echo "FAIL: main binary is not x86_64"; exit 1; }
+          FW_PLIST="$APP_DIR/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/Info.plist"
+          FW_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$FW_PLIST")
+          [ "$FW_VER" = "32.3.3" ] && echo "OK: bundled Electron Framework is 32.3.3" || { echo "FAIL: Electron Framework is '$FW_VER', expected 32.3.3"; exit 1; }
+          FW_BIN="$APP_DIR/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework"
+          file "$FW_BIN" | grep -q "x86_64" && echo "OK: Electron Framework is x86_64" || { echo "FAIL: Electron Framework is not x86_64"; exit 1; }
+          echo "Electron Framework load command (minos):"; otool -l "$FW_BIN" | grep -A4 -E "LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX" | head -12 || true
+          if [ -e "$APP_DIR/Contents/Resources/backend" ]; then echo "FAIL: a Manager client must not bundle backend/"; exit 1; else echo "OK: no backend bundled"; fi
+          npx asar extract "$APP_DIR/Contents/Resources/app.asar" /tmp/asar-mac-intel
+          NAME=$(node -e "console.log(require('/tmp/asar-mac-intel/package.json').name)")
+          [ "$NAME" = "petshrow-erp-manager" ] && echo "OK: packaged name is $NAME (Manager edition)" || { echo "FAIL: packaged name is '$NAME'"; exit 1; }
+          PKG_VER=$(node -e "console.log(require('/tmp/asar-mac-intel/package.json').version)")
+          SRC_VER=$(node -e "console.log(require('./package.json').version)")
+          [ "$PKG_VER" = "$SRC_VER" ] && [ "$PKG_VER" = "1.1.5" ] && echo "OK: packaged version is $PKG_VER" || { echo "FAIL: packaged version '$PKG_VER', source '$SRC_VER', expected 1.1.5"; exit 1; }
+          grep -rq "DEFAULT_SERVER_URL" /tmp/asar-mac-intel/electron && echo "OK: default server address constant present" || { echo "FAIL: DEFAULT_SERVER_URL missing"; exit 1; }
+          # The renderer bundle is built with VITE_EDITION=manager (frontend/.env.manager, tracked in Git). Informational only: the string
+          # check below cannot prove the flag, it only fails when the renderer was clearly built without it.
+          grep -rlq "manager" "$APP_DIR/Contents/Resources/frontend/dist/assets" && echo "OK: renderer bundle references the manager edition" || { echo "FAIL: manager edition not found in renderer bundle"; exit 1; }
+
+      - name: Report signing status (never faked)
+        run: |
+          echo "Signing: NOT VERIFIED - unsigned artifact"
+          echo "Notarization: NOT VERIFIED - no Apple credentials configured"
+          APP_DIR=$(find dist-electron-mac-intel -type d -name "*.app" -not -path "*/Contents/*" | head -n1)
+          codesign -dv "$APP_DIR" 2>&1 || echo "(informational only: expected to show 'not signed')"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkin-mac-1.1.5-intel-electron-32.3.3
+          path: |
+            dist-electron-mac-intel/*.dmg
+            dist-electron-mac-intel/*.zip
+          if-no-files-found: error

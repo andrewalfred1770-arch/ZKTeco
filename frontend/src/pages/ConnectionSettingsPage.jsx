@@ -84,7 +84,7 @@ function BrowserConnectionView() {
         <div className="card p-5 flex flex-col gap-3">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>
             <Globe style={{ width: 16, height: 16, color: 'var(--accent)' }} />
-            خادم PETSHROW
+            خادم CheckIn
           </h3>
           <p style={{ fontSize: 12, color: 'var(--text-3)' }}>
             نسخة الويب متصلة دائماً بالخادم الذي قدّم هذه الصفحة — لا يمكن تغييره من هنا.
@@ -296,8 +296,8 @@ function LanAddressCard() {
 
       {info.status === 'ok' && !configured && (
         <div style={{ ...note, color: '#f59e0b' }}>
-          عنوان الخادم الحالي على الشبكة: <span style={mono}>{info.activeAddress}</span> — لكن لا يوجد عنوان HTTPS مُعدّ لوكيل الاتصال (CORS_ORIGINS) على هذا الجهاز،
-          لذلك لا يمكن عرض رابط جاهز للمشاركة. {info.proxy.state === 'conflicting' ? 'القائمة تحتوي على أكثر من منفذ HTTPS.' : ''}
+          عنوان الخادم الحالي على الشبكة: <span style={mono}>{info.activeAddress}</span> — لكن لا يوجد عنوان (HTTP على شبكة محلية أو HTTPS) مُعدّ لوكيل الاتصال (CORS_ORIGINS) على هذا الجهاز،
+          لذلك لا يمكن عرض رابط جاهز للمشاركة. {info.proxy.state === 'conflicting' ? 'القائمة تحتوي على أكثر من منفذ أو بروتوكول (مثل HTTP وHTTPS معًا).' : ''}
         </div>
       )}
 
@@ -313,7 +313,7 @@ function LanAddressCard() {
               <button className="btn-secondary text-xs" onClick={() => copy(c.url || c.address)}>نسخ</button>
             </div>
           ))}
-          {!configured && <div style={note}>لا يوجد عنوان HTTPS مُعدّ لوكيل الاتصال، لذلك تظهر العناوين بدون منفذ.</div>}
+          {!configured && <div style={note}>لا يوجد عنوان (HTTP أو HTTPS) مُعدّ لوكيل الاتصال، لذلك تظهر العناوين بدون منفذ.</div>}
         </>
       )}
 
@@ -330,7 +330,8 @@ function LanAddressCard() {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
         {info.listening === true && <span style={note}>✔ المنفذ يستجيب على هذا الجهاز نفسه.</span>}
-        {info.listening === false && <span style={{ ...note, color: '#f87171' }}>✖ لا يوجد برنامج يستجيب على هذا العنوان والمنفذ على هذا الجهاز — وكيل HTTPS غير مشغّل أو يستمع على عنوان آخر.</span>}
+        {info.listening === false && <span style={{ ...note, color: '#f87171' }}>✖ لا يوجد برنامج يستجيب على هذا العنوان والمنفذ على هذا الجهاز — وكيل الاتصال غير مشغّل أو يستمع على عنوان آخر.</span>}
+        {info.plainHttp && <span style={{ ...note, color: '#f59e0b' }}>الرابط الظاهر يستخدم HTTP بلا تشفير: يمكن لأي جهاز على الشبكة قراءة بيانات الحضور والرواتب أثناء انتقالها. استخدمه على شبكة موثوقة فقط.</span>}
         <span style={note}>لم يتم التحقق من الوصول من أجهزة أخرى. قد يمنعه جدار الحماية أو الراوتر أو عزل الأجهزة في الواي فاي أو قائمة العناوين المسموحة.</span>
         <span style={note}>
           <strong>localhost</strong> والمنفذ الداخلي ({info.localOnly.backendUrl}) يعملان على هذا الجهاز فقط ولا يُشاركان مع أحد.

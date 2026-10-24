@@ -1,0 +1,61 @@
+{
+  "appId": "com.petshrow.erp.manager",
+  "productName": "CheckIn Mac",
+  "copyright": "© 2026 PETSHROW ERP",
+  "asar": true,
+  "asarUnpack": ["assets/**"],
+  "compression": "normal",
+
+  "electronVersion": "32.3.3",
+
+  "extraMetadata": {
+    "name": "petshrow-erp-manager"
+  },
+
+  "mac": {
+    "target": [
+      { "target": "dmg", "arch": ["x64"] },
+      { "target": "zip", "arch": ["x64"] }
+    ],
+    "icon": "assets/icon.png",
+    "category": "public.app-category.business",
+    "minimumSystemVersion": "10.15.0",
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "artifactName": "CheckIn-Mac-${version}-${arch}.${ext}",
+    "extraResources": [
+      {
+        "from": "dist",
+        "to": "frontend/dist",
+        "filter": ["**/*"]
+      }
+    ]
+  },
+
+  "dmg": {
+    "artifactName": "CheckIn-Mac-${version}-${arch}.${ext}"
+  },
+
+  "files": [
+    "electron.js",
+    "electron/**/*",
+    "preload.cjs",
+    "splashPreload.cjs",
+    "assets/**/*",
+    "!assets/*.psd",
+    "!**/*.map"
+  ],
+
+  "directories": {
+    "buildResources": "assets",
+    "output": "../dist-electron-mac-intel"
+  },
+
+  "publish": [
+    {
+      "provider": "generic",
+      "url": "https://updates.petshrow.local/erp-manager/",
+      "channel": "latest"
+    }
+  ]
+}

@@ -51,6 +51,11 @@ export const FRONTEND_URL = `http://localhost:${VITE_PORT}`;  // dev only
 // API-contract change (must stay in sync with backend/src/apiVersion.js).
 export const REQUIRED_API_VERSION = 1;
 
+// Default server address pre-filled for a MANAGER client that has no saved connection yet. It is only a starting value: the user can change it
+// from the Connection Settings page (or the "change server" action on the connecting screen), and whatever is saved there always wins.
+// Plain HTTP on the trusted LAN (no certificate to install or renew) - traffic is not encrypted. Server/Standalone editions never use it.
+export const DEFAULT_SERVER_URL = 'http://192.168.1.145:8080';
+
 // Exit status the backend uses when it deliberately refuses to start because its
 // database is not in a verified-good state (failed migration / unexpected
 // bootstrap failure). Restarting it would only fail identically, so backend.js

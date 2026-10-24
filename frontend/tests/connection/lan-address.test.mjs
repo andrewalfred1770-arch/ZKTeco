@@ -155,3 +155,71 @@ test('wiring: IPC is trusted-sender only, read-only, edition-gated; the UI shows
   for (const must of ['نفس الشبكة المحلية', 'لم يتم التحقق من الوصول من أجهزة أخرى', 'لا يثبّت شهادات ولا يعطّل التحقق', 'بدون تسجيل دخول', 'navigator.clipboard.writeText']) assert.ok(page.includes(must), must);
   for (const f of [mod, page, read('src', 'components', 'ConnectionWizard.jsx')]) assert.doesNotMatch(f, /192\.168\.1\.(145|10|120)\b/);
 });
+
+// ─── plain-HTTP LAN proxy support (http://<private-LAN-IPv4>:<port>) ───────────────────────────────────────────────────────────────────
+test('http: a private-LAN http origin with a port gives an http share URL and is flagged as plain http', () => {
+  const info = L.describeLanAddress({ nets: { Ethernet: [nic('192.168.1.20')] }, envText: 'CORS_ORIGINS=http://192.168.1.20:8080\n' });
+  assert.equal(info.status, 'ok');
+  assert.deepEqual([info.proxy.state, info.proxy.scheme, info.proxy.port], ['configured', 'http', 8080]);
+  assert.equal(info.shareUrl, 'http://192.168.1.20:8080');
+  assert.equal(info.plainHttp, true);
+  assert.equal(info.originMismatch, false);
+});
+
+test('http: default port 80 is omitted from the URL; https:443 still is too', () => {
+  assert.equal(L.describeLanAddress({ nets: { Ethernet: [nic('192.168.1.20')] }, envText: 'CORS_ORIGINS=http://192.168.1.20\n' }).shareUrl, 'http://192.168.1.20');
+  const https = L.describeLanAddress({ nets: { Ethernet: [nic('192.168.1.20')] }, envText: 'CORS_ORIGINS=https://192.168.1.20\n' });
+  assert.equal(https.shareUrl, 'https://192.168.1.20');
+  assert.equal(https.plainHttp, false);
+});
+
+test('http: loopback, names, public hosts, wildcards, credentials, paths and other schemes are never used', () => {
+  const bad = [
+    'http://localhost:5000', 'http://127.0.0.1:5100', 'http://server-pc:8080', 'http://printer.local:8080', 'http://8.8.8.8:8080',
+    'http://192.168.1.20.evil.com:8080', 'http://192.168.1.*:8080', 'http://u:p@192.168.1.20:8080', 'http://192.168.1.20:8080/path',
+    'http://192.168.1.20:8080/', 'http://192.168.1.20:8080?x=1', 'ftp://192.168.1.20:8080', 'http://[::1]:8080', 'http://169.254.1.1:8080',
+  ];
+  for (const o of bad) {
+    const info = L.describeLanAddress({ nets: { Ethernet: [nic('192.168.1.20')] }, envText: `CORS_ORIGINS=${o}\n` });
+    assert.equal(info.proxy.state, 'not-configured', o);
+    assert.equal(info.shareUrl, null, o);
+  }
+});
+
+test('http: two different scheme/port pairs are ambiguous - no URL is guessed (e.g. https:443 plus http:8080)', () => {
+  for (const env of ['https://192.168.1.20,http://192.168.1.20:8080', 'http://192.168.1.20:8080,http://192.168.1.20:8081', 'http://192.168.1.20:8443,https://192.168.1.20:8443']) {
+    const info = L.describeLanAddress({ nets: { Ethernet: [nic('192.168.1.20')] }, envText: `CORS_ORIGINS=${env}\n` });
+    assert.equal(info.proxy.state, 'conflicting', env);
+    assert.equal(info.shareUrl, null, env);
+  }
+});
+
+test('http: the live address is recomputed; an address missing from CORS_ORIGINS is reported as a mismatch, never edited', () => {
+  const info = L.describeLanAddress({ nets: { Ethernet: [nic('10.0.0.57')] }, envText: 'CORS_ORIGINS=http://192.168.1.20:8080\n' });
+  assert.equal(info.shareUrl, 'http://10.0.0.57:8080');
+  assert.equal(info.originMismatch, true);
+  assert.deepEqual(info.proxy.origins, ['http://192.168.1.20:8080']);
+});
+
+test('http: parseHttpsOrigins keeps returning https origins only, in the old shape', () => {
+  assert.deepEqual(L.parseHttpsOrigins('CORS_ORIGINS=http://192.168.1.20:8080,https://192.168.1.20:8443\n'), [{ origin: 'https://192.168.1.20:8443', host: '192.168.1.20', port: 8443 }]);
+  assert.deepEqual(L.parseProxyOrigins('CORS_ORIGINS=http://192.168.1.20:8080,https://192.168.1.20:8443\n').map((o) => o.scheme), ['http', 'https']);
+});
+
+test('http: getLanInfo probes the configured http port (TCP connect only)', async () => {
+  const calls = [];
+  const probe = async (a, p) => { calls.push([a, p]); return true; };
+  const info = await L.getLanInfo({ nets: { Ethernet: [nic('192.168.1.20')] }, envText: 'CORS_ORIGINS=http://192.168.1.20:8080', probe });
+  assert.deepEqual(calls, [['192.168.1.20', 8080]]);
+  assert.equal(info.listening, true);
+});
+
+test('default server address: only a Manager client is pre-filled; it stays a plain value the user can overwrite; no UI file hardcodes it', () => {
+  const consts = read('electron', 'constants.js');
+  const m = consts.match(/export const DEFAULT_SERVER_URL = '(http:\/\/[0-9.]+:\d+)';/);
+  assert.ok(m, 'DEFAULT_SERVER_URL is a plain http://<ip>:<port> constant');
+  const cs = read('electron', 'connectionSettings.js');
+  assert.match(cs, /serverUrl: \(isManager && !isStandalone\) \? DEFAULT_SERVER_URL : ''/);
+  assert.match(cs, /return \{ \.\.\.DEFAULTS, \.\.\.raw \};/, 'a saved value (even an empty one) overrides the default');
+  assert.match(read('electron', 'ipc.js'), /isManager && patch\.serverUrl && isSelfPointingServerUrl\(patch\.serverUrl\)/, 'the self-pointing guard is untouched');
+});
