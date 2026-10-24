@@ -231,8 +231,12 @@ async function runRebuild(jobId, io) {
         }
 
         try {
-          await attendanceEngine.processDate(d.toDate(), emp.id);
-          logger.info(`[ATTENDANCE-RECALC] jobId=${jobId} employee=${emp.id} date=${d.format('YYYY-MM-DD')}`);
+          const pr = await attendanceEngine.processDate(d.toDate(), emp.id);
+          if (pr && pr.skipped === 'closed-evidence-loss') {
+            logger.warn(`[REBUILD-SKIP-CLOSED] jobId=${jobId} employee=${emp.id} date=${d.format('YYYY-MM-DD')} payroll=${pr.payrollStatus} — stored punches kept (raw punches missing)`);
+          } else {
+            logger.info(`[ATTENDANCE-RECALC] jobId=${jobId} employee=${emp.id} date=${d.format('YYYY-MM-DD')}`);
+          }
         } catch (err) {
           errorCount++;
           logger.error(`[REBUILD-ERROR] jobId=${jobId} employee=${emp.id} date=${d.format('YYYY-MM-DD')} attendance: ${err.message}`);

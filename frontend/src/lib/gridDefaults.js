@@ -138,6 +138,16 @@ export const ENTERPRISE_GRID_PROPS = {
  * (LARGE includes flex:1 — drop it when spreading onto a `pinned` column,
  * since AG Grid ignores flex on pinned columns.)
  */
+// Floor a column's minWidth at what its header label needs (text + sort/menu icons), so sizeColumnsToFit can
+// never squeeze a header into its neighbour. The header-text no-clip rule in index.css stays as is: this only
+// widens the floor, it never shortens a column or changes its order, sorting, filter or data.
+export const withHeaderFloor = (col) => {
+  const label = typeof col.headerName === 'string' ? col.headerName.trim() : '';
+  if (!label) return col;
+  const minWidth = Math.max(col.minWidth || 0, Math.ceil(label.length * 8 + 40));
+  return { ...col, minWidth, ...(col.width ? { width: Math.max(col.width, minWidth) } : {}) };
+};
+
 export const COL_TINY   = { width: 70,  maxWidth: 90,  minWidth: 60 };
 export const COL_MEDIUM = { width: 110, minWidth: 100 };
 export const COL_LARGE  = { width: 220, minWidth: 180, flex: 1 };

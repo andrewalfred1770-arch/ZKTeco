@@ -14,11 +14,14 @@
  *   - row has a check-out only                -> punches earlier than it are unaccounted for (a missing check-in).
  * An HR-corrected time inside the raw punches' span is not a conflict (the correction is the point of the lock).
  *
- * Arrival awareness: when the row already carries HR times, HR has looked at the day, so a punch that was STORED BEFORE the
- * row was last written (createdAt <= row.updatedAt) was seen and deliberately overridden (e.g. check-in moved later,
- * check-out trimmed) — it is not reported. Only punches that arrived AFTER the last write can be news to HR. A row with
- * no times at all (absent beside a punch) is reported whatever the arrival time. Punches given as bare times, or rows
- * without updatedAt, carry no arrival information and are treated conservatively (reported).
+ * Arrival awareness: when HR has edited the row's PUNCH TIMES, HR has looked at the day, so a punch that was STORED BEFORE that
+ * review (createdAt <= row.timesReviewedAt) was seen and deliberately overridden (e.g. check-in moved later, check-out
+ * trimmed) — it is not reported. Only punches that arrived AFTER the last punch-time review can be news to HR. The review time
+ * is the newest audited check-in/check-out change of the row (utils/manualEditAudit.loadTimesReviewedAt) — NOT the row's
+ * updatedAt, which any unrelated write (manual penalty, absence type, status, adjustment approval) also bumps and which
+ * therefore used to make an unreviewed punch disappear from the warning. A row with no times at all (absent beside a punch)
+ * is reported whatever the arrival time. Punches given as bare times, or rows with no recorded punch-time review, carry no
+ * review information and are treated conservatively (reported).
  * Pure, minute precision, no I/O.
  */
 
@@ -32,14 +35,14 @@ function normPunch(p) {
   return { t: minuteOf(p), created: null };
 }
 
-/** @param {{checkIn?:Date|null, checkOut?:Date|null, updatedAt?:Date|null}} row  @param {Array} punches  @returns {number} */
+/** @param {{checkIn?:Date|null, checkOut?:Date|null, timesReviewedAt?:Date|null}} row  @param {Array} punches  @returns {number} */
 function countUnreflectedPunches(row, punches) {
   const list = (punches || []).map(normPunch).filter((p) => Number.isFinite(p.t));
   if (!list.length) return 0;
   const ci = row && row.checkIn ? minuteOf(row.checkIn) : null;
   const co = row && row.checkOut ? minuteOf(row.checkOut) : null;
   if (ci == null && co == null) return list.length;                       // absent beside a punch: always reported
-  const written = row && row.updatedAt ? new Date(row.updatedAt).getTime() : null;
+  const written = row && row.timesReviewedAt ? new Date(row.timesReviewedAt).getTime() : null;
   const isNews = (p) => written == null || p.created == null || p.created > written;
   let outside;
   if (ci != null && co != null) { const lo = Math.min(ci, co), hi = Math.max(ci, co); outside = (p) => p.t < lo || p.t > hi; }

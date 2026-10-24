@@ -33,12 +33,14 @@ const DEFAULT_BACKEND_PORT = isStandalone ? 33071 : 5000;
 export const BACKEND_PORT = process.env.PETSHROW_TEST_BACKEND_PORT
   ? Number(process.env.PETSHROW_TEST_BACKEND_PORT)
   : DEFAULT_BACKEND_PORT;
-export const APP_NAME     = 'PETSHROW ERP';
+export const APP_NAME     = 'PETSHROW ERP';   // identity: persistent data folder name - never shown to users, never renamed
+// The name users SEE (tray tooltip, window title). No version number, ever.
+export const DISPLAY_NAME = 'CheckIn';
 // Temporary build marker — bump when re-packaging so Runtime Verification can
 // prove the EXE is loading THIS build and not a stale cached app.asar/dist.
 // Printed in [Startup Diagnostics] below and surfaced in the renderer console
 // + sidebar (see branding.js BRAND.buildMarker / Layout.jsx).
-export const BUILD_MARKER = 'BUILD: 2026-10-14-release-10.10.10';
+export const BUILD_MARKER = 'BUILD: 2026-10-22-checkin';
 export const HEALTH_URL   = `http://localhost:${BACKEND_PORT}/api/health`;
 export const FRONTEND_URL = `http://localhost:${VITE_PORT}`;  // dev only
 

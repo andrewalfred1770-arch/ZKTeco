@@ -6,10 +6,14 @@ const { resolveActor } = require('../utils/auditActor');
 const { writeAudit } = require('../utils/manualEditAudit');
 const actorOf = (req) => resolveActor(req, {}, { name: 'مدير النظام', role: 'admin' });
 const bcrypt = require('bcryptjs');
+const { redactEmployeeForViewer } = require('../middleware/employeeAccess');
+const { validatePassword, BCRYPT_COST } = require('../utils/passwordPolicy');
+const { deactivateEmployeeAccount } = require('../utils/accountLifecycle');
 const { authenticate, authorize } = require('../middleware/auth');
 const { relinkAttendanceLogs } = require('../services/relinkService');
 const { syncStoredPayroll } = require('../engines/payrollEngine');
 const { deleteDeviceUser } = require('../services/zktecoService');
+const { refuseDeviceOps } = require('../middleware/deviceOpsGuard');
 const { actorFromReq } = require('../utils/deviceAudit');
 const logger = require('../utils/logger');
 const { parseMoney } = require('../utils/numeric');
@@ -55,17 +59,9 @@ function validateRefFields(body) {
 
 router.use(authenticate);
 
-// Phase 31 (F1 fix — Phase 25 audit, Critical): these two GETs previously had
-// no role/ownership check beyond "is this a valid logged-in user" — any
-// employee-role account (a real, app-creatable account type) could list
-// every employee's salary or fetch any colleague's record by ID. The full
-// roster has no legitimate "self" reading, so it's admin/hr only. The
-// single-employee lookup keeps working for an employee-role caller ONLY
-// when the id resolves to their own linked Employee row (self-service
-// viewing); anyone else's id — or no linked employee at all — gets 403,
-// never a silent empty/redacted response, so an authorization gap here is
-// never mistaken for "no such employee".
-router.get('/', authorize('admin', 'hr'), async (req, res) => {
+// Owner decision: every user of the application may VIEW employees (incl. salary). In the intended no-login deployment nothing is withheld;
+// an authenticated non-staff caller (AUTH_ENABLED=true) gets the row without personal identifiers / the linked login account.
+router.get('/', async (req, res) => {
   try {
     const { branchId, departmentId, status } = req.query;
     const where = {};
@@ -77,20 +73,11 @@ router.get('/', authorize('admin', 'hr'), async (req, res) => {
       include: incList,
       orderBy: { name: 'asc' },
     });
-    res.json(employees);
+    res.json(employees.map((e) => redactEmployeeForViewer(e, req)));
   } catch (err) {
     sendError(res, err);
   }
 });
-
-async function assertEmployeeReadAllowed(req, res, employeeId) {
-  if (!require('../middleware/auth').AUTH_ENABLED) return true;
-  if (['admin', 'hr'].includes(req.user.role)) return true;
-  const own = await prisma.employee.findUnique({ where: { userId: req.user.id }, select: { id: true } });
-  if (own?.id === employeeId) return true;
-  res.status(403).json({ error: 'غير مخول لهذا الإجراء' });
-  return false;
-}
 
 // NOTE: static GET routes must be registered BEFORE router.get('/:id') — Express matches
 // in registration order, so a later '/import-template' was captured by '/:id'
@@ -107,13 +94,12 @@ router.get('/import-template', async (_req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    if (!(await assertEmployeeReadAllowed(req, res, id))) return;
     const emp = await prisma.employee.findUnique({
       where: { id },
       include: { ...inc, user: { select: { id: true, username: true, role: true, active: true } } },
     });
     if (!emp) return res.status(404).json({ error: 'Employee not found' });
-    res.json(emp);
+    res.json(redactEmployeeForViewer(emp, req));
   } catch (err) {
     sendError(res, err);
   }
@@ -234,19 +220,24 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
     const identity = resolveUnifiedNumber(code, zkUserId);
     if (identity.error) return res.status(400).json({ error: identity.error });
 
-    let userId = null;
-    if (createUser && username && password) {
-      const hashed = await bcrypt.hash(password, 10);
-      const user = await prisma.user.create({
-        data: { username, password: hashed, name, role: 'employee' },
-      });
-      userId = user.id;
+    // F5: the login account is validated BEFORE anything is written, hashed with the shared cost, and created in the SAME transaction as
+    // the employee row below — a failed employee insert rolls the account back, so no orphaned account (and no manual cleanup) remains.
+    let hashed = null;
+    if (createUser) {
+      const uname = typeof username === 'string' ? username.trim() : '';
+      if (!/^[A-Za-z0-9._-]{3,64}$/.test(uname)) return res.status(400).json({ error: 'اسم المستخدم يجب أن يكون 3-64 حرفاً (أحرف إنجليزية أو أرقام أو . _ -)' });
+      const pwErr = validatePassword(password, uname);
+      if (pwErr) return res.status(400).json({ error: pwErr });
+      hashed = await bcrypt.hash(password, BCRYPT_COST);
     }
 
     let emp;
     try {
       emp = await withNumberRetry(() => prisma.$transaction(async (tx) => {
         await assertActiveNumberAvailable(tx, identity.value);
+        const userId = hashed
+          ? (await tx.user.create({ data: { username: username.trim(), password: hashed, name, role: 'employee' }, select: { id: true } })).id
+          : null;
         return tx.employee.create({
           data: {
             name, zkUserId: identity.value, code: identity.value, phone, email, nationalId, position,
@@ -263,9 +254,6 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
         });
       }));
     } catch (err) {
-      // The login account created above must not outlive a failed employee insert
-      // (it would block the retry with a "username taken" error).
-      if (userId) await prisma.user.delete({ where: { id: userId } }).catch(() => {});
       if (err.statusCode === 409) return res.status(409).json({ error: err.message, code: 'EMPLOYEE_NUMBER_CONFLICT' });
       throw err;
     }
@@ -388,6 +376,8 @@ router.put('/:id', authorize('admin', 'hr'), async (req, res) => {
           },
           include: inc,
         });
+        // F4: stopping an employee also disables their login account, in the same transaction.
+        if (status === false) await deactivateEmployeeAccount(tx, updatedEmployee.userId);
         if (salaryChange) {
           salaryChanged = true;
           const actor = actorOf(req);
@@ -440,9 +430,13 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
     // PUT /:id) — default to today, same "default to today" convention used
     // elsewhere when no explicit date is supplied by the caller.
     const effectiveStopDate = req.body?.effectiveStopDate ? new Date(req.body.effectiveStopDate) : new Date();
-    await prisma.employee.update({
-      where: { id: parseInt(req.params.id) },
-      data: { status: false, effectiveStopDate },
+    await prisma.$transaction(async (tx) => {
+      const stopped = await tx.employee.update({
+        where: { id: parseInt(req.params.id) },
+        data: { status: false, effectiveStopDate },
+        select: { userId: true },
+      });
+      await deactivateEmployeeAccount(tx, stopped.userId);   // F4: the login account is disabled with the employee
     });
     res.json({ message: 'Employee deactivated' });
   } catch (err) {
@@ -509,6 +503,9 @@ router.post('/:id/delete-confirm', authorize('admin'), async (req, res) => {
 
   const { includeDevice = false } = req.body;
 
+  // A scheduler-less (LAN) instance never opens a device session: refuse BEFORE anything is deleted (no half-done delete).
+  if (includeDevice && refuseDeviceOps(req, res)) return;
+
   try {
     const emp = await prisma.employee.findUnique({
       where: { id },
@@ -548,10 +545,13 @@ router.post('/:id/delete-confirm', authorize('admin'), async (req, res) => {
         prisma.advance.deleteMany({ where: { employeeId: id } }),
         // Hard-delete the employee row
         prisma.employee.delete({ where: { id } }),
+        // F4: the employee's login account is NOT deleted (history may reference it) but is disabled, so it can no longer authenticate.
+        ...(Number.isInteger(emp.userId) ? [prisma.user.updateMany({ where: { id: emp.userId, role: 'employee', active: true }, data: { active: false } })] : []),
       ]);
       mode = 'hard_delete';
     } else {
       await prisma.employee.update({ where: { id }, data: { status: false } });
+      await deactivateEmployeeAccount(prisma, emp.userId);   // F4
       // Audit log — employee still exists so FK is valid
       await prisma.manualEditAuditLog.create({
         data: {

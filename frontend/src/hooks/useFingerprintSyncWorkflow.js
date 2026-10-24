@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { getSocket, subscribeConnectionStatus } from '../lib/socket';
 import api, { LONG_OP } from '../lib/api';
+import { busyMessage, DISABLED_MSG } from '../lib/syncResultSummary';
 
 /**
  * useFingerprintSyncWorkflow — drives the "Download Fingerprints" modal off
@@ -138,12 +139,11 @@ export function useFingerprintSyncWorkflow() {
       if (list.length > 0 && list.every((r) => r?.skipped)) {
         // Two different reasons used to share one "busy" message: a disabled
         // or missing device is not a running sync.
+        // The busy sentence names the holder and its start time when the server reported them (heldBy / heldSince).
         const allBusy = list.every((r) => r?.skipReason !== 'DEVICE_DISABLED');
         setState((s) => ({
           ...s, phase: 'error',
-          error: allBusy
-            ? 'الجهاز مشغول بمزامنة أخرى قيد التنفيذ حالياً — حاول مرة أخرى بعد قليل'
-            : 'الجهاز غير مفعّل أو غير موجود — فعّل الجهاز ثم أعد المحاولة',
+          error: allBusy ? busyMessage(list) : DISABLED_MSG,
         }));
         return;
       }

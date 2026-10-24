@@ -60,7 +60,7 @@ const numStyle = { fontVariantNumeric: 'tabular-nums', direction: 'ltr', unicode
 
 const thBase = {
   border: `1px solid ${C.border}`, padding: '1.5mm 4mm',
-  background: 'linear-gradient(180deg, #F8FBFF, #EDF4FF)', color: C.brandDark,
+  background: 'linear-gradient(180deg, #FFFFFF, #F8FAFC)', color: C.brandDark,
   fontWeight: 700, fontSize: 14, textAlign: 'center',
 };
 const tdLabel = {
@@ -139,7 +139,7 @@ function PayrollTable({ title, accentColor, rows, totalLabel, totalValue, totalC
         ))}
         <tr>
           <td style={{ ...tdLabel, fontWeight: 800, background: totalBg, fontSize: 15.5 }}>{totalLabel}</td>
-          <td dir="ltr" style={{ ...tdAmt, fontWeight: 800, fontSize: 18, background: totalBg, color: totalColor, boxShadow: 'inset 0 3px 5px -3px rgba(15,39,75,0.35)' }}>
+          <td dir="ltr" style={{ ...tdAmt, fontWeight: 800, fontSize: 18, background: totalBg, color: totalColor, boxShadow: 'inset 0 3px 5px -3px rgba(32,40,43,0.35)' }}>
             {fmtMoney(totalValue)}
           </td>
         </tr>
@@ -387,7 +387,7 @@ export default function SalaryCard({ data, showBorder = true }) {
         <SummaryCell label="إجمالي المستحقات" value={fmtMoney(earnTotal)} color={C.success} bg={C.successSoft} />
         <SummaryCell label="إجمالي الخصومات" value={fmtMoney(dedTotal)} color={C.danger} bg={C.dangerSoft} />
         <div style={{
-          flex: 1.4, background: `linear-gradient(135deg, ${C.brandDark}, ${C.brand})`, borderRadius: 10, boxShadow: SHADOW.card,
+          flex: 1.4, background: C.brandDark, borderRadius: 10, boxShadow: SHADOW.card,
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
           padding: '1.5mm', color: '#fff', gap: '0.5mm',
         }}>

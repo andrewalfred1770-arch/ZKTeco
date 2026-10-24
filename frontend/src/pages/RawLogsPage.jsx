@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-quartz.css';
@@ -11,7 +11,7 @@ import { useGridPagination } from '../hooks/useGridPagination';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import { fmtDateTime } from '../lib/formatters';
 import { todayStr } from '../lib/businessDate';
-import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS } from '../lib/gridDefaults';
+import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, withHeaderFloor } from '../lib/gridDefaults';
 import PrintPreviewModal from '../components/PrintPreviewModal';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
@@ -66,7 +66,7 @@ export default function RawLogsPage() {
     {
       field: 'source', headerName: 'المصدر', width: 90,
       cellStyle: { ...NUM, fontSize: '11px', color: 'var(--c-muted)', textAlign: 'center', justifyContent: 'center' } },
-  ], [isNarrow]);
+  ].map(withHeaderFloor), [isNarrow]);
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
   // Perf Fix #4: same stable-identity pattern as PayrollPage/AttendanceDailyPage/

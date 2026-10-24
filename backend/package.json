@@ -1,6 +1,6 @@
 {
   "name": "zkteco-backend",
-  "version": "10.10.10",
+  "version": "1.1.5",
   "description": "ZKTeco Attendance & Payroll Management System - Backend",
   "main": "src/index.js",
   "scripts": {
@@ -24,9 +24,14 @@
     "node-zklib": "^1.1.0",
     "socket.io": "^4.7.4",
     "winston": "^3.11.0",
-    "xlsx": "^0.18.5",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "pdfkit": "^0.14.0",
     "multer": "^1.4.5-lts.1"
+  },
+  "overrides": {
+    "node-cron": {
+      "uuid": "^11.1.1"
+    }
   },
   "devDependencies": {
     "nodemon": "^3.1.0",

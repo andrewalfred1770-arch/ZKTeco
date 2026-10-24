@@ -15,7 +15,7 @@ import { isManager, isStandalone } from './edition.js';
 //                        run in — Manager installs never bundle backend/, so
 //                        a 'local' default would spawn nothing and dead-end.
 // serverUrl: full base URL of the remote backend, e.g.
-//            "http://192.168.1.10:5000" or "https://erp.company.com".
+//            "http://192.168.1.145:8080" or "https://erp.company.com".
 // Persisted the same way updateSettings.js persists Update Center prefs:
 // a small JSON file under userData/config, independent of the DB — it must
 // be readable before the DB/backend even exists yet.

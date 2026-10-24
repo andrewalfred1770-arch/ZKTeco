@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';
@@ -12,7 +12,7 @@ import { fmtMoney } from '../lib/formatters';
 import { todayStr } from '../lib/businessDate';
 import { useTheme } from '../contexts/ThemeContext';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
-import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS } from '../lib/gridDefaults';
+import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, withHeaderFloor } from '../lib/gridDefaults';
 import { fmtDate } from '../lib/formatters';
 import Dialog from '../components/ui/Dialog';
 import NewDeviceUsersPanel, { employeePrefillFromPerson } from '../components/NewDeviceUsersPanel';
@@ -165,7 +165,7 @@ function DeleteInfoModal({ open, info, onClose, onConfirm }) {
 const MONITOR_COLORS = [
   { value: '#f59e0b', label: 'أصفر'   },
   { value: '#ef4444', label: 'أحمر'   },
-  { value: '#2F81F7', label: 'أزرق'   },
+  { value: '#2F81F7', label: 'أزرق'   },   // STORED value (Employee.monitorColor): never re-colour it, existing employees are saved with this exact hex
   { value: '#10b981', label: 'أخضر'   },
   { value: '#a855f7', label: 'بنفسجي' },
   { value: '#f97316', label: 'برتقالي'},
@@ -379,7 +379,7 @@ export default function EmployeesPage() {
       field: 'code', headerName: 'الكود', width: 90, pinned: 'right',
       cellStyle: { fontFamily: 'Consolas, monospace', color: 'var(--c-muted)', fontSize: '11px', letterSpacing: '0.04em' } },
     {
-      field: 'name', headerName: 'اسم الموظف', width: 200, pinned: 'right',
+      field: 'name', headerName: 'اسم الموظف', width: 200, minWidth: 160, pinned: 'right',
       cellStyle: { fontWeight: '700', color: 'var(--c-name)', fontFamily: 'Cairo, sans-serif' } },
     {
       field: 'zkUserId', headerName: 'ZK ID', width: 75, headerClass: 'ag-header-center',
@@ -425,7 +425,7 @@ export default function EmployeesPage() {
       cellRenderer: ({ data }) => (
         <div className="flex items-center gap-2 justify-center h-full">
           <button
-            className="text-blue-400 hover:text-blue-300 text-xs font-medium hover:underline"
+            className="text-accent hover:text-accent text-xs font-medium hover:underline"
             onClick={() => { setEditing(data); setModal(true); }}
           >تعديل</button>
           {data?.status ? (
@@ -446,7 +446,7 @@ export default function EmployeesPage() {
         </div>
       ),
       cellStyle: { justifyContent: 'center' } },
-  ], []);
+  ].map(withHeaderFloor), []);
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF }), []);
 

@@ -15,7 +15,7 @@ const router = require('express').Router();
 const { sendError } = require('../utils/apiError');
 const deviceLogCounts = require('../services/deviceLogCounts');
 const { getPrisma } = require('../utils/prisma');
-const { resolveActor } = require('../utils/auditActor');
+const { resolveActor, hasServerIdentity } = require('../utils/auditActor');
 const moment = require('moment');
 const XLSX = require('xlsx');
 const fs = require('fs');
@@ -25,6 +25,7 @@ const { currentMonthRange } = require('../utils/monthRange');
 const recalcEngine = require('../engines/recalcEngine');
 const { CLOSED_PAYROLL_STATUSES } = require('../engines/payrollEngine');
 const { getConfigDir } = require('../utils/configDir');
+const protection = require('../utils/cleanupProtection');
 
 const prisma = getPrisma();
 router.use(authenticate, authorize('admin'));
@@ -60,6 +61,21 @@ class CleanupProtectedError extends Error {
     this.protectedPayroll = protectedPayroll;
   }
 }
+
+// Protected attendance data (manual edits, manual penalties, human absence metadata, adjustments - utils/cleanupProtection.js) is
+// never deleted. If the rows that qualify for deletion changed between the preview and the delete (a row became protected, or
+// rows appeared), the whole transaction is rolled back with HTTP 409 and the operator must preview again.
+class CleanupDataChangedError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'CleanupDataChangedError';
+    this.statusCode = 409;
+    this.code = 'CLEANUP_DATA_CHANGED';
+  }
+}
+/** Calendar-day bounds for DATE columns (UTC midnight of the calendar day - independent of the server time zone). */
+const dayStart = (m) => new Date(m.format('YYYY-MM-DD'));
+const dailyRange = (f, t) => ({ gte: dayStart(f), lte: dayStart(t) });
 const isClosedStatus = (s) => CLOSED_PAYROLL_STATUSES.includes(String(s || '').toLowerCase());
 
 function summarizeProtected(rows) {
@@ -97,7 +113,7 @@ async function logBlocked(req, range, types, protectedPayroll, message, startedA
       data: {
         fromDate: range.from.toDate(), toDate: range.to.toDate(), dataTypes: JSON.stringify(types || {}),
         status: 'blocked', durationMs: Date.now() - startedAt,
-        executedByName: String((req.user ? resolveActor(req).name : req.body?.executedByName) || '—').trim(),
+        executedByName: String((hasServerIdentity(req) ? resolveActor(req).name : req.body?.executedByName) || '—').trim(),
         notes: `رُفض بسبب مرتبات معتمدة/مدفوعة: ${protectedCountsText(protectedPayroll)} — ${message}`.slice(0, 60000),
       },
     });
@@ -159,17 +175,43 @@ async function analyzeImpact({ f, t, types }) {
   }
 
   let daysAffected = 0;
+  let dailyProtection = null;
   if (types.daily) {
-    counts.daily = await prisma.attendanceDaily.count({
-      where: { date: { gte: f.toDate(), lte: t.toDate() } },
-    });
+    // counts.daily = exactly the rows /execute will delete (unprotected). Protected rows are reported separately and are NEVER deleted.
+    const range = dailyRange(f, t);
+    counts.daily = await prisma.attendanceDaily.count({ where: { date: range, ...protection.unprotectedDailyWhere() } });
     const dailyRows = await prisma.attendanceDaily.findMany({
-      where: { date: { gte: f.toDate(), lte: t.toDate() } },
+      where: { date: range, ...protection.unprotectedDailyWhere() },
       select: { employeeId: true, date: true },
     });
     const dateSet = new Set();
     dailyRows.forEach(r => { employeeIds.add(r.employeeId); dateSet.add(moment(r.date).format('YYYY-MM-DD')); });
     daysAffected = dateSet.size;
+
+    const protectedRows = await prisma.attendanceDaily.findMany({
+      where: { date: range, ...protection.protectedDailyWhere() },
+      select: protection.PROTECTION_SELECT,
+    });
+    const summary = protection.summarizeProtectedRows(protectedRows);
+    const ids = protectedRows.map(r => r.id);
+    let manualEditAuditLogs = 0;
+    for (let i = 0; i < ids.length; i += 1000) {
+      manualEditAuditLogs += await prisma.manualEditAuditLog.count({ where: { attendanceDailyId: { in: ids.slice(i, i + 1000) } } });
+    }
+    const adjustments = summary.overlapping.adjustment;   // one adjustment per daily row (unique FK)
+    const adjustmentAuditLogs = adjustments
+      ? await prisma.adjustmentAuditLog.count({ where: { adjustment: { date: range } } })
+      : 0;
+    dailyProtection = {
+      protectedRows: summary.total,                 // unique rows kept (never double counted)
+      byPrimaryCategory: summary.byPrimary,         // sums to protectedRows
+      overlappingCategories: summary.overlapping,   // a row may appear in several - do NOT add these up
+      adjustments, adjustmentAuditLogs, manualEditAuditLogs,   // all preserved
+    };
+    counts.dailyProtected = summary.total;
+    if (summary.total > 0) {
+      warnings.push(`🛡️ ${summary.total} سجل حضور يحتوي على بيانات يدوية (تعديل يدوي/خصم يدوي/سبب غياب/تسوية) — محمي ولن يُحذف، مع ${adjustments} تسوية و${adjustmentAuditLogs} سجل تدقيق تسوية.`);
+    }
   }
 
   const monthsOr = months.map(({ month, year }) => ({ month, year }));
@@ -214,6 +256,8 @@ async function analyzeImpact({ f, t, types }) {
     // of recalcScope() falling back to its "every active employee" default.
     employeeIds: Array.from(employeeIds),
     currentPeriodOverlap: overlap, warnings,
+    // Protected attendance (manual data) that /execute keeps; null when 'daily' is not selected.
+    dailyProtection,
     // `finalizedPayroll` (the protected rows) is kept for existing consumers; it is informational only now — it can no longer be confirmed away.
     finalizedPayroll, protectedPayroll, ...verdict, canExecute: !verdict.blocked,
   };
@@ -241,8 +285,9 @@ async function buildBackupWorkbook({ f, t, months, types }) {
   }
 
   if (types.daily) {
+    // Only the rows /execute will delete (unprotected). Protected rows are not deleted, so they are not in this file.
     const rows = await prisma.attendanceDaily.findMany({
-      where: { date: { gte: f.toDate(), lte: t.toDate() } },
+      where: { date: dailyRange(f, t), ...protection.unprotectedDailyWhere() },
       include: { employee: { select: { name: true, code: true } } },
       orderBy: { date: 'asc' },
     });
@@ -250,6 +295,8 @@ async function buildBackupWorkbook({ f, t, months, types }) {
       const ws = XLSX.utils.json_to_sheet(rows.map(r => ({
         ID: r.id, 'كود الموظف': r.employee?.code || '', 'اسم الموظف': r.employee?.name || '',
         'التاريخ': moment(r.date).format('YYYY-MM-DD'), 'الحالة': r.status,
+        'دخول': r.checkIn ? moment(r.checkIn).format('HH:mm') : '', 'خروج': r.checkOut ? moment(r.checkOut).format('HH:mm') : '',
+        'تعديل يدوي': r.manualEdit ? 'نعم' : 'لا',
         'دقائق العمل': r.workedMinutes, 'دقائق التأخير': r.lateMinutes,
         'ساعات الإضافي': r.overtimeHours, 'ساعات الخصم': r.totalDeductionUnits,
         'غائب': r.isAbsent ? 'نعم' : 'لا',
@@ -277,7 +324,15 @@ async function buildBackupWorkbook({ f, t, months, types }) {
     }
   }
 
-  return any ? XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) : null;
+  if (!any) return null;
+  // The file is a human-readable record of what was removed. It is NOT a restore format and cannot rebuild the database.
+  const note = XLSX.utils.aoa_to_sheet([
+    ['ملف معلوماتي فقط — غير قابل للاستعادة'],
+    ['INFORMATIONAL ONLY - NOT RESTORABLE. This file lists the rows removed by this cleanup run; it cannot be imported back.'],
+    ['السجلات الحاملة لبيانات يدوية (تعديل يدوي / خصم يدوي / سبب غياب / تسوية) محمية ولم تُحذف ولا تظهر هنا.'],
+  ]);
+  XLSX.utils.book_append_sheet(wb, note, 'README');
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 }
 
 // ─── Preview (Dry Run / Safe Simulation — read-only, nothing logged) ─────────
@@ -304,7 +359,7 @@ router.post('/execute', authorize('admin'), async (req, res) => {
       // confirmFinalizedPayroll is still ACCEPTED (older clients send it) but ignored: closed payroll is protected regardless.
     } = req.body;
     // F-10: with auth on, the executor is the authenticated user, never a body-claimed name.
-    const executedByName = req.user ? resolveActor(req).name : req.body.executedByName;
+    const executedByName = hasServerIdentity(req) ? resolveActor(req).name : req.body.executedByName;
 
     if (!executedByName || !String(executedByName).trim()) {
       return res.status(400).json({ error: 'اسم منفّذ العملية مطلوب لسجل التدقيق' });
@@ -364,6 +419,10 @@ router.post('/execute', authorize('admin'), async (req, res) => {
     const totalSteps = stages.reduce((s, st) => s + st.slices.length, 0) || 1;
     let doneSteps = 0;
     const counts = { rawLogsDeleted: 0, dailyDeleted: 0, payrollDeleted: 0 };
+    // Protected attendance rows (manual data, utils/cleanupProtection.js) in the range, captured INSIDE the delete transaction. The
+    // post-delete recalculation must not recompute them: their derived fields follow the raw logs, and a raw-log purge (this very run,
+    // or an earlier one) would otherwise turn them into absences. Keys: "employeeId|YYYY-MM-DD".
+    const skipDays = new Set();
 
     emit(req.io, 'cleanup:start', { from: impact.from, to: impact.to, types, totalSteps, employeesAffected: impact.employeesAffected });
 
@@ -384,6 +443,10 @@ router.post('/execute', authorize('admin'), async (req, res) => {
           draftRowsByMonth.set(`${year}-${month}`, rows.length);
         }
       }
+      // Adjustments are never deleted by cleanup (a linked adjustment protects its daily row): remember the count to prove it below.
+      const adjBefore = types.daily
+        ? await tx.attendanceAdjustment.count({ where: { date: dailyRange(f, t) } })
+        : 0;
       for (const stage of stages) {
         for (const slice of stage.slices) {
           if (stage.key === 'rawLogs') {
@@ -392,16 +455,25 @@ router.post('/execute', authorize('admin'), async (req, res) => {
             counts.rawLogsDeleted += r.count;
           } else if (stage.key === 'daily') {
             const [s, e] = slice;
-            const adjustments = await tx.attendanceAdjustment.findMany({
-              where: { date: { gte: s.toDate(), lte: e.toDate() } }, select: { id: true },
-            });
-            const adjIds = adjustments.map(a => a.id);
-            if (adjIds.length) {
-              await tx.adjustmentAuditLog.deleteMany({ where: { adjustmentId: { in: adjIds } } });
-              await tx.attendanceAdjustment.deleteMany({ where: { id: { in: adjIds } } });
+            // 1) Lock the deletable rows (current read, FOR UPDATE): a concurrent manual edit / adjustment on one of them waits for
+            //    this transaction instead of slipping in. The condition is the SAME one preview counts (utils/cleanupProtection.js).
+            const cond = protection.unprotectedDailySqlCondition();
+            const locked = await tx.$queryRawUnsafe(
+              `SELECT d.id AS id FROM attendance_daily d LEFT JOIN attendance_adjustments a ON a.attendanceDailyId = d.id `
+              + `WHERE d.date >= ? AND d.date <= ? AND ${cond} FOR UPDATE`, s.format('YYYY-MM-DD'), e.format('YYYY-MM-DD'));
+            const ids = locked.map(x => Number(x.id));
+            // 2) Delete exactly those ids, re-applying the protection condition at delete time. A protected row can never match.
+            let deleted = 0;
+            for (let i = 0; i < ids.length; i += 1000) {
+              const chunk = ids.slice(i, i + 1000);
+              deleted += Number(await tx.$executeRawUnsafe(
+                `DELETE d FROM attendance_daily d LEFT JOIN attendance_adjustments a ON a.attendanceDailyId = d.id `
+                + `WHERE d.id IN (${chunk.map(() => '?').join(',')}) AND ${cond}`, ...chunk));
             }
-            const r = await tx.attendanceDaily.deleteMany({ where: { date: { gte: s.toDate(), lte: e.toDate() } } });
-            counts.dailyDeleted += r.count;
+            if (deleted !== ids.length) {
+              throw new CleanupDataChangedError('تغيّرت بيانات الحضور أثناء التنفيذ (سجل أصبح محميًا) — لم يُحذف شيء. أعد المعاينة ثم نفّذ من جديد.');
+            }
+            counts.dailyDeleted += deleted;
           } else if (stage.key === 'payroll') {
             const { month, year } = slice[0];
             // The status predicate is evaluated by MySQL at delete time: a closed row is never deleted, even by mistake.
@@ -416,6 +488,18 @@ router.post('/execute', authorize('admin'), async (req, res) => {
           emit(req.io, 'cleanup:progress', { stage: stage.key, label: stage.label, done: doneSteps, total: totalSteps });
         }
       }
+      if (types.rawLogs || types.daily) {
+        (await tx.attendanceDaily.findMany({
+          where: { date: dailyRange(f, t), ...protection.protectedDailyWhere() }, select: { employeeId: true, date: true },
+        })).forEach(r => skipDays.add(`${r.employeeId}|${r.date.toISOString().slice(0, 10)}`));
+      }
+      if (types.daily) {
+        const adjAfter = await tx.attendanceAdjustment.count({ where: { date: dailyRange(f, t) } });
+        // The whole range must now hold exactly the rows preview announced: deleted = counts.daily, nothing protected removed.
+        if (adjAfter !== adjBefore || counts.dailyDeleted !== impact.counts.daily) {
+          throw new CleanupDataChangedError('نتيجة الحذف لا تطابق المعاينة (تغيّرت البيانات بعد المعاينة) — تم التراجع عن كل شيء. أعد المعاينة.');
+        }
+      }
     }, { timeout: 5 * 60 * 1000, maxWait: 30 * 1000 });
     deviceLogCounts.invalidate();   // raw logs were deleted: per-device counts are no longer exact
 
@@ -424,9 +508,8 @@ router.post('/execute', authorize('admin'), async (req, res) => {
     // orphans CAN be created — this asserts the exact range we touched is
     // fully clean (a proportional sanity check, not a whole-DB integrity scan).
     const consistencyNotes = [];
-    if (types.daily) {
-      const leftoverAdj = await prisma.attendanceAdjustment.count({ where: { date: { gte: f.toDate(), lte: t.toDate() } } });
-      if (leftoverAdj > 0) consistencyNotes.push(`تنبيه اتساق: تبقّى ${leftoverAdj} سجل تعديل ضمن الفترة بعد الحذف`);
+    if (types.daily && impact.dailyProtection?.protectedRows > 0) {
+      consistencyNotes.push(`${impact.dailyProtection.protectedRows} سجل حضور محمي (بيانات يدوية) بقي دون حذف، منها ${impact.dailyProtection.adjustments} تسوية`);
     }
 
     // ── MySQL space reclamation (req. #10) — outside the transaction (DDL/maintenance) ─
@@ -451,6 +534,7 @@ router.post('/execute', authorize('admin'), async (req, res) => {
     // an employee can be left out of exactly the months where his payroll is closed.
     const closedKeys = new Set(impact.finalizedPayroll.map(r => `${r.employeeId}|${r.month}|${r.year}`));
     let recalcSkippedEmployeeMonths = 0;
+    const skippedClosedPayroll = [];   // employee-months the attendance engine left unchanged (closed payroll + missing raw punches)
     if (types.rawLogs || types.daily) {
       for (const { month, year } of impact.months) {
         const mStart = moment({ year, month: month - 1, day: 1 }).startOf('month');
@@ -459,11 +543,13 @@ router.post('/execute', authorize('admin'), async (req, res) => {
         recalcSkippedEmployeeMonths += impact.employeeIds.length - ids.length;
         if (!ids.length) continue;
         // EP-020: scoped to exactly the employees analyzeImpact() found. No allowFinalizedPayroll: closed payroll stays protected.
-        await recalcEngine.recalcScope({
+        const rc = await recalcEngine.recalcScope({
+          skipDays,
           from: from.toDate(), to: to.toDate(), io: req.io, employeeIds: ids,
           reason: `تنظيف الحركات: إعادة احتساب بعد الحذف (${impact.from} → ${impact.to})`,
         });
         recalcTriggered = true;
+        if (rc?.skippedClosedPayroll?.length) skippedClosedPayroll.push(...rc.skippedClosedPayroll);
       }
     }
 
@@ -483,6 +569,7 @@ router.post('/execute', authorize('admin'), async (req, res) => {
         notes: [
           backupFile ? `نسخة احتياطية: ${backupFile}` : null,
           impact.protectedPayroll.total > 0 ? `مرتبات معتمدة/مدفوعة محمية (لم تُمسّ): ${protectedCountsText(impact.protectedPayroll)} — استُبعد ${recalcSkippedEmployeeMonths} موظف-شهر من إعادة الاحتساب` : null,
+          backupFile ? 'الملف الاحتياطي معلوماتي فقط وغير قابل للاستعادة' : null,
           ...consistencyNotes,
         ].filter(Boolean).join(' | ') || null,
       },
@@ -494,12 +581,29 @@ router.post('/execute', authorize('admin'), async (req, res) => {
       deleted: counts, employeesAffected: impact.employeesAffected,
       backupFile, recalcTriggered, optimizeRun, durationMs,
       consistencyNotes,
+      // protected attendance (manual data) kept by this run - identical to the preview's dailyProtection
+      dailyProtection: impact.dailyProtection,
+      backupInformationalOnly: true,
+      skippedClosedPayroll,
+      recalcSkippedProtectedDays: skipDays.size,
       // protected closed payroll that this run left untouched (always 0 deleted), and what was excluded from the recalculation
       protectedPayroll: impact.protectedPayroll, recalcSkippedEmployeeMonths,
     };
     emit(req.io, 'cleanup:done', summary);
     res.json(summary);
   } catch (err) {
+    if (err instanceof CleanupDataChangedError) {
+      emit(req.io, 'cleanup:done', { error: err.message });
+      try {
+        const r = parseRange(req.body?.from, req.body?.to);
+        if (r) await prisma.cleanupLog.create({ data: {
+          fromDate: r.from.toDate(), toDate: r.to.toDate(), dataTypes: JSON.stringify(req.body?.types || {}), status: 'failed',
+          durationMs: Date.now() - startedAt, executedByName: String((hasServerIdentity(req) ? resolveActor(req).name : req.body?.executedByName) || '—').trim(),
+          notes: `تراجع تلقائي (409): ${err.message}`.slice(0, 60000),
+        } });
+      } catch { /* audit-trail best effort */ }
+      return res.status(409).json({ error: err.message, code: err.code });
+    }
     if (err instanceof CleanupProtectedError) {
       const r = parseRange(req.body?.from, req.body?.to);
       if (r) await logBlocked(req, r, req.body?.types, err.protectedPayroll, err.message, startedAt);
@@ -517,7 +621,7 @@ router.post('/execute', authorize('admin'), async (req, res) => {
             dataTypes: JSON.stringify(req.body?.types || {}),
             status: 'failed',
             durationMs: Date.now() - startedAt,
-            executedByName: String((req.user ? resolveActor(req).name : req.body?.executedByName) || '—').trim(),
+            executedByName: String((hasServerIdentity(req) ? resolveActor(req).name : req.body?.executedByName) || '—').trim(),
             notes: `فشل التنفيذ: ${err.message}`,
           },
         });

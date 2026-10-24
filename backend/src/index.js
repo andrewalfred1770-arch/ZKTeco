@@ -26,7 +26,8 @@ const logger    = require('./utils/logger');
 // to loopback; an explicit non-loopback HOST is refused. Exit code 78 (EXIT_STARTUP_BLOCKED) so the
 // Electron shell does NOT keep restarting a configuration error every few seconds.
 const { AUTH_ENABLED, AUTH_STATUS, AUTH_RAW } = require('./middleware/auth');
-const { resolveSecureHost } = require('./config/securityConfig');
+const { resolveSecureHost, resolveTrustProxy } = require('./config/securityConfig');
+const { isSkipSchedulerInstance } = require('./middleware/deviceOpsGuard');
 const secureBind = resolveSecureHost({ authEnabled: AUTH_ENABLED, authStatus: AUTH_STATUS, authRaw: AUTH_RAW, host: process.env.HOST });
 if (!secureBind.ok) {
   try { require('fs').writeSync(2, secureBind.error.message + '\n'); } catch { /* stderr unavailable */ }
@@ -34,6 +35,32 @@ if (!secureBind.ok) {
   process.exit(require('./init/bootstrapResult').EXIT_STARTUP_BLOCKED);
 }
 secureBind.warnings.forEach((w) => logger.warn(w));
+// Reverse-proxy trust: OFF unless TRUST_PROXY=loopback AND this backend itself listens on loopback (a local TLS proxy in front). Never broader.
+const trustProxy = resolveTrustProxy({ raw: process.env.TRUST_PROXY, host: secureBind.host });
+if (!trustProxy.ok) {
+  try { require('fs').writeSync(2, trustProxy.error.message + '\n'); } catch { /* stderr unavailable */ }
+  logger.error(trustProxy.error.message);
+  process.exit(require('./init/bootstrapResult').EXIT_STARTUP_BLOCKED);
+}
+trustProxy.warnings.forEach((w) => logger.warn(w));
+// LAN "no login" mode: only when auth is OFF behind the local HTTPS proxy (TRUST_PROXY=loopback). 'desktop' (no TRUST_PROXY) and
+// 'authenticated' (AUTH_ENABLED=true) are untouched. The allowlist file is read here, once; any problem = refuse to start (fail closed).
+const { resolveLanClientPolicy } = require('./config/securityConfig');
+let lanAllowedText = null; let lanAllowedFileError;
+if (!AUTH_ENABLED && trustProxy.value === 'loopback' && process.env.ALLOWED_CLIENT_IPS_FILE) {
+  try { lanAllowedText = require('fs').readFileSync(process.env.ALLOWED_CLIENT_IPS_FILE, 'utf8'); } catch (e) { lanAllowedFileError = e && e.code ? e.code : 'read error'; }
+}
+const lanPolicy = resolveLanClientPolicy({
+  authEnabled: AUTH_ENABLED, trustProxyValue: trustProxy.value, host: secureBind.host, allowedText: lanAllowedText,
+  allowedFileError: lanAllowedFileError, proxyKey: process.env.PROXY_SHARED_SECRET, skipScheduler: isSkipSchedulerInstance(),
+});
+if (!lanPolicy.ok) {
+  try { require('fs').writeSync(2, lanPolicy.error.message + '\n'); } catch { /* stderr unavailable */ }
+  logger.error(lanPolicy.error.message);
+  process.exit(require('./init/bootstrapResult').EXIT_STARTUP_BLOCKED);
+}
+lanPolicy.warnings.forEach((w) => logger.warn(w));
+const lanNoLogin = lanPolicy.mode === 'lan-nologin';
 const { startSyncScheduler, stopSyncScheduler } = require('./services/syncScheduler');
 const realtimeListener = require('./services/realtimeListenerService');
 const historicalRebuildService = require('./services/historicalRebuildService');
@@ -45,73 +72,26 @@ const { API_VERSION } = require('./apiVersion');
 const { version: APP_VERSION } = require('../package.json');
 
 const app    = express();
+if (trustProxy.value) app.set('trust proxy', trustProxy.value);   // 'loopback' only: req.ip / req.secure come from the local proxy's X-Forwarded-* headers
 const server = http.createServer(app);
 const isProd = process.env.NODE_ENV === 'production';
 
-// CORS: allow all *localhost* origins in desktop mode (packaged Electron
-// sends no Origin header; dev-mode Electron loads the Vite dev server at
-// http://localhost:<port>, which does send one); restrict to CORS_ORIGINS in
-// LAN mode. EF-007.3: desktop mode previously reflected ANY origin — this
-// let any webpage open in the user's regular browser reach the API, since
-// AUTH_ENABLED=false leaves authorize()/authenticate() as no-ops (by design
-// for this trust model — unchanged here). Restricting desktop mode to
-// no-origin + localhost closes that path without touching auth or breaking
-// either packaged or dev-mode Electron.
+// CORS (config/corsPolicy.js): desktop mode (authentication OFF, loopback-only bind) accepts only loopback browser origins;
+// LAN-server mode (authentication ON) accepts only the exact origins in CORS_ORIGINS. Private-LAN IPs, single-label names and
+// .local/.lan names are NOT trusted implicitly. Requests without an Origin header (packaged Electron, curl) pass through.
 // AUTH_ENABLED: parsed once in middleware/auth.js (imported above) — never re-read from process.env here.
-const corsAllowList = (process.env.CORS_ORIGINS || '')
-  .split(',').map(s => s.trim()).filter(Boolean);
-const isLocalhostOrigin = (origin) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-
-// EF-029.6: the intended architecture is Windows Server → LAN → Mac (or any
-// other machine's browser) client, with NO login/JWT in either mode — but
-// desktop mode (AUTH_ENABLED=false, the default) previously allowed only
-// localhost, so a Mac/second machine hitting the Windows box's own LAN IP was
-// rejected by CORS before ever reaching the (still-unauthenticated) routes.
-// This widens desktop mode to also allow the standard private-LAN ranges
-// (RFC1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) — never a wildcard,
-// never a public origin, no specific IP hardcoded (works on any LAN), and
-// adds no authentication of any kind. AUTH_ENABLED=true's explicit
-// CORS_ORIGINS allowlist below is unchanged.
-function isPrivateLanOrigin(origin) {
-  let hostname;
-  try { hostname = new URL(origin).hostname; } catch { return false; }
-  // A LAN client may address the server by computer name instead of IP so the
-  // server's DHCP address changing never breaks it. Only names that cannot be
-  // public internet origins are accepted: single-label hostnames (e.g.
-  // "SERVER-PC") and .local / .lan (mDNS / private LAN) names.
-  if (/^[a-z][a-z0-9-]*$/i.test(hostname) || /^[a-z0-9-]+(\.[a-z0-9-]+)*\.(local|lan)$/i.test(hostname)) {
-    return true;
-  }
-  return (
-    /^10\.(\d{1,3}\.){2}\d{1,3}$/.test(hostname) ||
-    /^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
-    /^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)
-  );
-}
-
-// A disallowed origin is a client/permission problem, not a server fault.
-const corsError = (origin) => Object.assign(new Error(`CORS: origin ${origin} not allowed`), { status: 403 });
-
-function corsOriginCheck(origin, cb) {
-  // No-origin requests: Electron renderer, curl, health-check — always allow
-  if (!origin) return cb(null, true);
-  // Desktop mode: allow localhost (packaged/dev Electron, local tooling) AND
-  // private-LAN origins (Windows Server ↔ LAN client model — e.g. a Mac
-  // browser hitting http://<windows-lan-ip>:PORT). Still never a public origin.
-  if (!AUTH_ENABLED) {
-    return (isLocalhostOrigin(origin) || isPrivateLanOrigin(origin))
-      ? cb(null, true)
-      : cb(corsError(origin));
-  }
-  // LAN/Cloud mode: only explicitly listed origins
-  if (corsAllowList.includes(origin)) return cb(null, true);
-  cb(corsError(origin));
-}
+const { parseCorsOrigins, createCorsOriginCheck } = require('./config/corsPolicy');
+const corsConfig = parseCorsOrigins(process.env.CORS_ORIGINS);
+corsConfig.rejected.forEach((e) => logger.warn(`[SECURITY] CORS_ORIGINS entry "${String(e).slice(0, 80)}" ignored: only exact http(s)://host[:port] origins are accepted (no wildcard, path or credentials).`));
+const corsOriginCheck = createCorsOriginCheck({ authEnabled: AUTH_ENABLED, allowList: corsConfig.origins, proxyNoLogin: lanNoLogin });
+const { createClientGate, createEngineAllowRequest } = require('./middleware/clientAllowlist');
 
 // ─── Socket.IO ────────────────────────────────────────────────────────────────
 const io = new Server(server, {
   cors: { origin: corsOriginCheck, methods: ['GET', 'POST'], credentials: true },
   pingTimeout: 60000,
+  // LAN no-login mode: an unapproved device cannot even open an Engine.IO session (checked on every handshake / upgrade).
+  ...(lanNoLogin ? { allowRequest: createEngineAllowRequest(lanPolicy, logger) } : {}),
 });
 
 // Readiness first: while the application is not READY (bootstrap blocked) no
@@ -131,6 +111,12 @@ io.use((_socket, next) => (startup.isReady() ? next() : next(new Error('NOT_READ
   io.use(authenticateSocket);
 }
 
+// F7: with authentication on, broadcasts (attendance, device, rules, cleanup, settings … events) are delivered only to the 'staff'
+// room (admin/hr). Every emitter calls io.emit(), so this one line scopes them all. See services/socketScopes.js.
+const socketScopes = require('./services/socketScopes');
+socketScopes.installScopedEmit(io, AUTH_ENABLED);
+io.on('connection', (socket) => { socketScopes.joinScopes(socket, AUTH_ENABLED); });
+
 // Connected sockets are re-checked periodically (deactivated / deleted / re-roled users are disconnected; see
 // services/socketSessionGuard.js). One shared unref'd timer, a no-op when authentication is disabled, stopped on shutdown.
 const socketSessionGuard = require('./services/socketSessionGuard').createSocketSessionGuard({ io });
@@ -139,6 +125,8 @@ socketSessionGuard.start();
 require('./middleware/auth').onAccountRejected((userId) => socketSessionGuard.dropUser(userId, 'http-rejected'));
 
 // ─── Security ─────────────────────────────────────────────────────────────────
+if (lanNoLogin) app.use(createClientGate(lanPolicy, logger));   // FIRST: before headers, CORS, static files and every router
+if (lanNoLogin) app.use(require('./middleware/lanLocalOnlyOps').lanLocalOnlyOps());   // setup + data purge stay with the server PC, never a LAN client
 app.use(require('./middleware/securityHeaders'));
 
 app.use(cors({ origin: corsOriginCheck, credentials: true }));
@@ -178,14 +166,18 @@ app.use('/api/setup',           require('./routes/setup'));
 // writes to) — falls back to the pre-EP-010 backend-relative path when CONFIG_DIR
 // is unset (Server Mode/dev).
 const { getConfigDir } = require('./utils/configDir');
-app.use('/uploads', express.static(path.join(getConfigDir(), 'uploads')));
+// F8: only the branding images are public; cache.json (all company settings), tmp-* files and any other internal file answer 404.
+app.use('/uploads', require('./middleware/uploadsGuard').uploadsGuard(),
+  express.static(path.join(getConfigDir(), 'uploads'), { dotfiles: 'ignore', index: false, redirect: false, extensions: false }));
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 // Reuses the shared Prisma singleton — the previous implementation created and
 // discarded a full PrismaClient (its own pool) on EVERY call, and Electron
 // polls this endpoint every 300ms during startup.
 const { checkDbConnection, getLastDbErrorReason } = require('./utils/prisma');
-app.get('/api/health', async (_req, res) => {
+const { isDirectLocalRequest } = require('./middleware/loopbackOnly');
+const { shapeHealth, shapeStartupStatus } = require('./utils/statusDisclosure');
+app.get('/api/health', async (req, res) => {
   const ok = await checkDbConnection();
   const ready = startup.isReady();
   // 200 only when the database is reachable AND bootstrap verified the schema
@@ -211,7 +203,8 @@ app.get('/api/health', async (_req, res) => {
   if (!ok) body.dbError = getLastDbErrorReason();
   // Why the application is not ready: phase + stage + reason only (no detail).
   if (!ready) body.startup = startup.describe();
-  res.status(healthy ? 200 : 503).json(body);
+  // F9: the diagnostic extras above go only to the desktop shell on this PC; any other caller gets the minimal connect-time view.
+  res.status(healthy ? 200 : 503).json(shapeHealth(body, isDirectLocalRequest(req)));
 });
 
 // ─── Startup status (for Electron's functional splash) ───────────────────────
@@ -221,7 +214,7 @@ app.get('/api/health', async (_req, res) => {
 // fingerprint devices have an active realtime connection.
 const startupState = startup.state;   // { phase, failure, servicesStarted }
 let dbConnectedLatched = false;
-app.get('/api/startup-status', async (_req, res) => {
+app.get('/api/startup-status', async (req, res) => {
   const ready = startup.isReady();
   // dbConnected is the readiness signal Electron's splash gates on, so it is
   // only ever true for a READY application — a reachable database behind a
@@ -236,13 +229,13 @@ app.get('/api/startup-status', async (_req, res) => {
     devices.total = ids.length;
     devices.connected = ids.filter((id) => status[id].status === 'connected').length;
   } catch {}
-  res.json({
+  res.json(shapeStartupStatus({
     dbConnected: ready && dbConnectedLatched,
     servicesStarted: ready && startupState.servicesStarted,
     devices,
     ready,
     ...(ready ? {} : { startup: startup.describe() }),
-  });
+  }, isDirectLocalRequest(req)));
 });
 
 // Serve frontend static build (when FRONTEND_DIST is provided by Electron)
@@ -394,7 +387,7 @@ function startApplication() {
       // jobs, not just wasted work. Unset (default) is byte-for-byte the
       // existing single-instance behavior — every current deployment is
       // unaffected.
-      if (process.env.SKIP_SCHEDULER === 'true') {
+      if (isSkipSchedulerInstance()) {
         logger.info('[SKIP_SCHEDULER] set — this instance will not start ZKTeco listeners or attendance crons (API/auth only)');
         startupState.servicesStarted = true;
         return;
@@ -456,9 +449,14 @@ process.on('SIGINT',  () => shutdown('SIGINT'));
 if (process.stdin && !process.stdin.destroyed) {
   try {
     process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => {
-      if (String(chunk).trim().split(/\r?\n/).includes('shutdown')) shutdown('stdin command');
+    // Line protocol from the Electron main process: "shutdown", and ONE "setup-secret <value>" hand-off per launch (utils/setupAuth.js).
+    // The hand-off line is consumed here and never logged or echoed.
+    const setupAuth = require('./utils/setupAuth');
+    const feedStdin = require('./utils/stdinCommands').createStdinCommandParser({
+      handleHandoffLine: (line) => setupAuth.handleStdinLine(line),   // acknowledges on stdout with a one-way tag, never the secret
+      onShutdown: () => shutdown('stdin command'),
     });
+    process.stdin.on('data', feedStdin);
     process.stdin.on('error', () => {});
     // Don't let an open stdin keep the event loop alive on its own.
     process.stdin.resume();

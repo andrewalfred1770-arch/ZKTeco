@@ -1,4 +1,4 @@
-const router = require('express').Router();
+const router = require('express').Router();
 const { sendError } = require('../../utils/apiError');
 const { getPrisma } = require('../../utils/prisma');
 const moment = require('moment');
@@ -7,6 +7,8 @@ const { applyApprovedAdjustment } = require('../../engines/payrollEngine');
 const { resolveVerifiedManualEditIds } = require('../../utils/manualEditAudit');
 const { buildAttendanceRow } = require('../../utils/attendanceRow');
 const { attendanceScopeWhere, dayPeriod } = require('../../utils/employmentEligibility');
+const { getRulesBatch, isWeekend } = require('../../engines/rulesEngine');
+const { classifyMissingDay, buildHolidayIndex } = require('../../utils/dayClassification');
 
 const prisma = getPrisma();
 
@@ -17,12 +19,14 @@ const prisma = getPrisma();
 // request to this endpoint (the default landing screen / most-polled route).
 const DAILY_EMPLOYEE_SELECT = {
   id: true, name: true, code: true, isMonitored: true, monitorColor: true,
+  hireDate: true, branchId: true, status: true, effectiveStopDate: true,   // a day with no stored row is classified from these (utils/dayClassification.js)
   department: { select: { name: true } },
   branch: { select: { name: true } },
   shift: { select: { name: true } },
 };
 
 // Get daily attendance (for AG Grid)
+// Owner decision: any user of the application may view attendance (incl. other employees'); only the editor-identity fields are withheld from non-staff on the per-employee view.
 router.get('/daily', async (req, res) => {
   try {
     const { date, branchId, departmentId, employeeId } = req.query;
@@ -75,6 +79,19 @@ router.get('/daily', async (req, res) => {
     const verifiedManualIds = await resolveVerifiedManualEditIds(records.filter(r => r.manualEdit).map(r => r.id));
 
     const dateStr = moment(d).format('YYYY-MM-DD');
+    // Employees with NO stored row for this day: answer as the engine would (pre-hire / weekly off / holiday are not absences).
+    const noRow = employees.filter(e => !map.has(e.id));
+    let classify = null;
+    if (noRow.length) {
+      const rulesByEmployee = await getRulesBatch(noRow);
+      const holidayOn = buildHolidayIndex(await prisma.holiday.findMany({ where: { date: d } }));
+      const dayDate = new Date(`${dateStr}T12:00:00`);
+      classify = (emp) => classifyMissingDay({
+        hireDate: emp.hireDate, dateStr, stopDate: emp.effectiveStopDate, stopped: emp.status === false,
+        isWeekendDay: dayDate.getDay() === 5 || isWeekend(dayDate, (rulesByEmployee.get(emp.id) || {}).weekend_days),
+        isHolidayDay: holidayOn(dateStr, emp.branchId),
+      });
+    }
     const result = employees.map(emp => {
       const merged = map.get(emp.id) || null;
       return buildAttendanceRow({
@@ -83,6 +100,7 @@ router.get('/daily', async (req, res) => {
         dateStr,
         verifiedManualIds,
         adj: merged ? adjByDailyId.get(merged.id) : null,
+        missingDay: !merged && classify ? classify(emp) : null,
       });
     });
 

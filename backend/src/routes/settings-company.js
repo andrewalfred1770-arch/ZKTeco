@@ -112,7 +112,8 @@ router.get('/', async (_req, res) => {
 });
 
 // ─── Recent audit trail ───────────────────────────────────────────────────────
-router.get('/audit', async (_req, res) => {
+// F3: actor names + previous/new values — administrators only (the UI never calls this endpoint; the settings page reads GET /).
+router.get('/audit', authorize('admin'), async (_req, res) => {
   try {
     const rows = await prisma.companySettingAudit.findMany({
       orderBy: { changedAt: 'desc' },

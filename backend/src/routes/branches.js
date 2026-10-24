@@ -19,7 +19,7 @@ router.get('/', async (_req, res) => {
 });
 
 // Dependency counts — called by the delete-confirmation modal BEFORE the user commits.
-router.get('/:id/deps', async (req, res) => {
+router.get('/:id/deps', authorize('admin', 'hr'), async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     const [activeDepts, allDepts, employees, devices, rules] = await Promise.all([

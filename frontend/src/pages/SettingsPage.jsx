@@ -85,7 +85,7 @@ function ArchiveModal({ modal, onConfirm, onCancel }) {
             <h3 id={titleId} style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-1)', marginBottom: 3 }}>
               أرشفة {typeLabels[type]}
             </h3>
-            <p style={{ fontSize: 13, color: '#79C0FF', fontWeight: 600 }}>{item.name}</p>
+            <p style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{item.name}</p>
           </div>
           <button
             onClick={onCancel}
@@ -106,7 +106,7 @@ function ArchiveModal({ modal, onConfirm, onCancel }) {
 
           {depsLoading ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
-              <Loader2 style={{ width: 14, height: 14, color: '#79C0FF', animation: 'spin 1s linear infinite' }} />
+              <Loader2 style={{ width: 14, height: 14, color: 'var(--accent)', animation: 'spin 1s linear infinite' }} />
               <span style={{ fontSize: 12, color: 'var(--text-3)' }}>جاري الفحص...</span>
             </div>
           ) : deps ? (
@@ -191,7 +191,7 @@ function EditForm({ fields, onSave, onCancel, saving }) {
   return (
     <form onSubmit={onSave} style={{
       padding: '10px 12px', borderRadius: 10,
-      background: 'var(--surface-2)', border: '1px solid #2F81F7',
+      background: 'var(--surface-2)', border: '1px solid #1E7A34',
       display: 'flex', flexDirection: 'column', gap: 6,
     }}>
       {fields}
@@ -224,7 +224,7 @@ function ItemCard({ name, sub, onEdit, onDelete }) {
         <button
           onClick={onEdit}
           title="تعديل"
-          style={{ padding: 5, background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: 6, color: '#79C0FF' }}
+          style={{ padding: 5, background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: 6, color: 'var(--accent)' }}
         >
           <Pencil style={{ width: 14, height: 14 }} />
         </button>
@@ -407,7 +407,7 @@ export default function SettingsPage() {
             إدارة الشركات والفروع والأقسام
           </p>
         </div>
-        {loading && <Loader2 className="w-5 h-5 animate-spin text-blue-400" />}
+        {loading && <Loader2 className="w-5 h-5 animate-spin text-accent" />}
       </div>
 
       {/* Three-column grid */}
@@ -416,7 +416,7 @@ export default function SettingsPage() {
         {/* ── Companies ─────────────────────────────────────────────────────── */}
         <div className="card p-5 flex flex-col gap-4">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>
-            <Building2 style={{ width: 16, height: 16, color: '#79C0FF' }} />
+            <Building2 style={{ width: 16, height: 16, color: 'var(--accent)' }} />
             الشركات
             <span style={{ marginRight: 'auto', fontSize: 11, color: 'var(--text-3)', fontWeight: 400 }}>
               {activeCompanies.length} نشطة

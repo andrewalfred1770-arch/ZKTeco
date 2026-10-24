@@ -10,6 +10,9 @@ export const state = {
   mainWindow: null,
   backendProcess: null,
   backendReady: false,
+  // F-3: true when killStaleBackend() adopted a backend that was already running (this app did NOT spawn it, so it never received the
+  // per-launch setup secret). Reset by startBackend() when it spawns its own child.
+  backendAdopted: false,
   // EP-003 Hybrid Client/Server: resolved once at startup (see lifecycle.js)
   // from connectionSettings.js and never mutated mid-session — switching
   // modes takes effect on next launch, same as Update Center settings.

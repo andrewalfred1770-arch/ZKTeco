@@ -20,6 +20,18 @@ function cleanStr(v) {
 }
 
 /**
+ * LAN no-login mode (middleware/clientAllowlist.js): the actor is the allowlisted DEVICE the proxy-verified address belongs to —
+ * "LAN device 192.168.1.50 (Ahmed phone)". It identifies a device, never a person, and every name / role / id the client sent is ignored.
+ */
+function lanDeviceName(c) {
+  return `LAN device ${c.ip}${c.label ? ` (${c.label})` : ''}`.slice(0, MAX_LEN);
+}
+/** True when the server itself knows who/what is calling (a verified login OR an allowlisted LAN device) — so body-claimed names are never used. */
+function hasServerIdentity(req) {
+  return !!(req && (req.user || req.lanClient));
+}
+
+/**
  * @param {object} req
  * @param {{id?:*, name?:*, role?:*}} [claimed]  actor fields taken from the request body
  * @param {{id?:*, name?:*, role?:*}} [defaults] per-route fallbacks (null is a valid fallback)
@@ -31,6 +43,7 @@ function resolveActor(req, claimed = {}, defaults = {}) {
     name: defaults.name !== undefined ? defaults.name : 'HR',
     role: defaults.role !== undefined ? defaults.role : 'hr',
   };
+  if (req && req.lanClient && !req.user) return { id: 0, name: lanDeviceName(req.lanClient), role: 'lan-device' };
   const u = req && req.user;
   if (u) {
     const uid = Number(u.id);
@@ -57,4 +70,4 @@ function modifier(req, defaults) {
   return { modifiedBy: a.id, modifiedByName: a.name, modifiedByRole: a.role };
 }
 
-module.exports = { resolveActor, modifier };
+module.exports = { resolveActor, modifier, hasServerIdentity, lanDeviceName };

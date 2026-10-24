@@ -5,6 +5,8 @@
 import { build } from 'esbuild';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
+import { readFileSync } from 'fs';
+import { checkBundleText } from './mojave-bundle-check.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const frontendRoot = resolve(__dirname, '..');
@@ -22,4 +24,10 @@ await build({
   logLevel: 'info',
 });
 
+// The output must contain the setup-auth main-process code (see mojave-bundle-check.mjs); never leave an incomplete bundle behind silently.
+const check = checkBundleText(readFileSync(resolve(frontendRoot, 'electron.mojave.cjs'), 'utf8'));
+if (!check.ok) {
+  console.error('[build-mojave-main] FAILED: bundle is missing setup-auth code: ' + check.missing.join(', '));
+  process.exit(1);
+}
 console.log('[build-mojave-main] wrote electron.mojave.cjs');

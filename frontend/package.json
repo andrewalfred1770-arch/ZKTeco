@@ -1,7 +1,7 @@
 {
   "name": "petshrow-erp",
-  "version": "10.10.10",
-  "description": "PETSHROW ERP — نظام الموارد البشرية والرواتب",
+  "version": "1.1.5",
+  "description": "CheckIn — نظام إدارة الحضور والانصراف والموارد البشرية",
   "author": "PETSHROW",
   "private": true,
   "type": "module",
@@ -31,8 +31,9 @@
   "electron:build:dir": "npm run assets:gate && npm run build && npm run dist:verify && electron-builder --win --x64 --dir",
   "electron:build:mac": "npm run assets:gate && npm run build && npm run dist:verify && electron-builder --mac",
   "electron:build:mac:dir": "npm run assets:gate && npm run build && npm run dist:verify && electron-builder --mac --dir",
-  "build:mojave-main": "node scripts/build-mojave-main.mjs",
-  "electron:build:mac:legacy": "npm run assets:gate && npm run build:mojave-main && npm run build:manager && npm run dist:verify && electron-builder --mac --config electron-builder.legacy-mac.json",
+  "build:mojave-main": "node scripts/build-mojave-main.mjs && node scripts/verify-mojave-main.mjs",
+  "verify:mojave-main": "node scripts/verify-mojave-main.mjs",
+  "electron:build:mac:legacy": "npm run assets:gate && npm run build:mojave-main && npm run build:manager && npm run dist:verify && npm run verify:mojave-main && electron-builder --mac --config electron-builder.legacy-mac.json",
   "electron:build:manager": "npm run assets:gate && npm run build:manager && npm run dist:verify && electron-builder --mac --config electron-builder.manager.json",
   "electron:build:manager:mac": "npm run assets:gate && npm run build:manager && npm run dist:verify && electron-builder --mac --config electron-builder.manager.json",
   "fetch:mysql:mac": "node scripts/fetch-mysql-macos.mjs",
@@ -54,7 +55,7 @@
     "react-router-dom": "^6.22.3",
     "recharts": "^2.12.3",
     "socket.io-client": "^4.7.4",
-    "xlsx": "^0.18.5",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zustand": "^4.5.2"
   },
   "devDependencies": {
@@ -71,7 +72,7 @@
   },
   "build": {
     "appId": "com.petshrow.erp",
-    "productName": "PETSHROW ERP",
+    "productName": "CheckIn",
     "copyright": "© 2026 PETSHROW ERP",
     "asar": true,
     "asarUnpack": [
@@ -79,6 +80,8 @@
     ],
     "compression": "normal",
     "win": {
+      "compression": "maximum",
+      "electronLanguages": ["en-US", "ar"],
       "target": [
         {
           "target": "nsis",
@@ -113,8 +116,10 @@
             "!.env.*",
             "!.env.example",
             "!node_modules/.cache/**",
+            "!**/node_modules/.cache/**",
             "!node_modules/.prisma/client/**/libquery_engine-linux*",
             "!node_modules/.prisma/client/**/libquery_engine-darwin*",
+            "!node_modules/**/libquery_engine-darwin*",
             "!node_modules/.prisma/client/**/libquery_engine-debian*",
             "!node_modules/.bin/**",
             "!**/*.md",
@@ -220,15 +225,18 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "PETSHROW ERP",
+      "shortcutName": "CheckIn",
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
       "installerHeaderIcon": "assets/icon.ico",
       "deleteAppDataOnUninstall": false,
-      "artifactName": "${productName}-${version}-Setup.${ext}"
+      "uninstallDisplayName": "${productName}",
+      "allowElevation": false,
+      "include": "installer/checkin-branding.nsh",
+      "artifactName": "${productName}-Setup.${ext}"
     },
     "portable": {
-      "artifactName": "${productName}-${version}-Portable.${ext}"
+      "artifactName": "${productName}-Portable.${ext}"
     },
     "files": [
       "electron.js",

@@ -1,17 +1,17 @@
 {
   "icon-ico": {
     "path": "assets/icon.ico",
-    "sha256": "5eb4fc551cdc739d8dc77e6557464867693b30bcd35949250514ae470ddb0add",
-    "size": 6479
+    "sha256": "8a091168c170e5e74cbe14144502ce2623ab4df2d0dba509674ddd048a8d52a0",
+    "size": 88993
   },
   "icon-png": {
     "path": "assets/icon.png",
-    "sha256": "638f188a19644ae7b6f14626f4232ff10fdc216a983108e3d368d407d36381a5",
-    "size": 234376
+    "sha256": "a1f9e62a60590e9db1aa58f4d2e4ac2ebf88815d337a72183ec655d284cdea98",
+    "size": 367394
   },
   "tray-png": {
     "path": "assets/tray.png",
-    "sha256": "b6ed6f39bb13a0a55433c684b4443de387bfa21d9f1c742072b240fdde941f08",
-    "size": 898
+    "sha256": "e88fd640689538055f5a7a165569c16ed518c21a7fb7e3a306204fb67067d279",
+    "size": 2534
   }
 }

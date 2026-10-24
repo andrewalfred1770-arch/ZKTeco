@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const { sendError, numericIdParam } = require('../../utils/apiError');
+const { lockCappedTransaction } = require('../../utils/lockWaitCap');
 router.param('id', numericIdParam);
 const { getPrisma } = require('../../utils/prisma');
 const { modifier } = require('../../utils/auditActor');
@@ -10,7 +11,7 @@ const { countUnreflectedPunches } = require('../../utils/lockedPunchConflict');
 const { calculatePayroll, computePayroll, applyApprovedAdjustment, filterProtectedPayrollTargets } = require('../../engines/payrollEngine');
 const { getRules, isWeekend, isHoliday } = require('../../engines/rulesEngine');
 const { calcLatePenalty, calcEarlyCheckout, timeToMinutes } = require('../../engines/policyEngine');
-const { writeAudit, resolveVerifiedManualEditIds } = require('../../utils/manualEditAudit');
+const { writeAudit, resolveVerifiedManualEditIds, loadTimesReviewedAt } = require('../../utils/manualEditAudit');
 const { buildAttendanceRow } = require('../../utils/attendanceRow');
 const logger = require('../../utils/logger');
 
@@ -123,7 +124,8 @@ async function lockedPunchFields(row) {
     where: { employeeId: row.employeeId, isDuplicate: false, timestamp: { gte: new Date(`${dayStr}T00:00:00`), lte: new Date(`${dayStr}T23:59:59`) } },
     select: { timestamp: true, createdAt: true },
   });
-  const n = countUnreflectedPunches(row, logs);
+  const reviewed = (await loadTimesReviewedAt([row.id])).get(row.id) || null;   // last AUDITED punch-time change, not updatedAt
+  const n = countUnreflectedPunches({ ...row, timesReviewedAt: reviewed }, logs);
   return { lockedPunchConflict: n > 0, ignoredPunches: n };
 }
 
@@ -273,7 +275,7 @@ router.put('/daily/:id', authorize('admin', 'hr'), async (req, res) => {
     // above (which another save may already have made stale).
     const fresh = await prisma.attendanceDaily.findUnique({ where: { id: rec.id } });
     if (fresh && isNoopManualSave(fresh, { checkIn, checkOut, status, numeric: numericOverrideKeys })) return { noop: true, fresh };
-    return prisma.$transaction(async (tx) => {
+    return lockCappedTransaction(prisma, async (tx) => {
     const engineResult = await processDate(rec.date, rec.employeeId, { manual, tx, lockHeld: true });
     // The row exactly as it was when this edit was applied (true "old" values for the audit).
     const before = engineResult?.before || { ...rec };
@@ -490,7 +492,7 @@ router.put('/:id/manual-penalty', authorize('admin', 'hr'), async (req, res) => 
     // documented trade-off — a recalc failure must not undo an attendance
     // correction that already has a valid, now-fully-audited committed state;
     // the failure is still surfaced via `payrollError`, never silently hidden.
-    const updated = await prisma.$transaction(async (tx) => {
+    const updated = await lockCappedTransaction(prisma, async (tx) => {
       const updated = await tx.attendanceDaily.update({ where: { id: rec.id }, data: updateData });
       for (const c of changedFields) {
         await writeAudit({
@@ -566,7 +568,7 @@ router.put('/:id/absence-type', authorize('admin', 'hr'), async (req, res) => {
     // EF-029.3: same hardening as /manual-penalty above — the row update and
     // its audit rows commit or roll back as one unit. Payroll recalc stays
     // outside the transaction (EF-022.1, unchanged behavior).
-    const updated = await prisma.$transaction(async (tx) => {
+    const updated = await lockCappedTransaction(prisma, async (tx) => {
       const updated = await tx.attendanceDaily.update({
         where: { id: rec.id },
         data: {
@@ -678,7 +680,7 @@ router.post('/bulk-mark-unauthorized', authorize('admin', 'hr'), async (req, res
     // one unit (was: array-form $transaction for the updates only, with audit
     // writes as separate, un-transacted calls afterward — a crash between the
     // two could leave rows marked without_permission with zero audit trail).
-    const updatedRows = await prisma.$transaction(async (tx) => {
+    const updatedRows = await lockCappedTransaction(prisma, async (tx) => {
       const rows = [];
       for (const rec of eligible) {
         const updated = await tx.attendanceDaily.update({
@@ -896,9 +898,10 @@ router.post('/daily/:id/restore-auto', authorize('admin', 'hr'), async (req, res
 
     // Clear the lock so processDate recomputes this row from raw logs. Done under the employee+day lock (like every
     // other writer of this row) so a concurrent sync/manual save cannot interleave between the unlock and the recompute.
+    // F-M1: the lock is cleared by the engine's OWN recompute write (restoreAuto), never in a separate step beforehand — if the
+    // recompute fails, nothing was written: the row keeps its lock AND HR's values, so the next sync cannot overwrite them.
     await withEmployeeDateLock(rec.employeeId, dateStr, async () => {
-      await prisma.attendanceDaily.update({ where: { id: rec.id }, data: { manualEdit: false } });
-      await processDate(rec.date, rec.employeeId, { lockHeld: true });
+      await processDate(rec.date, rec.employeeId, { lockHeld: true, restoreAuto: true });
     });
 
     const updated = await prisma.attendanceDaily.findUnique({ where: { id: rec.id } });

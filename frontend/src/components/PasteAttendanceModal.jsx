@@ -115,7 +115,7 @@ export default function PasteAttendanceModal({ open, onClose, onApply, saving = 
                     {locked && <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> — مقفل (عطلة رسمية)</span>}
                   </td>
                   <td style={cellStyle}>{current}</td>
-                  <td style={{ ...cellStyle, fontWeight: 700, color: same ? 'var(--text-3)' : 'var(--accent, #2563eb)' }}>
+                  <td style={{ ...cellStyle, fontWeight: 700, color: same ? 'var(--text-3)' : 'var(--accent, #1E7A34)' }}>
                     {next}{same && !locked ? ' (بدون تغيير)' : ''}
                   </td>
                 </tr>

@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const { sendError, numericIdParam } = require('../utils/apiError');
+const { lockCappedTransaction } = require('../utils/lockWaitCap');
 router.param('id', numericIdParam);
 const { getPrisma } = require('../utils/prisma');
 const { modifier } = require('../utils/auditActor');
@@ -173,7 +174,7 @@ router.post('/', authorize('admin', 'hr'), async (req, res) => {
     let payrollId = null;
     const advance = await withPayrollKeyLock(parseInt(employeeId), monthNum, yearNum, async () => {
      payrollId = await payrollIdFor(parseInt(employeeId), monthNum, yearNum);
-     return prisma.$transaction(async (tx) => {
+     return lockCappedTransaction(prisma, async (tx) => {
       // Closed-payroll policy: a finalized/paid month accepts no new advance. Checked on the row as committed RIGHT NOW
       // (locked FOR UPDATE, inside the same payroll lock + transaction as the write); a rejection throws before the
       // advance and its audit row are written, so nothing is persisted.
@@ -224,7 +225,7 @@ router.delete('/:id', authorize('admin', 'hr'), async (req, res) => {
     // EF-007.6: delete + audit must commit atomically — see the POST handler above.
     // Same employee-month payroll lock as POST and the Payroll-grid edit (monthly total consistency).
     let payrollStatusForDelete = null;
-    const runDelete = () => prisma.$transaction(async (tx) => {
+    const runDelete = () => lockCappedTransaction(prisma, async (tx) => {
       // The Payroll grid lowers a month's total by adding a NEGATIVE delta row, so a month's rows can
       // legitimately be e.g. [+1000, -600] (total 400). Deleting the +1000 row on its own would leave
       // [-600]: a negative monthly total that INCREASES pay above salary. Inside this same payroll lock

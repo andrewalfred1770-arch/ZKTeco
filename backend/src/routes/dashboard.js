@@ -5,6 +5,8 @@ const moment = require('moment');
 const { applyApprovedAdjustment } = require('../engines/payrollEngine');
 const { mergeEffectivePenalty } = require('../engines/attendanceEngine');
 const { buildAttendanceRow } = require('../utils/attendanceRow');
+const { getRulesBatch, isWeekend } = require('../engines/rulesEngine');
+const { classifyMissingDay, buildHolidayIndex } = require('../utils/dayClassification');
 const { authenticate } = require('../middleware/auth');
 
 const prisma = getPrisma();
@@ -12,6 +14,7 @@ const prisma = getPrisma();
 // Production/LAN endpoint — read-only aggregation, but must still require a
 // valid session like every other data route. No-op when AUTH_ENABLED=false.
 router.use(authenticate);
+// Owner decision: the dashboard summary is readable by every user of the application.
 
 router.get('/', async (req, res) => {
   try {
@@ -23,7 +26,7 @@ router.get('/', async (req, res) => {
 
     // Core counts
     const [employees, devices, todayRecords] = await Promise.all([
-      prisma.employee.findMany({ where: empWhere, select: { id: true } }),
+      prisma.employee.findMany({ where: empWhere, select: { id: true, hireDate: true, branchId: true, status: true, effectiveStopDate: true } }),
       prisma.device.findMany({ where: { isArchived: false, ...(branchId ? { branchId: parseInt(branchId) } : {}) } }),
       prisma.attendanceDaily.findMany({
         where: { date: today, employee: empWhere },
@@ -53,8 +56,22 @@ router.get('/', async (req, res) => {
     // no DB) keeps this in one place instead of re-deriving the rule here.
     const dateStr = moment(today).format('YYYY-MM-DD');
     const effByEmployeeId = new Map(effTodayRecords.map(r => [r.employeeId, r]));
+    // ...but "no row" is classified the way the engine would (utils/dayClassification.js): an employee who has not started yet,
+    // or a weekly-off / holiday today, is not absent.
+    const noRowToday = employees.filter(emp => !effByEmployeeId.has(emp.id));
+    let classifyToday = null;
+    if (noRowToday.length) {
+      const rulesByEmployee = await getRulesBatch(noRowToday);
+      const holidayOn = buildHolidayIndex(await prisma.holiday.findMany({ where: { date: today } }));
+      const dayDate = new Date(`${dateStr}T12:00:00`);
+      classifyToday = (emp) => classifyMissingDay({
+        hireDate: emp.hireDate, dateStr, stopDate: emp.effectiveStopDate, stopped: emp.status === false,
+        isWeekendDay: dayDate.getDay() === 5 || isWeekend(dayDate, (rulesByEmployee.get(emp.id) || {}).weekend_days),
+        isHolidayDay: holidayOn(dateStr, emp.branchId),
+      });
+    }
     const absent = employees.filter(emp =>
-      buildAttendanceRow({ employee: emp, merged: effByEmployeeId.get(emp.id) || null, dateStr }).isAbsent
+      buildAttendanceRow({ employee: emp, merged: effByEmployeeId.get(emp.id) || null, dateStr, missingDay: classifyToday && !effByEmployeeId.has(emp.id) ? classifyToday(emp) : null }).isAbsent
     ).length;
 
     // Same adjustment-aware rows as `absent` above (an approved forcePresent day is present here AND not absent).

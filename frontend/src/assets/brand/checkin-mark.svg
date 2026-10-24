@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="CheckIn">
+  <title>CheckIn</title>
+  <!-- CheckIn symbol: an open geometric C (identity / time dial) holding a check that exits through the opening (verification). Transparent background. -->
+  <path d="M44.62 14A22 22 0 1 0 44.62 50" stroke="#2563EB" stroke-width="7" stroke-linecap="round"/>
+  <path d="M21.5 33.5L29 41L51 22" stroke="#38BDF8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

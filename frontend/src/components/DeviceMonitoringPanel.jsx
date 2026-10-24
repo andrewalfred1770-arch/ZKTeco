@@ -152,7 +152,8 @@ function MiniKpi({ icon: Icon, label, value, tone, sub }) {
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: tone ? color : 'var(--text-3)' }}>
         <Icon style={{ width: 14, height: 14, flexShrink: 0 }} />
-        <span style={{ fontSize: 12, fontWeight: 700, lineHeight: 1.3, ...ellipsis }}>{label}</span>
+        {/* labels wrap onto a second line instead of truncating: they are short Arabic phrases that must stay readable */}
+        <span title={label} style={{ fontSize: 12, fontWeight: 700, lineHeight: 1.3, minWidth: 0, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{label}</span>
       </div>
       <span style={{ fontSize: 22, fontWeight: 800, lineHeight: 1.2, color, fontVariantNumeric: 'tabular-nums' }}>{value}</span>
       {sub && <span style={{ fontSize: 11.5, lineHeight: 1.3, color: 'var(--text-3)' }}>{sub}</span>}

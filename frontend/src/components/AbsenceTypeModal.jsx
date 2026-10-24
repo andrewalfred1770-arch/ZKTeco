@@ -31,7 +31,7 @@ const TYPES = [
     sub: 'أدخل عدد أيام الخصم',
     days: null,
     Icon: Settings,
-    color: 'var(--accent, #2563eb)',
+    color: 'var(--accent, #1E7A34)',
   },
 ];
 
@@ -220,15 +220,15 @@ export default function AbsenceTypeModal({
 
         {/* Preview badge */}
         <div style={{
-          background: 'rgba(37,99,235,0.10)',
-          border: '1px solid rgba(37,99,235,0.25)',
+          background: 'rgba(79,191,107,0.10)',
+          border: '1px solid rgba(79,191,107,0.25)',
           borderRadius: 8, padding: '10px 14px',
           display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20,
           fontFamily: 'Cairo, sans-serif',
         }}>
           <div style={{ flex: 1, fontSize: 13, color: 'var(--text)' }}>
             <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>أيام الخصم: </span>
-            <strong style={{ color: '#60a5fa', fontSize: 15 }}>{effectiveDays}</strong>
+            <strong style={{ color: 'var(--accent)', fontSize: 15 }}>{effectiveDays}</strong>
             <span style={{ color: 'var(--text-muted)', fontSize: 11 }}> × المعدل اليومي</span>
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'left' }}>

@@ -10,6 +10,7 @@
 import { buildReportHTML } from './reportTemplate.js';
 import { BRAND, FILE_PREFIX } from './branding.js';
 import { westernDigits, getNestedValue } from './formatters.js';
+import { instantDateStr } from './businessDate.js';
 
 // Re-export so existing imports (`import { getNestedValue } from '../lib/printUtils'`) keep working
 export { getNestedValue };
@@ -20,7 +21,8 @@ function nowStr() {
   const pad = n => String(n).padStart(2, '0');
   return westernDigits(`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}  ${pad(d.getHours())}:${pad(d.getMinutes())}`);
 }
-function nowFilename() { return new Date().toISOString().slice(0, 10); }
+// The file name carries the LOCAL calendar day (toISOString() is the UTC date: it names the previous day between 00:00 and 03:00 at UTC+3).
+function nowFilename() { return instantDateStr(new Date()); }
 function safeName(t) {
   return String(t).replace(/[^\w؀-ۿ\s-]/g, '').trim().replace(/\s+/g, '_') || 'report';
 }

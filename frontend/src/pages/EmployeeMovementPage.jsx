@@ -14,6 +14,7 @@ import { useFailedEdits } from '../hooks/useFailedEdits';
 import FailedEditsBanner from '../components/FailedEditsBanner';
 import { handleEditFailure } from '../lib/failedEdits';
 import { runBulkRow, tallyBulk, summarizeBulk } from '../lib/bulkApply';
+import { isPlaceholderDay, placeholderKey, createDayMaterializer, replacePlaceholder, setPlaceholderField, validatePlaceholderEdit, isNoopPlaceholderEdit } from '../lib/placeholderDay';
 import api from '../lib/api';
 import PasteAttendanceModal from '../components/PasteAttendanceModal';
 import { useAttendancePaste } from '../hooks/useAttendancePaste';
@@ -27,12 +28,13 @@ import { useIsNarrowViewport } from '../hooks/useIsNarrowViewport';
 import PrintPreviewModal from '../components/PrintPreviewModal';
 import ManualPenaltyModal from '../components/ManualPenaltyModal';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
-import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_MEDIUM, tabToNextCell, safeRefreshCells as sharedSafeRefreshCells, isAbsentRow, attendanceRowClass } from '../lib/gridDefaults';
+import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_MEDIUM, withHeaderFloor, tabToNextCell, safeRefreshCells as sharedSafeRefreshCells, isAbsentRow, attendanceRowClass } from '../lib/gridDefaults';
 import { nameCell, codeCell } from '../lib/cellStyles';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
 import { useStaleGuard, keepCurrentRows } from '../lib/staleGuard';
 import TimeCellEditor from '../components/grid/TimeCellEditor';
 import AbsenceTypeModal, { ABSENCE_TYPE_LABELS } from '../components/AbsenceTypeModal';
+import { summarizeSave, buildSaveToast } from '../lib/postSaveSummary';
 import AttendanceFilterBar from '../components/AttendanceFilterBar';
 import { useAttendanceFilter } from '../hooks/useAttendanceFilter';
 import { ACTOR, HHMM_RE, OVERRIDE_FIELD_MAP, toHHMM, replaceAttendanceRow, applyRowFieldUpdate } from '../lib/attendanceUtils';
@@ -270,6 +272,29 @@ export default function EmployeeMovementPage() {
   const [loading,     setLoading]     = useState(false);
   const [printOpen,   setPrintOpen]   = useState(false);
   const [penaltyRow,  setPenaltyRow]  = useState(null);
+  // Save outcome — NO modal and nothing to click. The edit is already saved (and, server-side, the draft payroll already recalculated)
+  // when the PUT answers; what the server proved (lib/postSaveSummary.js) becomes ONE small non-blocking toast. Saves that finish close
+  // together (Tab-through editing, bulk apply) are coalesced into a single toast. Payroll failures / closed months stay visible (error /
+  // warning toast); failed saves are toasted by the edit handler itself. It never calls the API and never touches the save.
+  const saveOutcomesRef = useRef([]);
+  const saveToastTimerRef = useRef(null);
+  const flushSaveToast = useCallback(() => {
+    saveToastTimerRef.current = null;
+    const entries = saveOutcomesRef.current.splice(0);
+    let t = null;
+    try { t = buildSaveToast(entries); } catch { /* informational only: must never affect a saved edit */ }
+    if (!t) return;
+    if (t.level === 'error') toast.error(t.message, { id: 'attendance-save-error', duration: 8000 });
+    else if (t.level === 'warning') toast(t.message, { id: 'attendance-save-warning', icon: '⚠️', duration: 6000 });
+    else toast.success(t.message, { id: 'attendance-save-ok', duration: 2500 });
+  }, []);
+  const queueSaveToast = useCallback((entry) => {
+    if (!entry) return;
+    saveOutcomesRef.current.push(entry);
+    if (saveToastTimerRef.current) clearTimeout(saveToastTimerRef.current);
+    saveToastTimerRef.current = setTimeout(flushSaveToast, 300);
+  }, [flushSaveToast]);
+  useEffect(() => () => { if (saveToastTimerRef.current) { clearTimeout(saveToastTimerRef.current); flushSaveToast(); } }, [flushSaveToast]);
   const [quickEdit, setQuickEdit] = useState(() => {
     // Persist across reloads — default ON (true) for Excel-like UX
     const saved = localStorage.getItem('movement_quick_edit');
@@ -277,6 +302,7 @@ export default function EmployeeMovementPage() {
   });
   const [absenceModal, setAbsenceModal] = useState(null);
   const [absenceSaving, setAbsenceSaving] = useState(false);
+  const absenceSavingRef = useRef(false);   // synchronous re-entry guard for handleAbsenceSave (state alone updates a render later)
 
   // ── Filter system ─────────────────────────────────────────────────────────
   const {
@@ -465,9 +491,11 @@ export default function EmployeeMovementPage() {
   // overtime for employees who worked a weekly holiday; the engine converts the
   // day to a "holiday work day" (all worked time = overtime, no late/early/
   // absence penalties) regardless of whether the punch was manual or automatic.
-  // Public holidays (isHoliday) stay locked — a distinct, unrelated concept.
+  // Public holidays (isHoliday) stay locked — a distinct, unrelated concept. A day BEFORE the employee's hire date (isPreHire) is shown as a
+  // non-working day but remains editable: the engine lets a manual entry override the pre-hire gate, and HR must be able to record work done
+  // before the recorded start date (for example when the hire date was entered as the enrollment date).
   const editableNotOff = p =>
-    !p.node?.rowPinned && !p.data?.isHoliday;
+    !p.node?.rowPinned && (!p.data?.isHoliday || !!p.data?.isPreHire);
 
   const editCellClass = (field, editableFn) => p => {
     if (!p.data) return '';
@@ -517,21 +545,24 @@ export default function EmployeeMovementPage() {
       cellStyle: codeCell(),
     },
     {
-      field:'employeeName', headerName:'اسم الموظف', width:160, minWidth:140, pinned:'right',
+      field:'employeeName', headerName:'اسم الموظف', width:220, minWidth:180, pinned:'right',   // same width as the Daily grid: 160 clipped long Arabic/English names
       cellStyle: (p) => p.data?.isMonitored ? { ...nameCell(), color: p.data.monitorColor || '#f59e0b', fontWeight: '800' } : nameCell(),
       cellClass: (p) => (!p.data?.isMonitored && isAbsentRow(p.data)) ? 'cell-name-absent' : '',
       cellRenderer: ({ data, value, node }) => {
         if (node.rowPinned) return value;
+        // .ag-cell is a flex box, so a bare text node is clipped without an ellipsis and hides characters silently. The name sits in its own
+        // shrinkable span: it truncates with an ellipsis only when it really does not fit, and the title shows the full name on hover.
+        const nameSpan = <span dir="auto" title={value || ''} style={{ minWidth:0, flex:'1 1 auto', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', textAlign:'right' }}>{value}</span>;   // dir=auto: an English name truncates at its END (head stays readable); text-align keeps it on the code side
         return data?.isMonitored
-          ? <span style={{ display:'flex', alignItems:'center', gap:5 }}>
+          ? <span style={{ display:'flex', alignItems:'center', gap:5, minWidth:0, width:'100%' }}>
               <span style={{
                 display:'inline-flex', alignItems:'center', justifyContent:'center',
                 width:14, height:14, borderRadius:'50%', flexShrink:0,
                 background: data.monitorColor || '#f59e0b', fontSize:8, color:'#fff', fontWeight:900,
               }}>●</span>
-              {value}
+              {nameSpan}
             </span>
-          : value;
+          : nameSpan;
       },
     },
     {
@@ -701,7 +732,7 @@ export default function EmployeeMovementPage() {
       }),
     },
     {
-      headerName:'الحالة', width:125, pinned: isNarrow ? undefined : 'left',
+      headerName:'الحالة', width:125, minWidth:105, pinned: isNarrow ? undefined : 'left',
       editable: p => !p.node?.rowPinned,
       cellEditor:'agSelectCellEditor',
       cellEditorParams:{ values:['present','late','absent','early_leave','weekend','holiday'] },
@@ -711,7 +742,7 @@ export default function EmployeeMovementPage() {
       cellRenderer: ({ data, node }) => node.rowPinned ? null : <StatusCell data={data} />,
       cellStyle:{ justifyContent:'center' },
     },
-  ], [isLight, isNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
+  ].map(withHeaderFloor), [isLight, isNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF, cellClassRules: failed.cellClassRules }), [failed]);
 
@@ -724,9 +755,9 @@ export default function EmployeeMovementPage() {
   // composite key built from them changes AG Grid's row identity mid-edit,
   // destroying and recreating the RowNode (rows/cells appear to "disappear").
   // The employeeId-date fallback only applies to placeholder calendar days
-  // with no AttendanceDaily record yet (id === null) — those rows are never
-  // editable (handleCellEdit bails out on `!rowData?.id`), so they can never
-  // hit this bug.
+  // with no AttendanceDaily record yet (id === null). Editing one first creates
+  // its row (savePlaceholderEdit → lib/placeholderDay.js) and swaps the stored
+  // row in, so the key changes exactly once, before the ordinary save starts.
   const getRowId = useCallback(p => (
     p.data.id != null ? String(p.data.id) : `${p.data.employeeId}-${p.data.date}`
   ), []);
@@ -793,8 +824,12 @@ export default function EmployeeMovementPage() {
   // canonical attendance values. Row IDENTITY (getRowId) is keyed off
   // data.id — never off date — so this carry-over is purely cosmetic
   // (the "التاريخ"/day-name/day-number columns), not an identity concern.
-  const applyUpdate = useCallback((updatedFields, originalRow, field) => {
+  const applyUpdate = useCallback((updatedFields, originalRow, field, requested) => {
     if (!updatedFields || !originalRow?.id) return;
+    // Save-outcome toast: what the server really answered (null when it reported "unchanged" -> no toast). Never throws into the save.
+    try {
+      queueSaveToast(summarizeSave(updatedFields, { field, requested, rowDate: originalRow.date, employeeName: originalRow.employeeName }));
+    } catch { /* the toast is informational only */ }
     guard.markFresh([originalRow.id]);   // this save result is now the newest data for the row
     const newRow = {
       ...updatedFields,
@@ -860,7 +895,7 @@ export default function EmployeeMovementPage() {
     }, 200);
     moneyRefreshDebounceRef.current = timerId;
     pendingTimersRef.current.add(timerId);
-  }, [empId, month, branchId, departmentId]);
+  }, [empId, month, branchId, departmentId, queueSaveToast]);
 
   // Revert a single field's displayed value after a validation or save
   // failure — through the SAME React-state path (setGridRows + setData) that
@@ -883,12 +918,52 @@ export default function EmployeeMovementPage() {
     markSaving(n.data.id, field, n, true);
     try {
       const r = await runBulkRow({ row: n.data, field, newValue, save: (row) => saveRecord(row, field, newValue), failed });
-      if (r.status === 'ok') { try { applyUpdate(r.updated, n.data, field); markSaved(n.data.id, field, n); } catch { /* the server already confirmed this row: a display error must not turn it into a failure */ } }
+      if (r.status === 'ok') { try { applyUpdate(r.updated, n.data, field, newValue); markSaved(n.data.id, field, n); } catch { /* the server already confirmed this row: a display error must not turn it into a failure */ } }
       return r;
     } finally {
       markSaving(n.data.id, field, n, false);
     }
   }, [saveRecord, applyUpdate, markSaving, markSaved, failed]);
+
+  // ── Edit on a day that has NO AttendanceDaily row yet (Movement's id:null placeholder) ──────────────────────────────────────────
+  // Used to be dropped silently (`if (!rowData?.id) return`): the cell took the typed time and nothing was ever sent. See
+  // lib/placeholderDay.js for the full explanation. Here: validate first (nothing is created for an invalid value), make the day's
+  // row exist through the existing process endpoint, swap the placeholder for the stored row, then run the ORDINARY edit on it.
+  const materializer = useMemo(() => createDayMaterializer(api), []);
+  const handleCellEditRef = useRef(null);
+  const savePlaceholderEdit = useCallback(async ({ rowData, colDef, newValue, oldValue }) => {
+    const field = colDef.field;
+    const key = placeholderKey(rowData);
+    const restore = (value) => setGridRows(rows => setPlaceholderField(rows, rowData, field, value));
+    const bad = validatePlaceholderEdit(field, newValue, { hhmmFields: ['checkIn', 'checkOut', 'workedMinutes'], overrideFields: Object.keys(OVERRIDE_FIELD_MAP) });
+    if (bad) { toast.error(bad); restore(oldValue ?? null); return; }
+    if (isNoopPlaceholderEdit(newValue, oldValue)) return;
+    editCountRef.current++;                         // no background reload may swap the rows until the whole save has finished
+    try {
+      let fresh;
+      try {
+        fresh = await materializer.ensure(rowData);
+      } catch (err) {
+        handleEditFailure({
+          failed, err, idempotent: true,            // creating the day's row is idempotent (one row per employee+day)
+          entry: { rowId: key, field, value: newValue, oldValue: oldValue ?? null, label: rowData.employeeName },
+          retain: () => {},                         // the grid already shows the typed value
+          revert: () => restore(oldValue ?? null),
+          notifyKept: () => toast.error('انتهت الجلسة — التعديل لم يُحفظ بعد. سجّل الدخول ثم اضغط «إعادة المحاولة» أعلى الجدول', { id: 'edit-not-saved', duration: 9000 }),
+          notifyUnknown: () => toast.error('انقطع الاتصال — لم يُتأكد هل حُفظ هذا التعديل. القيمة محفوظة في الجدول: راجع الشريط أعلى الجدول (إعادة المحاولة / تجاهل)', { id: 'edit-not-saved', duration: 9000 }),
+          notifyFailed: (e2) => toast.error(e2?.response?.data?.error || e2?.message || 'تعذّر حفظ التعديل'),
+        });
+        return;
+      }
+      failed.clear(key, field);                     // the day now exists on the server; from here the edit is an ordinary one
+      setGridRows(rows => replacePlaceholder(rows, fresh));
+      setData(prev => (prev ? { ...prev, days: replacePlaceholder(prev.days, fresh) } : prev));
+      await handleCellEditRef.current({ data: fresh, colDef, newValue, oldValue: fresh[field] ?? null, node: undefined, noBulk: true });
+    } finally {
+      editCountRef.current--;
+      if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }
+    }
+  }, [failed, materializer, load]);
 
   // ── Cell edit handler ─────────────────────────────────────────────────────
   revertFieldRef.current = revertField;
@@ -897,7 +972,11 @@ export default function EmployeeMovementPage() {
     // newValue === undefined (a cleared field commits '' instead) — without
     // this guard the workedMinutes branch coerces undefined → 0 and saves it.
     if (newValue === undefined) return;
-    if (!rowData?.id) return;
+    if (!rowData?.id) {
+      // A calendar day with no stored row: create it, then save through the ordinary path (lib/placeholderDay.js).
+      if (isPlaceholderDay(rowData)) await savePlaceholderEdit({ rowData, colDef, newValue, oldValue });
+      return;
+    }
     const field = colDef.field;
 
     // Validation
@@ -932,6 +1011,13 @@ export default function EmployeeMovementPage() {
     }
 
     // Save primary row — block background reloads for the duration of the PUT
+    // Duplicate-submission guard: this exact cell (row + field) is still being saved by an earlier commit. Do not send a second PUT for it:
+    // show the value the grid had, say so briefly, and let the first save's answer land. (Other cells / other rows are unaffected.)
+    if (savingCellsRef.current.has(`${rowData.id}:${field}`)) {
+      revertField(rowData.id, field, oldValue);
+      toast('جارٍ حفظ هذه الخانة — أعد التعديل بعد لحظة', { id: 'edit-in-flight', duration: 2000 });
+      return;
+    }
     editCountRef.current++;
     guard.beginEdit([rowData.id]);
     performance.mark('refreshCells-start'); // Chromium tracing: observational only, see trace-capture investigation
@@ -940,7 +1026,7 @@ export default function EmployeeMovementPage() {
     try {
       const updated = await saveRecord(rowData, field, newValue);
       if (updated) {
-        applyUpdate(updated, rowData, field);
+        applyUpdate(updated, rowData, field, newValue);
         performance.mark('applyUpdate'); // Chromium tracing: observational only
         markSaved(rowData.id, field, node);
         failed.clear(rowData.id, field);   // the server confirmed this cell: it is no longer an unsaved edit
@@ -964,9 +1050,9 @@ export default function EmployeeMovementPage() {
         entry: { rowId: rowData.id, field, value: newValue, oldValue, label: rowData.employeeName },
         retain: (e) => revertField(e.rowId, e.field, e.value),   // revertField(row, field, X) simply writes X into the row state: here the typed value
         revert: () => { revertField(rowData.id, field, oldValue); markError(rowData.id, field, node); },
-        notifyKept: () => toast.error('انتهت الجلسة — التعديل لم يُحفظ بعد. سجّل الدخول ثم اضغط «إعادة المحاولة» أعلى الجدول', { id: 'edit-not-saved', duration: 9000 }),
-        notifyUnknown: () => toast.error('انقطع الاتصال — لم يُتأكد هل حُفظ هذا التعديل. القيمة محفوظة في الجدول: راجع الشريط أعلى الجدول (إعادة المحاولة / تجاهل)', { id: 'edit-not-saved', duration: 9000 }),
-        notifyFailed: (e2) => toast.error(e2?.response?.data?.error || 'فشل التحديث'),
+        notifyKept: () => { toast.error('انتهت الجلسة — التعديل لم يُحفظ بعد. سجّل الدخول ثم اضغط «إعادة المحاولة» أعلى الجدول', { id: 'edit-not-saved', duration: 9000 }); },
+        notifyUnknown: () => { toast.error('انقطع الاتصال — لم يُتأكد هل حُفظ هذا التعديل. القيمة محفوظة في الجدول: راجع الشريط أعلى الجدول (إعادة المحاولة / تجاهل)', { id: 'edit-not-saved', duration: 9000 }); },
+        notifyFailed: (e2) => { toast.error(e2?.response?.data?.error || 'فشل التحديث'); },
       });
     } finally {
       guard.endEdit([rowData.id]);
@@ -1002,10 +1088,12 @@ export default function EmployeeMovementPage() {
     const summary = summarizeBulk(tallyBulk(results));
     if (summary.type === 'success') toast.success(summary.text);
     else toast.error(summary.text, { id: 'bulk-apply-result', duration: 12000 });
-  }, [saveRecord, saveBulkRow, markSaving, markSaved, markError, applyUpdate, revertField, load, failed]);
+  }, [saveRecord, saveBulkRow, savePlaceholderEdit, markSaving, markSaved, markError, applyUpdate, revertField, load, failed]);
+  handleCellEditRef.current = handleCellEdit;
 
   const handleAbsenceSave = useCallback(async ({ absenceType, penaltyDays, absenceReason }) => {
-    if (!absenceModal?.id) return;
+    if (!absenceModal?.id || absenceSavingRef.current) return;   // a second click while the first save is in flight sends nothing
+    absenceSavingRef.current = true;
     editCountRef.current++;
     guard.beginEdit([absenceModal.id]);
     setAbsenceSaving(true);
@@ -1014,14 +1102,15 @@ export default function EmployeeMovementPage() {
         absenceType, penaltyDays, absenceReason, modifiedByName: ACTOR,
       });
       const origRow = absenceModal._originalRow;
-      if (origRow) applyUpdate(updated, origRow);
-      toast.success('تم تحديث نوع الغياب');
+      // applyUpdate queues the save-outcome toast (saved + payroll status); keep the plain confirmation only when there is no row to apply to
+      if (origRow) applyUpdate(updated, origRow, 'absence'); else toast.success('تم تحديث نوع الغياب');
       setAbsenceModal(null);
     } catch (err) {
       toast.error(err?.response?.data?.error || 'فشل تحديث نوع الغياب');
     } finally {
       guard.endEdit([absenceModal.id]);
       editCountRef.current--;
+      absenceSavingRef.current = false;
       setAbsenceSaving(false);
       if (editCountRef.current === 0 && pendingReloadRef.current) { pendingReloadRef.current = false; load(false); }
     }
@@ -1062,8 +1151,8 @@ export default function EmployeeMovementPage() {
   const getRowStyle = useCallback(({ node, data }) => {
     if (node.rowPinned === 'bottom') return {
       background:'var(--erp-ag-header-bg-end, #21262D)',
-      color:'#93c5fd', fontWeight:'700',
-      borderTop:'2px solid var(--erp-ag-header-accent, #2563eb)',
+      color:'var(--accent)', fontWeight:'700',
+      borderTop:'2px solid var(--erp-ag-header-accent, #1E7A34)',
     };
     if (data?.isMonitored) {
       const c = data.monitorColor || '#f59e0b';
@@ -1121,7 +1210,7 @@ export default function EmployeeMovementPage() {
       <div className="page-header">
         <div>
           <h1 className="page-title flex items-center gap-2">
-            <UserSquare2 className="w-5 h-5 text-blue-400" />
+            <UserSquare2 className="w-5 h-5 text-accent" />
             كشف الحضور الشهري
           </h1>
           <p className="text-xs mt-0.5" style={{ color:'var(--erp-text-muted)' }}>
@@ -1376,6 +1465,7 @@ export default function EmployeeMovementPage() {
           record={penaltyRow}
           onClose={() => setPenaltyRow(null)}
           onSaved={load}
+          onResult={(resp) => queueSaveToast(summarizeSave(resp, { field: 'penalty', rowDate: penaltyRow.date, employeeName: penaltyRow.employeeName }))}
         />
       )}
 

@@ -61,6 +61,10 @@ function sanitize(value, depth = 0) {
 
 /** Actor from an Express request: authenticated user if any, else local desktop. */
 function actorFromReq(req) {
+  // LAN no-login mode: an allowlisted DEVICE (middleware/clientAllowlist.js), never a person.
+  if (req && req.lanClient && !req.user) {
+    return { actorType: 'lan-device', actorId: null, actorName: `LAN device ${req.lanClient.ip}${req.lanClient.label ? ` (${req.lanClient.label})` : ''}`.slice(0, 100), actorRole: null };
+  }
   const u = req && req.user;
   if (u && u.id != null) {
     return { actorType: 'user', actorId: u.id, actorName: u.name || u.username || null, actorRole: u.role || null };

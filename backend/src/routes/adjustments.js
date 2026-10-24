@@ -11,6 +11,7 @@
 const router = require('express').Router();
 const { resolveActor } = require('../utils/auditActor');
 const { sendError, numericIdParam } = require('../utils/apiError');
+const { lockCappedTransaction } = require('../utils/lockWaitCap');
 router.param('id', numericIdParam);
 const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
@@ -659,7 +660,13 @@ router.post('/:id/revert', authorize('admin', 'hr'), async (req, res) => {
 
     // Regenerate the day from raw logs (a no-op for a row that is still locked —
     // processDate skips manualEdit rows), then re-settle payroll for the month.
-    try { await attendanceEngine.processDate(adj.date, adj.employeeId); }
+    // H2: in a finalized/paid month whose raw punches are gone, the engine leaves the stored attendance untouched (never turns it into
+    // absence). The revert itself (adjustment deleted, lock released, audit written) is NOT affected — only the destructive recompute is skipped.
+    let closedMonthSkip = null;
+    try {
+      const pr = await attendanceEngine.processDate(adj.date, adj.employeeId);
+      if (pr && pr.skipped === 'closed-evidence-loss') closedMonthSkip = { employeeId: pr.employeeId, month: pr.month, year: pr.year, payrollStatus: pr.payrollStatus, days: [pr.date] };
+    }
     catch (err) { logger.error(`[Adjustments] revert reprocess failed (adj #${id}): ${err.message}`); }
     const payroll = await recalcForAdjustment(adj, req.io, 'reverted');
 
@@ -688,7 +695,7 @@ router.post('/:id/revert', authorize('admin', 'hr'), async (req, res) => {
       source: 'adjustment-revert',
     }).catch((err) => logger.error(`[Adjustments] revert audit write failed (adj #${id}): ${err.message}`));
 
-    res.json({ message: 'تم الإلغاء واسترجاع القيم الأصلية', payroll });
+    res.json({ message: 'تم الإلغاء واسترجاع القيم الأصلية', payroll, ...(closedMonthSkip ? { skippedClosedPayroll: [closedMonthSkip] } : {}) });
   } catch (err) { sendError(res, err); }
 });
 
@@ -746,7 +753,7 @@ router.post('/bulk-approve', authorize('admin', 'hr'), async (req, res) => {
     // accurately reflects what was actually persisted.
     for (const id of ids) {
       try {
-        const adj = await prisma.$transaction(async (tx) => {
+        const adj = await lockCappedTransaction(prisma, async (tx) => {
           const priorAdj = await tx.attendanceAdjustment.findUnique({
             where: { id: parseInt(id) }, select: { id: true, attendanceDailyId: true, approvedAt: true },
           });

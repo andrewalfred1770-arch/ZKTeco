@@ -83,12 +83,29 @@ function describeExecError(err) {
   return parts.join(' | ');
 }
 
+/**
+ * Prisma's CLI keeps a cache under <backend>/node_modules/.cache/prisma by default. A per-machine install lives in
+ * C:\Program Files, which a normal user cannot write to, so `migrate deploy` failed with EPERM (mkdir ...\.cache\prisma)
+ * and the backend refused to start ("cannot reach the server"). When the app runs with a persistent config dir
+ * (desktop / LAN launcher set CONFIG_DIR) the cache goes there instead - Prisma honours CACHE_DIR. An explicit CACHE_DIR is
+ * respected; with no CONFIG_DIR (dev / tests / server mode) nothing changes.
+ */
+function migrateEnv() {
+  const env = { ...process.env };
+  if (!env.CACHE_DIR && env.CONFIG_DIR) {
+    const dir = path.join(env.CONFIG_DIR, 'cache');
+    try { fs.mkdirSync(dir, { recursive: true }); env.CACHE_DIR = dir; }
+    catch { /* unwritable config dir: keep Prisma's default and let the migration report the real error */ }
+  }
+  return env;
+}
+
 /** Runs `prisma migrate deploy` in-process via Node (no npx/shell needed). Returns its stdout. */
 function runMigrateDeploy() {
   const prismaCli = require.resolve('prisma/build/index.js');
   return execFileSync(process.execPath, [prismaCli, 'migrate', 'deploy'], {
     cwd: BACKEND_ROOT,
-    env: process.env,
+    env: migrateEnv(),
     stdio: 'pipe',
     timeout: 60000,
   });

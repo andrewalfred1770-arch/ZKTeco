@@ -1,0 +1,329 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   CheckIn — official brand tokens (loaded AFTER index.css, so it re-points the theme variables index.css defines).
+
+   Palette: charcoal #293438 / deep #20282B come from the approved logo. The logo's own green (#1EC60E) is deliberately NOT used for the UI:
+   it is a neon yellow-green that clashes with the cool charcoal chrome, so the interface uses a muted forest green (hue ~135) instead:
+     Light  #1E7A34 (white text 5.4:1; hover #17632A; tint #E9F4EC; border #BBDCC3)
+     Dark   #4FBF6B (8.5:1 on #090909; charcoal text #0A130C 8.1:1 on it; hover #6FD088)
+   Green marks primary actions, active/selected states and meaningful success only — never a surface wash.
+   Warning, error, overtime and holiday/info keep their own hues.
+
+   LIGHT  = white / very light neutral surfaces, charcoal text + navigation, green actions.
+   DARK   = neutral charcoal ramp (NOT green, NOT blue): app #090909 · sidebar #0C0C0C · cards #151515 · elevated #1B1B1B · border #2D2D2D.
+   Everything dark is scoped to `html.dark, html:not(.light)`; everything light to `html.light`.
+═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── brand identity constants ── */
+  --ci-charcoal:       #293438;
+  --ci-charcoal-deep:  #20282B;
+  --ci-green:          #4FBF6B;   /* logo green: indicators, focus, dark-theme accent, charts */
+  --ci-green-dark:     #3FA85C;   /* logo inner arc: hover / pressed on bright green */
+  --ci-green-strong:   #1E7A34;   /* accessible green for text + white-text fills on light surfaces (5.1:1 on white) */
+  --ci-green-deeper:   #17632A;   /* hover for --ci-green-strong */
+  --ci-green-tint:     #E9F4EC;   /* subtle selection / success background */
+  --ci-white:          #FFFFFF;
+  --ci-surface:        #FFFFFF;
+  --ci-border:         #E5E7EB;
+  --ci-text-2:         #6B7280;   /* secondary text */
+
+  /* ── semantic state colours (kept distinct from the brand green) ── */
+  --ci-success:   #4FBF6B;
+  --ci-warning:   #F59E0B;
+  --ci-error:     #EF4444;
+  --ci-info:      #0E7490;        /* holiday / informational — a cool teal, deliberately not green and not the old brand blue */
+
+  /* neutral dark ramp, also used by the launcher / startup layers (those screens are always dark) */
+  --ci-bg:        #090909;
+  --ci-side:      #0C0C0C;
+  --ci-card:      #151515;
+  --ci-elev:      #1B1B1B;
+  --ci-hover:     #242424;
+  --ci-border-dark: #2D2D2D;
+  --ci-text:      #F5F5F5;
+  --ci-text-2-dark: #A3A3A3;
+  --ci-muted:     #8A8A8A;
+  --ci-faint:     #737373;
+
+  --ci-dur-ui:    200ms;
+  --ci-dur-scene: 320ms;
+  --ci-ease:      cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  --font-brand: 'Cairo', 'IBM Plex Sans Arabic', 'Segoe UI', sans-serif;
+}
+
+/* ═══ DARK THEME — neutral charcoal, green only as the accent ═══════════════════ */
+html.dark, html:not(.light) {
+  --bg:           #090909;
+  --surface:      #151515;
+  --surface-content: #111111;
+  --surface-2:    #1B1B1B;
+  --surface-3:    #242424;
+  --surface-4:    #2D2D2D;
+  --border:       #2D2D2D;
+  --border-2:     rgba(255,255,255,0.06);
+  --text:         #F5F5F5;
+  --text-2:       #A3A3A3;
+  --text-3:       #8A8A8A;        /* >=5.2:1 on #151515 */
+  --text-muted:   #737373;        /* decorative / disabled only */
+
+  --accent:       #4FBF6B;        /* accent text, icons, focus, indicators (8.0:1 on #151515) */
+  --accent-2:     #4FBF6B;        /* primary button fill (carries charcoal text, see --btn-primary-text) */
+  --accent-text:  #6FD088;
+  --accent-soft:  rgba(79,191,107,0.10);   /* selected chips/tabs only: a restrained wash, never a surface */
+  --btn-primary-text:  #0A130C;
+  --btn-primary-hover: #6FD088;
+  --input-bg:     #090909;
+  --input-b:      #2D2D2D;
+  --focus-ring:   0 0 0 3px rgba(79,191,107,0.28), 0 0 0 1px #4FBF6B;
+  --shadow-card:  0 1px 2px rgba(0,0,0,0.5), 0 6px 18px -8px rgba(0,0,0,0.6);
+  --shadow-pop:   0 20px 48px -12px rgba(0,0,0,0.75), 0 0 0 1px rgba(255,255,255,0.06);
+
+  --ci-overlay-sync:   rgba(0,0,0,0.74);
+  --ci-overlay-drawer: rgba(0,0,0,0.58);
+  --ci-overlay-dialog: rgba(0,0,0,0.62);
+
+  --sidebar-background:      #0C0C0C;
+  --sidebar-surface-hover:   #242424;
+  --sidebar-surface-active:  rgba(79,191,107,0.12);   /* green only for the active item */
+  --sidebar-border:          #262626;
+  --sidebar-accent:          #4FBF6B;
+  --sidebar-text-primary:    #F5F5F5;
+  --sidebar-text-secondary:  #E5E7E8;
+  --sidebar-text-muted:      #B8C0C2;
+  --sidebar-icon:            #C5CDCF;
+  --sidebar-icon-active:     #6FD088;
+  --nav-badge-erp-bg: rgba(165,148,249,0.20); --nav-badge-erp-fg: #C7BBFF; --nav-badge-erp-bd: rgba(165,148,249,0.35);
+  --nav-badge-zk-bg:  rgba(34,184,207,0.20);  --nav-badge-zk-fg:  #67D6E8; --nav-badge-zk-bd:  rgba(34,184,207,0.35);
+  --nav-badge-ok-bg:  rgba(79,191,107,0.20);  --nav-badge-ok-fg:  #7AD393; --nav-badge-ok-bd:  rgba(79,191,107,0.35);
+
+  --status-present:        #4FBF6B;  --status-present-bg:   rgba(79,191,107,0.14);
+  --status-late:           #F59E0B;  --status-late-bg:      rgba(245,158,11,0.14);
+  --status-absent:         #EF4444;  --status-absent-bg:    rgba(239,68,68,0.14);
+  --status-early-leave:    #F97316;  --status-early-leave-bg: rgba(249,115,22,0.14);
+  --status-weekend:        #8A8A8A;  --status-weekend-bg:   rgba(163,163,163,0.10);
+  --status-holiday:        #22B8CF;  --status-holiday-bg:   rgba(34,184,207,0.14);
+  --status-overtime:       #A371F7;  --status-overtime-bg:  rgba(137,87,229,0.14);
+  --c-green:               #4FBF6B;
+  --c-red:                 #EF4444;
+
+  /* data tables */
+  --ag-background-color:              #151515;
+  --ag-header-background-color:       #1B1B1B;
+  --ag-foreground-color:              #D4D4D4;
+  --ag-header-foreground-color:       #F5F5F5;
+  --ag-odd-row-background-color:      #151515;
+  --ag-even-row-background-color:     #191919;
+  --ag-border-color:                  #2D2D2D;
+  --ag-row-border-color:              #242424;
+  --ag-row-hover-color:               #242424;
+  --ag-selected-row-background-color: rgba(79,191,107,0.13);
+  --ag-header-column-separator-color: #2D2D2D;
+
+  --h-grad: #1B1B1B; --h-accent: #2D2D2D; --h-text: #F5F5F5; --total-bg: #1B1B1B; --pin-b: #2D2D2D;
+  --cell-b: rgba(255,255,255,0.05);
+  --c-name: #F5F5F5; --c-code: #8A8A8A; --c-dept: #A3A3A3; --c-val: #D4D4D4; --c-muted: #737373;
+  --c-time: #F5F5F5; --c-money: #F5F5F5; --c-net: #F5F5F5; --c-net-border: rgba(255,255,255,0.16);
+  --erp-text: #F5F5F5; --erp-text-muted: #A3A3A3; --erp-text-faint: #8A8A8A; --erp-border: #2D2D2D; --erp-ag-header-bg-end: #1B1B1B;
+  --erp-ag-header-accent: #2D2D2D;
+}
+
+html:not(.light) .ag-theme-quartz-dark, html.dark .ag-theme-quartz-dark {
+  --ag-background-color: #151515; --ag-foreground-color: #D4D4D4; --ag-header-background-color: #1B1B1B; --ag-header-foreground-color: #F5F5F5;
+  --ag-odd-row-background-color: #151515; --ag-even-row-background-color: #191919; --ag-border-color: #2D2D2D; --ag-row-border-color: #242424;
+  --ag-row-hover-color: #242424; --ag-selected-row-background-color: rgba(79,191,107,0.13);
+}
+
+/* ═══ LIGHT THEME — white / light neutral surfaces, charcoal text, green actions ═══ */
+html.light {
+  /* Pure neutral-white Light theme. Greys are neutral (Tailwind gray scale), never green-tinted; green is reserved for actions,
+     active/selected states and semantic success. */
+  --bg:           #FFFFFF;
+  --surface:      #FFFFFF;
+  --surface-content: #FFFFFF;
+  --surface-2:    #F8FAFC;        /* table headers, card header strips */
+  --surface-3:    #F3F4F6;        /* hover surfaces */
+  --surface-4:    #E5E7EB;
+  --border:       #E5E7EB;
+  --border-2:     rgba(17,24,39,0.06);
+  --text:         #1F2937;
+  --text-2:       #4B5563;
+  --text-3:       #6B7280;        /* 4.8:1 on white */
+  --text-muted:   #6B7280;
+
+  --accent:       #1E7A34;        /* links, active text, focus (5.4:1 on white) */
+  --accent-2:     #1E7A34;        /* primary button fill — white text */
+  --accent-text:  #1E7A34;
+  --accent-soft:  #F0F7F1;        /* selected / active wash, never a page surface */
+  --btn-primary-text:  #FFFFFF;
+  --btn-primary-hover: #17632A;
+  --input-bg:     #FFFFFF;
+  --input-b:      #D1D5DB;        /* a step darker than the #E5E7EB hairline so field edges stay visible (3:1 non-text) */
+  --focus-ring:   0 0 0 3px rgba(30,122,52,0.25), 0 0 0 1px #1E7A34;
+  --shadow-card:  0 1px 2px rgba(17,24,39,0.05), 0 0 0 1px rgba(17,24,39,0.02);
+  --shadow-pop:   0 10px 34px rgba(17,24,39,0.16);
+
+  /* Sidebar (Light only): deep-charcoal chrome like the Dark sidebar; the rest of the Light UI stays pure white.
+     Green marks only the active item. Scoped to html.light, so the Dark sidebar tokens are untouched. */
+  --sidebar-background:      #20282B;
+  --sidebar-surface-hover:   #2C363A;
+  --sidebar-surface-active:  #243A2C;
+  --sidebar-border:          #363F43;
+  --sidebar-accent:          #4FBF6B;
+  --sidebar-text-primary:    #F5F5F5;
+  --sidebar-text-secondary:  #E5E7E8;
+  --sidebar-text-muted:      #B8C0C2;
+  --sidebar-icon:            #C5CDCF;
+  --sidebar-icon-active:     #6FD088;
+  --nav-badge-erp-bg: rgba(165,148,249,0.20); --nav-badge-erp-fg: #C7BBFF; --nav-badge-erp-bd: rgba(165,148,249,0.35);
+  --nav-badge-zk-bg:  rgba(34,184,207,0.20);  --nav-badge-zk-fg:  #67D6E8; --nav-badge-zk-bd:  rgba(34,184,207,0.35);
+  --nav-badge-ok-bg:  rgba(79,191,107,0.20);  --nav-badge-ok-fg:  #7AD393; --nav-badge-ok-bd:  rgba(79,191,107,0.35);
+
+  --ag-background-color:              #FFFFFF;
+  --ag-header-background-color:       #F8FAFC;
+  --ag-foreground-color:              #1F2937;
+  --ag-header-foreground-color:       #374151;
+  --ag-odd-row-background-color:      #FFFFFF;
+  --ag-even-row-background-color:     #FFFFFF;
+  --ag-border-color:                  #E5E7EB;
+  --ag-row-border-color:              #EEF0F3;
+  --ag-row-hover-color:               #F3F4F6;
+  --ag-selected-row-background-color: #F0F7F1;
+  --ag-header-column-separator-color: #E5E7EB;
+
+  --h-grad:   #F8FAFC;
+  --h-accent: #D1D5DB;
+  --h-text:   #374151;
+  --cell-b:   rgba(17,24,39,0.06);
+  --pin-b:    #E5E7EB;
+  --total-bg: #F8FAFC;
+
+  --c-name:    #1F2937;
+  --c-code:    #4B5563;
+  --c-dept:    #4B5563;
+  --c-val:     #1F2937;
+  --c-muted:   #6B7280;
+  --c-time:    #1F2937;
+  --c-money:   #1F2937;
+  --c-ot:      #5b21b6;
+  --c-penalty: #b83600;
+  --c-net:     #1F2937;
+  --c-green:   #1E7A34;
+  --c-red:     #b91c1c;
+  --c-net-border: rgba(17,24,39,0.18);
+
+  --status-present:        #1E7A34;  --status-present-bg:   rgba(30,122,52,0.10);
+  --status-late:           #b45309;  --status-late-bg:      rgba(180,83,9,0.11);
+  --status-absent:         #c62828;  --status-absent-bg:    rgba(198,40,40,0.10);
+  --status-early-leave:    #c2410c;  --status-early-leave-bg: rgba(194,65,12,0.10);
+  --status-weekend:        #4B5563;  --status-weekend-bg:   rgba(75,85,99,0.08);
+  --status-holiday:        #0E7490;  --status-holiday-bg:   rgba(14,116,144,0.11);
+  --status-overtime:       #6d28d9;  --status-overtime-bg:  rgba(109,40,217,0.10);
+
+  --ci-overlay-sync:   rgba(17,24,39,0.55);
+  --ci-overlay-drawer: rgba(17,24,39,0.40);
+  --ci-overlay-dialog: rgba(17,24,39,0.45);
+
+  --erp-text:              #1F2937;
+  --erp-text-muted:        #4B5563;
+  --erp-text-faint:        #6B7280;
+  --erp-border:            #E5E7EB;
+  --erp-ag-header-bg-end:  #F8FAFC;
+  --erp-ag-header-accent:  #1E7A34;
+}
+
+
+/* index.css pins the quartz palettes directly on the grid theme classes (a higher-specificity copy of the vars above) */
+html.light .ag-theme-quartz {
+  --ag-background-color: #FFFFFF; --ag-foreground-color: #20282B; --ag-header-background-color: #F8FAFC; --ag-header-foreground-color: #293438;
+  --ag-odd-row-background-color: #FFFFFF; --ag-even-row-background-color: #FFFFFF; --ag-border-color: #E5E7EB; --ag-row-border-color: #E5E7EB;
+  --ag-row-hover-color: rgba(30,122,52,0.07); --ag-selected-row-background-color: rgba(30,122,52,0.12);
+}
+
+/* ── Light theme: bluish slate utility remaps in index.css → neutral charcoal ──────── */
+html.light .text-slate-400, html.light .text-gray-400 { color: #4B5563 !important; }
+html.light .text-slate-500, html.light .text-gray-500 { color: #374151 !important; }
+html.light .text-slate-600, html.light .text-gray-600 { color: #1F2937 !important; }
+html.light .text-gray-700 { color: #20282B !important; }
+html.light .border-slate-200 { border-color: #E5E7EB !important; }
+html.light .border-slate-300 { border-color: #9CA3AF !important; }
+html.light .text-blue-300, html.light .text-blue-400 { color: var(--accent) !important; }
+html.light .hover\:text-blue-300:hover { color: var(--ci-green-deeper) !important; }
+html.light .bg-black\/70, html.light .bg-black\/75 { background-color: rgba(17,24,39,0.45) !important; }
+html.light .bg-black\/80 { background-color: rgba(17,24,39,0.50) !important; }
+html.light .bg-gray-800\/50 { background-color: rgba(248,250,252,0.90) !important; }
+html.light .bg-gray-800\/60 { background-color: rgba(248,250,252,0.95) !important; }
+html.light .bg-gray-950\/50 { background-color: rgba(255,255,255,0.92) !important; }
+
+/* ── Tailwind `gray-*` utilities, dark theme ONLY (stock values in Light) ───────── */
+html:not(.light) .bg-gray-950 { background-color: #090909; }
+html:not(.light) .bg-gray-900 { background-color: #151515; }
+html:not(.light) .bg-gray-800 { background-color: #1B1B1B; }
+html:not(.light) .bg-gray-700 { background-color: #242424; }
+html:not(.light) .bg-gray-600, html:not(.light) .hover\:bg-gray-600:hover { background-color: #2D2D2D; }
+html:not(.light) .bg-gray-950\/50 { background-color: rgba(9,9,9,0.5); }
+html:not(.light) .bg-gray-900\/50 { background-color: rgba(21,21,21,0.5); }
+html:not(.light) .bg-gray-800\/50 { background-color: rgba(27,27,27,0.5); }
+html:not(.light) .bg-gray-800\/60 { background-color: rgba(27,27,27,0.6); }
+html:not(.light) .border-gray-800 { border-color: #242424; }
+html:not(.light) .border-gray-800\/60 { border-color: rgba(36,36,36,0.6); }
+html:not(.light) .border-gray-700, html:not(.light) .hover\:border-gray-700:hover { border-color: #2D2D2D; }
+html:not(.light) .text-gray-100 { color: #F5F5F5; }
+html:not(.light) .text-gray-200 { color: #E5E5E5; }
+html:not(.light) .text-gray-300 { color: #D4D4D4; }
+html:not(.light) .text-gray-400 { color: #A3A3A3; }
+html:not(.light) .text-gray-500 { color: #8A8A8A; }
+html:not(.light) .text-gray-600 { color: #737373; }
+html:not(.light) .text-gray-700 { color: #525252; }
+html:not(.light) .text-blue-300, html:not(.light) .text-blue-400 { color: var(--accent); }
+
+/* ── Buttons: one hierarchy (primary = green, secondary = outlined neutral, danger = red) ── */
+.btn-primary { color: var(--btn-primary-text, #fff); }
+.btn-primary:hover:not(:disabled) { background: var(--btn-primary-hover); border-color: var(--btn-primary-hover); color: var(--btn-primary-text, #fff); }
+.btn-primary:active:not(:disabled) { filter: brightness(0.94); }
+.btn-secondary:hover:not(:disabled) { border-color: var(--accent); }
+.btn-success { background: var(--ci-green-strong); border-color: var(--ci-green-strong); }
+.btn-success:hover:not(:disabled) { background: var(--ci-green-deeper); border-color: var(--ci-green-deeper); }
+
+/* ── Shared component layer: badges ──────────────────────────────────────────────── */
+html.light .badge-green  { background: #E9F4EC; color: #1E7A34; border: 1px solid #BBDCC3; }
+html.light .badge-blue   { background: #E9F4EC; color: #1E7A34; border: 1px solid #BBDCC3; }   /* "primary / selected" badge → brand tint */
+html.light .badge-gray   { background: #F8FAFC; color: #4B5563; border: 1px solid #E5E7EB; }
+html.dark .badge-green, html:not(.light) .badge-green { background: rgba(79,191,107,0.14); color: #6FD088; border-color: rgba(79,191,107,0.30); }
+html.dark .badge-blue,  html:not(.light) .badge-blue  { background: rgba(79,191,107,0.12); color: #6FD088; border-color: rgba(79,191,107,0.28); }
+html.dark .badge-gray,  html:not(.light) .badge-gray  { background: rgba(163,163,163,0.14); color: #D4D4D4; border-color: rgba(163,163,163,0.26); }
+html:not(.light) select.input option { background: #1B1B1B; color: #F5F5F5; }
+html:not(.light) .data-table tbody tr:hover td { background: #242424; }   /* hover = neutral grey, not a green wash */
+html.light .data-table tbody tr:hover td { background: #F3F4F6 !important; }
+html.light .data-table tbody tr:nth-child(even) td { background: transparent; }
+/* focus: accent-soft is now a near-white selection wash, so fields get an explicit green ring */
+html.light .input:focus, html.light .ag-cell-inline-editing { box-shadow: 0 0 0 3px rgba(30,122,52,0.20) !important; }
+/* KPI cards: plain white (index.css tints each card with its accent in Light) */
+html.light .metric { background: #FFFFFF; box-shadow: var(--shadow-card); }
+html:not(.light) input[type="date"][value=""]::-webkit-datetime-edit { color: var(--text-3); font-weight: 400; }
+html:not(.light) .ci-cat-header { background: var(--surface-2) !important; }
+.page-title { letter-spacing: -0.01em; }
+::selection { background: rgba(79,191,107,0.28); }
+
+/* Official-holiday grid row: info teal (not green, not the old brand blue) */
+html.light .ag-row.row-holiday { background: #D3EEF4 !important; box-shadow: inset 5px 0 0 #0E7490; color: #0B4F63 !important; }
+/* editable-cell hint and paste-saving stripe */
+.cell-editable { box-shadow: inset 0 0 0 1px rgba(79,191,107,0.18); }
+.cell-paste-saving { background-image: repeating-linear-gradient(45deg, transparent 0 6px, rgba(79,191,107,0.14) 6px 12px) !important; }
+
+/* ── Keyboard focus: one consistent, clearly visible ring ─────────────────────── */
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--ci-green);
+  outline-offset: 2px;
+}
+html.light :where(button, a, input, select, textarea, [tabindex]):focus-visible { outline-color: var(--ci-green-strong); }
+
+/* ── Reduced motion ───────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .ci-anim, .ci-anim * { animation: none !important; transition: none !important; }
+}
+
+/* Light theme: the charcoal sidebar gets a matching dark scrollbar (the global thumb colour is a light grey) */
+html.light .ps-sidebar nav::-webkit-scrollbar-thumb { background: #4A565B; border-radius: 999px; }
+html.light .ps-sidebar nav::-webkit-scrollbar-thumb:hover { background: #5F6C72; }
+html.light .ps-sidebar nav { scrollbar-color: #4A565B transparent; }

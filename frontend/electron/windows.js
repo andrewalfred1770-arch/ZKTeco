@@ -1,7 +1,7 @@
 import { BrowserWindow, nativeImage, dialog, shell, app } from 'electron';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { IS_DEV, APP_NAME, FRONTEND_URL, FRONTEND_ROOT } from './constants.js';
+import { IS_DEV, DISPLAY_NAME, FRONTEND_URL, FRONTEND_ROOT } from './constants.js';
 import { state } from './state.js';
 import { markSplashStep } from './splash.js';
 
@@ -41,8 +41,8 @@ export async function createMainWindow(paths) {
     width: 1440, height: 900,
     minWidth: 1100, minHeight: 680,
     show: false,
-    backgroundColor: '#020817',
-    title: APP_NAME,
+    backgroundColor: '#090909',
+    title: DISPLAY_NAME,
     autoHideMenuBar: true,
     icon: icon || undefined,
     webPreferences: {

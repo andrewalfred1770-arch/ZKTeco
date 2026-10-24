@@ -376,7 +376,8 @@ async function pullLogs(deviceId, io, triggeredBy = 'auto', actor = null) {
       errorCode: 'SYNC_ALREADY_RUNNING', errorMessage: 'Another sync is already running for this device',
       metadata: { triggeredBy, heldBy: held.label, heldSince: new Date(held.startedAt) },
     });
-    return { count: 0, skipped: true, skipReason: 'SYNC_ALREADY_RUNNING', reason: 'sync already running' };
+    // heldBy / heldSince are informational only (who owns the device right now) — the lock itself is untouched.
+    return { count: 0, skipped: true, skipReason: 'SYNC_ALREADY_RUNNING', reason: 'sync already running', heldBy: held.label, heldSince: new Date(held.startedAt).toISOString() };
   }
   const lockOwner = lease.owner;
   logger.info(`[SYNC] [LOCK] device=${deviceId} acquired by owner #${lockOwner} (${triggeredBy})`);

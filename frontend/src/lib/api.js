@@ -58,7 +58,9 @@ api.interceptors.request.use((config) => {
     config._noRetry = true;
     return Promise.reject(err);
   }
-  if (method !== 'get' && shouldBlockWrites()) {
+  // /auth/* is exempt here too: with authentication on, the socket is refused until someone signs in (so it reports "disconnected"), and
+  // signing in is exactly what would reconnect it — blocking the login POST would make a login impossible. It is not a data write.
+  if (method !== 'get' && !isAuthEndpoint(config.url) && shouldBlockWrites()) {
     toast.error('لا يمكن الحفظ الآن — جارٍ إعادة الاتصال بالخادم', { id: 'write-blocked-offline' });
     config._noRetry = true;
     const err = new Error('Write blocked: backend connection is down');

@@ -6,6 +6,10 @@ import { describeSaveFailure } from '../lib/saveFailure';
 import api from '../lib/api';
 import { MONTHS_AR } from '../lib/constants';
 
+// A holiday's `date` is a calendar day stored at UTC midnight ("2026-11-01T00:00:00.000Z"). Reading it with new Date(...) and local getters shows
+// the PREVIOUS day on a client west of UTC, so build a local-midnight Date from the YYYY-MM-DD prefix instead (timezone-independent).
+const calendarDay = (v) => { const [y, m, d] = String(v).slice(0, 10).split('-').map(Number); return new Date(y, m - 1, d); };
+
 export default function HolidaysPage() {
   const [holidays, setHolidays] = useState([]);
   const [loading,  setLoading]  = useState(false);
@@ -47,7 +51,7 @@ export default function HolidaysPage() {
 
   const byMonth = {};
   holidays.forEach(h => {
-    const m = new Date(h.date).getMonth();
+    const m = calendarDay(h.date).getMonth();
     if (!byMonth[m]) byMonth[m] = [];
     byMonth[m].push(h);
   });
@@ -75,7 +79,7 @@ export default function HolidaysPage() {
           return (
             <div key={idx} className="card p-4">
               <h3 className="font-bold text-gray-200 text-sm mb-3 flex items-center gap-2">
-                <Calendar className="w-4 h-4 text-blue-400" />
+                <Calendar className="w-4 h-4 text-accent" />
                 {month}
                 {mh.length > 0 && <span className="badge-blue text-xs">{mh.length}</span>}
               </h3>
@@ -86,7 +90,7 @@ export default function HolidaysPage() {
                     <div>
                       <p className="text-sm font-medium text-gray-200">{h.name}</p>
                       <p className="text-xs text-gray-500">
-                        {new Date(h.date).toLocaleDateString('ar-EG', { weekday: 'short', day: 'numeric' })}
+                        {calendarDay(h.date).toLocaleDateString('ar-EG', { weekday: 'short', day: 'numeric' })}
                       </p>
                     </div>
                     <button

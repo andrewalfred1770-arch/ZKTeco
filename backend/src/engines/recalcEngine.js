@@ -54,7 +54,7 @@ async function recalcScope(opts = {}) {
   }
 }
 
-async function recalcScopeImpl({ from, to, branchId, departmentId, employeeId, employeeIds, io, reason, allowFinalizedPayroll = false, recalcRunId } = {}) {
+async function recalcScopeImpl({ from, to, branchId, departmentId, employeeId, employeeIds, io, reason, allowFinalizedPayroll = false, recalcRunId, skipDays } = {}) {
   const start = moment(from).startOf('day');
   // Phase 23.4: a day that hasn't happened yet has no attendance to compute —
   // same invariant attendanceEngine.processMonth() already enforces (EF-005.4)
@@ -83,6 +83,10 @@ async function recalcScopeImpl({ from, to, branchId, departmentId, employeeId, e
   const total = employees.length * Math.max(dayCount, 1);
   let done = 0;
   let attendanceFailed = 0;
+  // `skipDays` (optional Set of "employeeId|YYYY-MM-DD"): days whose attendance row must not be recomputed by this run (cleanup passes the
+  // rows it protects). `closedSkips`: days the engine itself left untouched because the employee-month's payroll is closed and the raw
+  // punches behind the stored row are gone (attendanceEngine.closedEvidenceLossSkip).
+  const closedSkips = new Map();
 
   emit(io, 'recalc:start', {
     recalcRunId,
@@ -93,7 +97,11 @@ async function recalcScopeImpl({ from, to, branchId, departmentId, employeeId, e
   for (const emp of employees) {
     let d = start.clone();
     while (d.isSameOrBefore(end)) {
-      try { await attendanceEngine.processDate(d.toDate(), emp.id); }
+      try {
+        if (!(skipDays && skipDays.has(`${emp.id}|${d.format('YYYY-MM-DD')}`))) {
+          attendanceEngine.collectClosedPayrollSkip(closedSkips, await attendanceEngine.processDate(d.toDate(), emp.id));
+        }
+      }
       catch (err) { attendanceFailed++; logger.error(`recalc attendance emp ${emp.id} ${d.format('YYYY-MM-DD')}: ${err.message}`); }
       done++;
       if (done % 10 === 0) emit(io, 'recalc:progress', { done, total, recalcRunId });
@@ -156,11 +164,14 @@ async function recalcScopeImpl({ from, to, branchId, departmentId, employeeId, e
 
   let payrollRecalculated = 0;
   let payrollFailed = 0;
+  let payrollSkippedNotStarted = 0;
   for (const { employeeId, month, year } of allowed) {
     try {
       const preload = preloadMap.get(`${employeeId}|${month}|${year}`);
-      await payrollEngine.calculatePayroll(employeeId, month, year, { preload });
-      payrollRecalculated++;
+      const written = await payrollEngine.calculatePayroll(employeeId, month, year, { preload });
+      // An explicit null is the engine's "employee had not started by that month" answer (no payroll exists or is created for it): not a
+      // recalculation. Anything else — a row, or nothing at all from a caller that does not return one — counts exactly as before.
+      if (written === null) payrollSkippedNotStarted++; else payrollRecalculated++;
     }
     catch (err) { payrollFailed++; logger.error(`recalc payroll emp ${employeeId} ${month}/${year}: ${err.message}`); }
   }
@@ -172,8 +183,12 @@ async function recalcScopeImpl({ from, to, branchId, departmentId, employeeId, e
     protectedPayroll: protectedTargets,
     // Additive: actual payroll rows recomputed / failed by this run (protected rows are in neither).
     payrollRecalculated, payrollFailed,
+    // Additive: employee-months skipped because the employee had not started yet (utils/employmentEligibility.js, start side).
+    payrollSkippedNotStarted,
     // Additive: employee-days whose attendance recompute threw (logged, run continued).
     attendanceFailed,
+    // Additive: employee-months whose attendance was left unchanged (closed payroll + missing raw punches), with the skipped days.
+    skippedClosedPayroll: [...closedSkips.values()],
     recalcRunId,
   };
   emit(io, 'recalc:done', result);

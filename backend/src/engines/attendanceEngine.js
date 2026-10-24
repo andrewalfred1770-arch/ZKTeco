@@ -30,7 +30,7 @@ function parseTimeRules(raw) {
   } catch { return null; }
 }
 const logger = require('../utils/logger');
-const { writeAudit } = require('../utils/manualEditAudit');
+const { writeAudit, loadTimesReviewedAt } = require('../utils/manualEditAudit');
 const { countUnreflectedPunches } = require('../utils/lockedPunchConflict');
 
 const prisma = getPrisma();
@@ -64,7 +64,7 @@ async function lockedSkipReport(employeeId, dateStr) {
   try {
     const row = await prisma.attendanceDaily.findUnique({
       where: { employeeId_date: { employeeId, date: new Date(dateStr) } },
-      select: { checkIn: true, checkOut: true, updatedAt: true },
+      select: { id: true, checkIn: true, checkOut: true },
     });
     const logs = await prisma.attendanceLog.findMany({
       where: {
@@ -73,7 +73,8 @@ async function lockedSkipReport(employeeId, dateStr) {
       },
       select: { timestamp: true, createdAt: true },
     });
-    return { skipped: 'manual-lock', ignoredPunches: countUnreflectedPunches(row || {}, logs) };
+    const reviewed = row ? (await loadTimesReviewedAt([row.id])).get(row.id) || null : null;   // last AUDITED punch-time change, not updatedAt
+    return { skipped: 'manual-lock', ignoredPunches: countUnreflectedPunches(row ? { ...row, timesReviewedAt: reviewed } : {}, logs) };
   } catch (err) {
     logger.warn(`[MANUAL-LOCK] employee=${employeeId} date=${dateStr} could not count ignored punches: ${err.message}`);
     return { skipped: 'manual-lock', ignoredPunches: null };
@@ -113,6 +114,41 @@ async function healLockedWeeklyOffAbsence(employee, dateStr) {
   }
 }
 
+// ─── Closed-payroll evidence-loss guard (H2) ──────────────────────────────────
+// An AUTOMATIC recompute that finds NO valid raw punch for the day would overwrite a stored row that DOES carry punches (checkIn /
+// checkOut) with absent / weekend / holiday. For an employee-month whose payroll is finalized or paid that silently makes attendance
+// disagree with the approved payroll (typically after the raw logs were purged by the cleanup tool). A legitimate absence never has
+// stored punches, so "zero raw punches + stored punches + closed payroll" is the evidence-loss signature; the engine cannot tell WHY the
+// logs are missing (purge, re-link, correction), so it does not guess: it leaves the row exactly as it is and reports the skip.
+// Narrow by design: late punches (logs exist), open months, employees without closed payroll and rows already stored without punches are
+// unaffected, and manual edits / Restore Auto never come through here. Always called under the employee+day lock.
+async function closedEvidenceLossSkip(employeeId, dateStr) {
+  const row = await prisma.attendanceDaily.findUnique({
+    where: { employeeId_date: { employeeId, date: new Date(dateStr) } },
+    select: { checkIn: true, checkOut: true },
+  });
+  if (!row || (!row.checkIn && !row.checkOut)) return null;
+  const m = moment(dateStr, 'YYYY-MM-DD');
+  const month = m.month() + 1; const year = m.year();
+  const payroll = await prisma.payroll.findUnique({
+    where: { employeeId_month_year: { employeeId, month, year } },
+    select: { status: true },
+  });
+  const { CLOSED_PAYROLL_STATUSES } = require('./payrollEngine');   // lazy: payrollEngine requires this module
+  if (!payroll || !CLOSED_PAYROLL_STATUSES.includes(String(payroll.status).toLowerCase())) return null;
+  logger.warn(`[CLOSED-PAYROLL-SKIP] employee=${employeeId} date=${dateStr} ${month}/${year} payroll=${payroll.status}: stored punches but NO valid raw punch — automatic recompute skipped, row left unchanged`);
+  return { skipped: 'closed-evidence-loss', payrollStatus: payroll.status, employeeId, date: dateStr, month, year };
+}
+
+/** Groups skipped days per employee-month (shared by processMonth / processToday / recalcScope / rebuild). */
+function collectClosedPayrollSkip(map, r) {
+  if (!r || r.skipped !== 'closed-evidence-loss') return;
+  const k = `${r.employeeId}|${r.month}|${r.year}`;
+  let e = map.get(k);
+  if (!e) { e = { employeeId: r.employeeId, month: r.month, year: r.year, payrollStatus: r.payrollStatus, days: [] }; map.set(k, e); }
+  e.days.push(r.date);
+}
+
 // ─── Process a single employee's attendance for a single date ─────────────────
 // opts.manual — manual-override mode used by PUT /attendance/daily/:id:
 //   { checkIn?: Date|null, checkOut?: Date|null, status?: string }
@@ -125,6 +161,10 @@ async function healLockedWeeklyOffAbsence(employee, dateStr) {
 async function processDateImpl(date, employeeId, opts = {}) {
   const dateStr = moment(date).format('YYYY-MM-DD');
   const manual = opts.manual || null;
+  // opts.restoreAuto — POST /attendance/daily/:id/restore-auto: recompute a LOCKED row from the raw logs and clear its lock in the SAME
+  // write (one upsert). The lock is therefore never off while the manual values are still in the row: if the recompute fails, nothing
+  // was written and the row stays locked with HR's values. Only the manual-edit route passes it, under the employee+day lock.
+  const unlock = opts.restoreAuto && !manual ? { manualEdit: false } : {};
   // A manual edit passes its own transaction so the engine's row write commits (or rolls
   // back) together with the numeric overrides and the audit rows (see PUT /attendance/daily/:id).
   const writer = opts.tx || prisma;
@@ -134,7 +174,7 @@ async function processDateImpl(date, employeeId, opts = {}) {
   });
   if (!employee) return null;
 
-  if (!manual && await isManuallyEdited(employeeId, dateStr)) {
+  if (!manual && !opts.restoreAuto && await isManuallyEdited(employeeId, dateStr)) {
     // The lock protects HR's data, but never an ABSENCE on a weekly-off day (permanent rule).
     await healLockedWeeklyOffAbsence(employee, dateStr);
     logger.info(`[MANUAL-EDIT] preserved: employee=${employeeId} date=${dateStr} — engine recompute skipped (manualEdit=true)`);
@@ -168,6 +208,7 @@ async function processDateImpl(date, employeeId, opts = {}) {
         status: 'holiday',
         absenceType: null,
         penaltyDays: null,
+        ...unlock,
       });
       return;
     }
@@ -207,12 +248,14 @@ async function processDateImpl(date, employeeId, opts = {}) {
       where: { employeeId, isDuplicate: false, timestamp: { gte: startOfDay, lte: endOfDay } },
     });
     if (punchCount === 0) {
+      if (!opts.restoreAuto) { const guard = await closedEvidenceLossSkip(employeeId, dateStr); if (guard) return guard; }
       logger.info(`[RULE-MATCH] employee=${employeeId} date=${dateStr} → status=${weekend ? 'weekend' : 'holiday'} (skipping punch processing)`);
       await upsertDaily(employeeId, dateStr, {
         isWeekend: weekend, isHoliday: holiday,
         status: weekend ? 'weekend' : 'holiday',
         absenceType: null,
         penaltyDays: null,
+        ...unlock,
       });
       return;
     }
@@ -227,6 +270,11 @@ async function processDateImpl(date, employeeId, opts = {}) {
     },
     orderBy: { timestamp: 'asc' },
   });
+
+  if (logs.length === 0 && !manual && !opts.restoreAuto) {
+    const guard = await closedEvidenceLossSkip(employeeId, dateStr);
+    if (guard) return guard;
+  }
 
   // ── Classify punches against the check-in window ────────────────────────────
   // checkin_window_start/end (default 05:00–12:00): only a punch whose
@@ -298,6 +346,7 @@ async function processDateImpl(date, employeeId, opts = {}) {
   await upsertDaily(employeeId, dateStr, {
     ...data,
     ...(manual ? { manualEdit: true } : {}),
+    ...unlock,
   }, writer);
   if (manual) {
     if (punch) {
@@ -743,15 +792,16 @@ async function processMonth(year, month, branchId) {
     where: { status: true, branchId: branchId || undefined },
   });
   let failedDays = 0;
+  const closedSkips = new Map();
   for (const emp of employees) {
     let d = start.clone();
     while (d.isSameOrBefore(end)) {
-      try { await processDate(d.toDate(), emp.id); }
+      try { collectClosedPayrollSkip(closedSkips, await processDate(d.toDate(), emp.id)); }
       catch (err) { failedDays++; logger.error(`processMonth emp ${emp.id} on ${d.format('YYYY-MM-DD')}: ${err.message}`); }
       d.add(1, 'day');
     }
   }
-  return { failedDays };
+  return { failedDays, skippedClosedPayroll: [...closedSkips.values()] };
 }
 
 // Overlap guard: processToday can be triggered by the scheduler cron, the
@@ -773,11 +823,12 @@ async function processToday(branchId, targetDate = null) {
       where: { status: true, branchId: branchId || undefined },
     });
     let processedCount = 0;
+    const closedSkips = new Map();
     for (const emp of employees) {
-      try { await processDate(new Date(today), emp.id); processedCount++; }
+      try { collectClosedPayrollSkip(closedSkips, await processDate(new Date(today), emp.id)); processedCount++; }
       catch (err) { logger.error(`processToday emp ${emp.id}: ${err.message}`); }
     }
-    return { skipped: false, processedCount, date: today };
+    return { skipped: false, processedCount, date: today, skippedClosedPayroll: [...closedSkips.values()] };
   } finally {
     processTodayRunning = false;
   }
@@ -846,4 +897,4 @@ function mergeEffectivePenalty(record) {
 // from a manually-corrected lateMinutes/earlyLeaveMinutes using the exact
 // same tier-parsing this module already uses internally — never a second,
 // duplicate implementation of "HH:MM tier JSON → absolute-minute tiers".
-module.exports = { processDate, processMonth, processToday, computeDerivedFields, buildDayFields, DAILY_RESET, mergeEffectivePenalty, parseTimeRules, withEmployeeDateLock, LOCK_ACQUIRE_TIMEOUT_MS, ATTENDANCE_LOCK_TIMEOUT_CODE };
+module.exports = { collectClosedPayrollSkip, processDate, processMonth, processToday, computeDerivedFields, buildDayFields, DAILY_RESET, mergeEffectivePenalty, parseTimeRules, withEmployeeDateLock, LOCK_ACQUIRE_TIMEOUT_MS, ATTENDANCE_LOCK_TIMEOUT_CODE };

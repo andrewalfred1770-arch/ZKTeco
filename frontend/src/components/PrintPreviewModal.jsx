@@ -2,6 +2,7 @@
  * PrintPreviewModal — PETSHROW unified print / export dialog.
  * Live A4 preview (real Chromium-rendered HTML) → Print / PDF / Excel.
  */
+import { CheckInMark } from './brand/CheckInLogo';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   X, Printer, FileText, FileSpreadsheet,
@@ -693,7 +694,7 @@ export default function PrintPreviewModal({
         }}>
           {/* Zone 1 — identity */}
           <div style={{ display:'flex', alignItems:'center', gap:10, minWidth:0 }}>
-            <div style={{ width:28, height:28, borderRadius:8, flexShrink:0, background: isLight ? 'linear-gradient(135deg,#3b82f6,#1d4ed8)' : 'linear-gradient(135deg,#2F81F7,#1F6FEB)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, color:'#fff', fontSize:14 }}>P</div>
+            <CheckInMark size={28} plated />
             <span id={titleId} style={{ color:'var(--text)', fontWeight:700, fontSize:14, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', maxWidth:240 }}>{reportTitle}</span>
             {showTable && (
               <span style={{ background:'var(--accent-soft)', color:'var(--accent)', padding:'2px 9px', borderRadius:99, fontSize:11, fontWeight:700, whiteSpace:'nowrap' }}>
@@ -767,7 +768,7 @@ export default function PrintPreviewModal({
               ]} />
             )}
             <div style={{ width:1, height:22, background:'var(--border)', margin:'0 2px' }} />
-            <button onClick={handlePrint} style={{ display:'flex', alignItems:'center', gap:6, background:'var(--accent)', border:'none', color:'#fff', borderRadius:8, cursor:'pointer', padding:'7px 16px', fontSize:12.5, fontWeight:700, boxShadow:'0 1px 3px rgba(37,99,235,0.35)' }}>
+            <button onClick={handlePrint} style={{ display:'flex', alignItems:'center', gap:6, background:'var(--accent-2)', border:'none', color:'var(--btn-primary-text)', borderRadius:8, cursor:'pointer', padding:'7px 16px', fontSize:12.5, fontWeight:700, boxShadow:'0 1px 3px rgba(79,191,107,0.35)' }}>
               <Printer style={{ width:14, height:14 }} /> طباعة
             </button>
             <button onClick={onClose} title="إغلاق" style={{ background:'transparent', border:'none', cursor:'pointer', color:'var(--text-3)', padding:7, borderRadius:8, display:'flex' }}>
@@ -793,7 +794,7 @@ export default function PrintPreviewModal({
                   background: activeReport===tab.key ? 'var(--accent-soft)' : 'transparent',
                   color: activeReport===tab.key ? 'var(--accent)' : 'var(--text-3)',
                 }}>
-                {tab.label}{tab.n != null && <span style={{ marginRight:5, background: activeReport===tab.key ? 'rgba(37,99,235,0.18)' : 'var(--surface)', color: activeReport===tab.key ? 'var(--accent)' : 'var(--text-3)', padding:'1px 6px', borderRadius:99, fontSize:10, border:'1px solid var(--border)' }}>{tab.n}</span>}
+                {tab.label}{tab.n != null && <span style={{ marginRight:5, background: activeReport===tab.key ? 'rgba(79,191,107,0.18)' : 'var(--surface)', color: activeReport===tab.key ? 'var(--accent)' : 'var(--text-3)', padding:'1px 6px', borderRadius:99, fontSize:10, border:'1px solid var(--border)' }}>{tab.n}</span>}
               </button>
             ))}
           </div>
@@ -830,7 +831,7 @@ export default function PrintPreviewModal({
               Auto-fit width on open; Fit Width/Fit Page buttons recompute on
               demand. Page-break guides overlay the exact same scaled
               coordinate space as the iframe, so they track zoom perfectly. */}
-          <div ref={wrapRef} style={{ flex:1, overflow:'auto', padding:'32px 24px', background: isLight ? '#e7ebf2' : '#0b0f16' }}>
+          <div ref={wrapRef} style={{ flex:1, overflow:'auto', padding:'32px 24px', background: isLight ? '#e7ebf2' : '#090909' }}>
             <div style={{ width: Math.round(pageWidthPx * zoom/100), margin:'0 auto', transition:'width 0.15s' }}>
               <div style={{
                 position:'relative', width:pageWidthPx, transform:`scale(${zoom/100})`, transformOrigin:'top right',

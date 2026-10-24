@@ -126,18 +126,18 @@ export default function PayrollBreakdownDialog({ row, month, year, open, onClose
           </div>
         }
         footer={
-          <div style={{ display: 'flex', gap: 8, width: '100%' }}>
-            <button className="btn-secondary text-xs py-1.5 px-3" onClick={() => setAuditOpen(true)}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, width: '100%' }}>
+            <button className="btn-secondary text-xs py-1.5 px-2" style={{ whiteSpace: 'nowrap' }} onClick={() => setAuditOpen(true)}>
               <History className="w-3.5 h-3.5" /> سجل التغييرات
             </button>
-            <button className="btn-secondary text-xs py-1.5 px-3" onClick={loadComparison} disabled={prevLoading}>
+            <button className="btn-secondary text-xs py-1.5 px-2" style={{ whiteSpace: 'nowrap' }} onClick={loadComparison} disabled={prevLoading}>
               {prevLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <TrendingUp className="w-3.5 h-3.5" />}
               مقارنة بالشهر السابق
             </button>
             {/* Phase 20.1: opens the REAL existing Monthly Attendance data
                 (GET /attendance/monthly-detail, employeeId-narrowed) for
                 this exact employee/month/year — not a new calculation. */}
-            <button className="btn-secondary text-xs py-1.5 px-3" onClick={() => setStatementOpen(true)}>
+            <button className="btn-secondary text-xs py-1.5 px-2" style={{ whiteSpace: 'nowrap' }} onClick={() => setStatementOpen(true)}>
               <CalendarDays className="w-3.5 h-3.5" /> الكشف الشهري الفعلي
             </button>
             <div style={{ flex: 1 }} />

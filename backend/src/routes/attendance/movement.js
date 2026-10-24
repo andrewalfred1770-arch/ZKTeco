@@ -4,7 +4,8 @@ const { getPrisma } = require('../../utils/prisma');
 const moment = require('moment');
 const { mergeEffectivePenalty } = require('../../engines/attendanceEngine');
 const { applyApprovedAdjustment, selectOvertimeMultiplier, computeRates, safeMultiplier } = require('../../engines/payrollEngine');
-const { getRulesBatch } = require('../../engines/rulesEngine');
+const { getRulesBatch, isWeekend } = require('../../engines/rulesEngine');
+const { classifyMissingDay, buildHolidayIndex, isBeforeHire } = require('../../utils/dayClassification');
 const { buildAttendanceRow } = require('../../utils/attendanceRow');
 const { attendanceScopeWhere, monthPeriod } = require('../../utils/employmentEligibility');
 
@@ -29,7 +30,9 @@ function movementFmtTime(dt) {
 // Builds the per-day rows for one employee for the given month, each row
 // pre-stamped with employee identity fields so the frontend ledger grid uses
 // one identical column set for both "all employees" and "single employee" modes.
-function buildMovementDays(employee, recMap, yearStr, monthStr, totalDays) {
+// `classify(employee, dateStr)` (optional) is the engine-equivalent verdict for a day with NO stored row (utils/dayClassification.js):
+// pre-hire / weekly off / holiday days are not absences. Without it the legacy answer (absent) is kept.
+function buildMovementDays(employee, recMap, yearStr, monthStr, totalDays, classify = null) {
   const days = [];
   for (let d = 1; d <= totalDays; d++) {
     const dateStr = `${yearStr}-${monthStr}-${String(d).padStart(2,'0')}`;
@@ -43,7 +46,7 @@ function buildMovementDays(employee, recMap, yearStr, monthStr, totalDays) {
     // always undefined when rec is null), with zero weekend/holiday
     // awareness — buildAttendanceRow already handles the missing-row case
     // correctly (relative to weekend/holiday flags on the existing row).
-    const canonical = buildAttendanceRow({ employee, merged: rec, dateStr });
+    const canonical = buildAttendanceRow({ employee, merged: rec, dateStr, missingDay: !rec && classify ? classify(employee, dateStr) : null });
 
     const morningOT   = rec?.morningOvertimeHours || 0;
     const eveningOT   = rec?.eveningOvertimeHours || 0;
@@ -106,6 +109,9 @@ function buildMovementDays(employee, recMap, yearStr, monthStr, totalDays) {
       status:    canonical.status,
       isWeekend: canonical.isWeekend,
       isHoliday: canonical.isHoliday,
+      // Additive: the day is before the employee's hireDate. It shows as a non-working day (never an absence) but, unlike a public holiday, it
+      // stays EDITABLE: the engine always lets a manual entry override the pre-hire gate (HR recording work done before the recorded start).
+      isPreHire: isBeforeHire(employee.hireDate, dateStr),
       isAbsent:  canonical.isAbsent,
       hasData:   !!rec,
       absenceType:   canonical.absenceType,
@@ -204,6 +210,7 @@ function aggregateMovementSummaries(summaries, totalDays) {
   };
 }
 
+// Owner decision: readable by every user of the application (read-only view).
 router.get('/movement', async (req, res) => {
   try {
     const { employeeId, month, branchId, departmentId } = req.query;
@@ -283,6 +290,11 @@ router.get('/movement', async (req, res) => {
     // employee.departmentId, employee.id) would have, just resolved for the
     // whole batch up front.
     const rulesByEmployee = await getRulesBatch(employees);
+    // Calendar facts for days that have no stored row: the month's holidays (one query), Friday + configured weekend days (rules).
+    const holidayRows = await prisma.holiday.findMany({
+      where: { date: { gte: new Date(Date.UTC(year, monthNo - 1, 1)), lte: new Date(Date.UTC(year, monthNo, 0)) } },
+    });
+    const holidayOn = buildHolidayIndex(holidayRows);
 
     for (const employee of employees) {
       const rules = rulesByEmployee.get(employee.id);
@@ -303,7 +315,15 @@ router.get('/movement', async (req, res) => {
       const { dailyRate, hourlyRate } = computeRates(employee.salary || 0, monthDays, workHoursPerDay);
 
       const recMap = recordsByEmp.get(employee.id) || new Map();
-      const days = buildMovementDays(employee, recMap, yearStr, monthStr, totalDays);
+      const classify = (emp, ds) => {
+        const dayDate = new Date(`${ds}T12:00:00`);
+        return classifyMissingDay({
+          hireDate: emp.hireDate, dateStr: ds, stopDate: emp.effectiveStopDate, stopped: emp.status === false,
+          isWeekendDay: dayDate.getDay() === 5 || isWeekend(dayDate, rules.weekend_days),   // Friday is the permanent weekly off
+          isHolidayDay: holidayOn(ds, emp.branchId),
+        });
+      };
+      const days = buildMovementDays(employee, recMap, yearStr, monthStr, totalDays, classify);
       const summary = summarizeMovementDays(days, hourlyRate, multipliers, totalDays);
 
       allDays.push(...days);

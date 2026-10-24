@@ -25,6 +25,7 @@ const { getConfigDir } = require('../utils/configDir');
 const logger = require('../utils/logger');
 const rateLimiter = require('../middleware/rateLimiter');
 const { loopbackOnly } = require('../middleware/loopbackOnly');
+const { requireSetupAuth } = require('../utils/setupAuth');
 
 function currentEnvPath() {
   return process.env.DOTENV_CONFIG_PATH || path.join(getConfigDir(), '.env');
@@ -91,7 +92,13 @@ function validateFields(body) {
 // server at a database it controls. The check uses the TCP peer address only (never X-Forwarded-For) and runs
 // before the self-disabling check below, so a remote caller cannot even learn whether setup is open.
 // Single-machine use is unaffected: the Electron app and the wizard reach the backend through localhost.
+// F1: a loopback peer alone is NOT enough — the local TLS proxy (Caddy) also connects from 127.0.0.1 on behalf of LAN browsers.
+// loopbackOnly() additionally refuses any request carrying proxy headers (X-Forwarded-*, Forwarded, X-Real-IP, Via, the proxy key)
+// or a non-loopback Host. This covers /current, /test-connection and /save (and any route added to this router later).
 router.use(loopbackOnly());
+// F1 (stage 2): the request must also carry a MAC keyed with the per-launch secret that only the Electron main process holds
+// (utils/setupAuth.js). Without it — or when no secret was handed over — every setup call is refused, whatever its origin or headers.
+router.use(requireSetupAuth());
 
 // Self-disabling: once the main app's own DB connection is healthy, this
 // entire router 403s — closes the surface automatically, no auth-system

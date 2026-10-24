@@ -14,6 +14,12 @@
  *   - eligibleEmployeeWhere(period)  → Prisma `where` (DB-side; read endpoints)
  *   - isEligible(employee, period, hasPunchEvidence) → in-memory predicate
  *
+ * START side (added): the rule above only ever looked at when an employee STOPPED. An employee is also not in scope for a period
+ * that ENDED BEFORE their hireDate — a month before they were employed has no attendance, no absence and no salary — unless they
+ * have punch evidence inside that period (real punches mean they did work; the data, not the date, wins). A missing hireDate is
+ * never invented: it means "no start restriction". hasStarted()/startedWhere() are the one definition of this; payroll generation,
+ * the payroll listing, the recalculation cascade and the attendance read scope all use them.
+ *
  * Deliberately NOT part of the rule: payroll policy flags
  * (exclude_stopped_employees_from_payroll), payroll finalized/paid overrides,
  * and any view-level "must have a stored row" constraint. The latter is the
@@ -40,23 +46,49 @@ function monthPeriod(year, month) {
 
 const hasPunch = [{ checkIn: { not: null } }, { checkOut: { not: null } }];
 
+/** Prisma `where`: the employee had started by the END of `period`, or has punch evidence inside it. hireDate null = unknown = no restriction. */
+function startedWhere(period) {
+  return {
+    OR: [
+      { hireDate: null },
+      { hireDate: { lte: period.to } },
+      { attendanceDaily: { some: { date: { gte: period.from, lte: period.to }, OR: hasPunch } } },
+    ],
+  };
+}
+
+/** In-memory form of startedWhere. Compared as calendar dates (the same comparison the engine's pre-hire gate makes). */
+function hasStarted(employee, period, hasPunchEvidence = false) {
+  if (!employee || employee.hireDate === null || employee.hireDate === undefined || employee.hireDate === '') return true;
+  const hire = moment(employee.hireDate);
+  if (!hire.isValid()) return true;                                  // an unreadable date is not a reason to exclude anyone
+  if (hire.format('YYYY-MM-DD') <= moment(period.to).format('YYYY-MM-DD')) return true;
+  return !!hasPunchEvidence;
+}
+
 /** Prisma `where` implementing the eligibility rule for `period`. */
 function eligibleEmployeeWhere(period) {
   return {
-    OR: [
-      { status: true },
-      { status: false, effectiveStopDate: { gt: period.from } },
+    AND: [
       {
-        status: false,
-        effectiveStopDate: null,
-        attendanceDaily: { some: { date: { gte: period.from, lte: period.to }, OR: hasPunch } },
+        OR: [
+          { status: true },
+          { status: false, effectiveStopDate: { gt: period.from } },
+          {
+            status: false,
+            effectiveStopDate: null,
+            attendanceDaily: { some: { date: { gte: period.from, lte: period.to }, OR: hasPunch } },
+          },
+        ],
       },
+      startedWhere(period),
     ],
   };
 }
 
 /** In-memory form of the same rule. `hasPunchEvidence` only matters for legacy stopped rows. */
 function isEligible(employee, period, hasPunchEvidence = false) {
+  if (!hasStarted(employee, period, hasPunchEvidence)) return false;
   if (employee.status === true) return true;
   if (employee.effectiveStopDate != null) {
     return new Date(employee.effectiveStopDate).getTime() > period.from.getTime();
@@ -84,4 +116,4 @@ function attendanceScopeWhere(period) {
   };
 }
 
-module.exports = { dayPeriod, monthPeriod, eligibleEmployeeWhere, isEligible, attendanceScopeWhere };
+module.exports = { dayPeriod, monthPeriod, eligibleEmployeeWhere, isEligible, attendanceScopeWhere, startedWhere, hasStarted };

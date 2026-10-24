@@ -181,7 +181,7 @@ export default function CompanySettingsPage() {
         {/* ── الهوية ─────────────────────────────────────────────────────── */}
         <div className="card p-5">
           <h3 className="section-title mb-4 flex items-center gap-2">
-            <Building2 className="w-5 h-5 text-blue-400" /> الهوية والتواصل
+            <Building2 className="w-5 h-5 text-accent" /> الهوية والتواصل
           </h3>
           <div className="space-y-2">
             <label className="text-xs text-gray-500">اسم الشركة (عربي)</label>

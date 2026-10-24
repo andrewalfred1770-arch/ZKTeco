@@ -13,6 +13,7 @@ import FailedEditsBanner from '../components/FailedEditsBanner';
 import { handleEditFailure } from '../lib/failedEdits';
 import { useNavigate } from 'react-router-dom';
 import api, { LONG_OP } from '../lib/api';
+import { closedSkipMessage } from '../lib/closedMonthSkip';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import { todayStr, addDays } from '../lib/businessDate';
 import { fmtTime, fmtOTHours, fmtWorkedHours, fmtPenaltyUnits, fmtOvertimeUnits, fmtEditableZero, timeToMinutes, STATUS_LABELS, manualOverrideTooltip } from '../lib/formatters';
@@ -22,7 +23,7 @@ import { useGridPagination } from '../hooks/useGridPagination';
 import {
   NUM, CENTER, nameCell, codeCell, deptCell,
   otCell, penaltyCell, timeCell, rowNumCell, mutedCell } from '../lib/cellStyles';
-import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_MEDIUM, COL_LARGE, tabToNextCell, safeRefreshCells, isAbsentRow, attendanceRowClass } from '../lib/gridDefaults';
+import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_MEDIUM, COL_LARGE, withHeaderFloor, tabToNextCell, safeRefreshCells, isAbsentRow, attendanceRowClass } from '../lib/gridDefaults';
 import PrintPreviewModal from '../components/PrintPreviewModal';
 import FingerprintSyncModal from '../components/FingerprintSyncModal';
 import TimeCellEditor from '../components/grid/TimeCellEditor';
@@ -301,7 +302,7 @@ export default function AttendanceDailyPage() {
         color: p.data?.isAbsent
           ? (p.data?.absenceType === 'without_permission' ? 'var(--c-red, #ef4444)'
             : p.data?.absenceType === 'with_permission' ? 'var(--c-green, #22c55e)'
-            : p.data?.absenceType === 'custom' ? 'var(--accent, #2563eb)'
+            : p.data?.absenceType === 'custom' ? 'var(--accent, #1E7A34)'
             : 'var(--text-3)')
           : 'transparent',
         cursor: p.data?.isAbsent ? 'pointer' : 'default',
@@ -331,7 +332,7 @@ export default function AttendanceDailyPage() {
           : 'transparent',
       }),
     },
-  ], [isNarrow]);
+  ].map(withHeaderFloor), [isNarrow]);
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF, cellClassRules: failed.cellClassRules }), [failed]);
 
@@ -637,8 +638,10 @@ export default function AttendanceDailyPage() {
   const process = async () => {
     setProc(true);
     try {
-      await api.post('/attendance/process', { date }, LONG_OP);
+      const { data: pd } = await api.post('/attendance/process', { date }, LONG_OP);
       toast.success('تم معالجة الحضور');
+      const closedNote = closedSkipMessage(pd?.skippedClosedPayroll);
+      if (closedNote) toast(closedNote, { icon: '⚠️', duration: 12000 });
       load(true);
     } catch { toast.error('فشل المعالجة'); }
     finally { setProc(false); }
@@ -667,7 +670,8 @@ export default function AttendanceDailyPage() {
     late:    rows.filter(r => (r.effectiveLatePenalty||0)>0).length,
     ot:      rows.filter(r => (r.effectiveOvertimeUnits||0)>0).length }), [rows]);
 
-  const dateAr = new Date(date).toLocaleDateString('ar-EG',{ weekday:'long',year:'numeric',month:'long',day:'numeric' });
+  // `date` is a YYYY-MM-DD calendar day: new Date(date) would be UTC midnight (the previous day west of UTC), so anchor it to LOCAL midnight.
+  const dateAr = new Date(`${String(date).slice(0, 10)}T00:00`).toLocaleDateString('ar-EG',{ weekday:'long',year:'numeric',month:'long',day:'numeric' });
 
   return (
     <div className="flex flex-col gap-3" style={{ flex: 1, minHeight: 0 }} dir="rtl">

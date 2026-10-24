@@ -27,8 +27,8 @@ export const CATEGORY_LABELS = {
   shifts:      'الورديات',    holidays:   'العطلات',
 };
 export const CAT_COLOR = {
-  attendance:'#2563eb', overtime:'#7c3aed', deductions:'#b42318',
-  payroll:'#15803d',    leaves:'#0891b2',   penalties:'#c2410c',
+  attendance:'#1E7A34', overtime:'#7c3aed', deductions:'#b42318',
+  payroll:'#293438',    leaves:'#0891b2',   penalties:'#c2410c',
   shifts:'#6d28d9',     holidays:'#a16207',
 };
 export const TYPE_LABELS = {
@@ -379,7 +379,7 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
     } finally { submitting.current = false; setSaving(false); }
   };
 
-  const catColor = CAT_COLOR[form.category] || '#2563eb';
+  const catColor = CAT_COLOR[form.category] || '#1E7A34';
 
   // Phase 13.9: accessible-dialog semantics via the shared useFocusTrap hook
   // (same engine Dialog/Drawer use) — this drawer's custom tabbed header
@@ -468,7 +468,7 @@ export default function RuleDrawer({ rule, actor, advanced = false, onClose, onS
         <style>{`@keyframes slideIn{from{transform:translateX(-20px);opacity:.6}to{transform:translateX(0);opacity:1}}@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
 
         {/* Header */}
-        <div style={{ padding:'14px 18px', borderBottom:'1px solid var(--border)',
+        <div className="ci-cat-header" style={{ padding:'14px 18px', borderBottom:'1px solid var(--border)',
           background:`linear-gradient(135deg,${catColor}1f,${catColor}06)`,
           borderTop:`3px solid ${catColor}`, flexShrink:0 }}>
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>

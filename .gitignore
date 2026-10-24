@@ -55,6 +55,9 @@ backend/.env
 .env.*
 !.env.example
 !backend/.env.example
+# Build-time edition flags: contain ONLY VITE_EDITION (no secrets). `vite build --mode manager|standalone` needs them in a clean checkout/CI.
+!frontend/.env.manager
+!frontend/.env.standalone
 *.pem
 *.key
 *.pfx

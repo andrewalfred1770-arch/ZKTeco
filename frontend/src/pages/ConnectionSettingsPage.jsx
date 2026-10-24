@@ -22,7 +22,7 @@ function ResultRow({ label, state }) {
   const icon = state === true
     ? <CheckCircle2 style={{ width: 15, height: 15, color: '#10b981' }} />
     : state === 'auth_required'
-      ? <Info style={{ width: 15, height: 15, color: '#3b82f6' }} />
+      ? <Info style={{ width: 15, height: 15, color: '#1E7A34' }} />
       : state === false
         ? <XCircle style={{ width: 15, height: 15, color: '#ef4444' }} />
         : <span style={{ width: 15, height: 15, display: 'inline-block', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>—</span>;
@@ -83,7 +83,7 @@ function BrowserConnectionView() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="card p-5 flex flex-col gap-3">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>
-            <Globe style={{ width: 16, height: 16, color: '#79C0FF' }} />
+            <Globe style={{ width: 16, height: 16, color: 'var(--accent)' }} />
             خادم PETSHROW
           </h3>
           <p style={{ fontSize: 12, color: 'var(--text-3)' }}>
@@ -104,7 +104,7 @@ function BrowserConnectionView() {
           </h3>
           {testing && !result && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0' }}>
-              <Loader2 style={{ width: 14, height: 14, color: '#79C0FF', animation: 'spin 1s linear infinite' }} />
+              <Loader2 style={{ width: 14, height: 14, color: 'var(--accent)', animation: 'spin 1s linear infinite' }} />
               <span style={{ fontSize: 12, color: 'var(--text-3)' }}>جاري الفحص...</span>
             </div>
           )}
@@ -113,11 +113,6 @@ function BrowserConnectionView() {
               <ResultRow label="الخادم قابل للوصول" state={result.reachable} />
               <ResultRow label="قاعدة البيانات متصلة" state={result.reachable ? result.dbConnected : null} />
               <ResultRow label="الإصدار متوافق" state={result.versionCompatible} />
-              {result.remoteVersion && (
-                <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)', fontSize: 11, color: 'var(--text-3)' }}>
-                  إصدار الخادم: {result.remoteVersion} (بروتوكول {result.remoteApiVersion ?? '—'})
-                </div>
-              )}
               {result.error && <span style={{ fontSize: 11, color: '#f87171' }}>{result.error}</span>}
             </div>
           )}
@@ -230,7 +225,7 @@ function StandaloneConnectionView() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="card p-5 flex flex-col gap-3">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>
-            <Lock style={{ width: 16, height: 16, color: '#79C0FF' }} />
+            <Lock style={{ width: 16, height: 16, color: 'var(--accent)' }} />
             محلي بالكامل — يُدار تلقائياً
           </h3>
           <p style={{ fontSize: 12, color: 'var(--text-3)', lineHeight: 1.7 }}>
@@ -239,6 +234,124 @@ function StandaloneConnectionView() {
           </p>
         </div>
         <StandaloneBackupsPanel />
+      </div>
+    </div>
+  );
+}
+
+// ─── Server PC: the address other devices on the same LAN would open ────────────
+// Read-only. Everything shown comes from main (electron/lanAddress.js) and is recomputed on every refresh, so a changed LAN address shows up
+// without a restart. It never claims another device can reach the address — only that the port answers on THIS PC.
+const EXCLUDED_REASON = {
+  loopback: 'عنوان داخلي (loopback)', 'link-local': 'عنوان تلقائي بلا شبكة (169.254)', 'vpn-or-cgnat': 'VPN / شبكة افتراضية',
+  'not-private-lan': 'ليس عنوان شبكة محلية', 'virtual-or-vpn': 'كرت افتراضي أو VPN', 'no-hardware-address': 'بلا عنوان فعلي',
+  'virtual-adapter': 'كرت افتراضي', 'host-route': 'نفق نقطة-لنقطة', invalid: 'غير صالح',
+};
+
+function LanAddressCard() {
+  const [info, setInfo] = useState(null);
+  const [failed, setFailed] = useState(false);
+  const [showExcluded, setShowExcluded] = useState(false);
+
+  const refresh = () => window.electron.connection.getLanInfo()
+    .then((r) => { setInfo(r); setFailed(false); })
+    .catch(() => setFailed(true));
+
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 10000);
+    return () => clearInterval(t);
+  }, []);
+
+  const copy = (text) => {
+    navigator.clipboard.writeText(text).then(() => toast.success('تم نسخ العنوان'), () => toast.error('تعذّر النسخ'));
+  };
+
+  if (failed && !info) return null;
+  if (!info || info.applicable === false) return null;
+
+  const mono = { direction: 'ltr', textAlign: 'right', wordBreak: 'break-all', fontFamily: 'monospace' };
+  const note = { fontSize: 11.5, color: 'var(--text-3)', lineHeight: 1.7 };
+  const configured = info.proxy.state === 'configured';
+
+  return (
+    <div className="card p-5 flex flex-col gap-3 lg:col-span-2">
+      <h3 style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>
+        <Globe style={{ width: 16, height: 16, color: 'var(--accent)' }} />
+        عنوان هذا الخادم على الشبكة المحلية
+        <button className="btn-secondary text-xs" style={{ marginInlineStart: 'auto' }} onClick={refresh}>تحديث</button>
+      </h3>
+
+      {info.status === 'ok' && configured && (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ ...mono, fontSize: 18, fontWeight: 800, color: 'var(--text-1)', flex: 1, minWidth: 220 }}>{info.shareUrl}</div>
+            <button className="btn-primary text-xs" onClick={() => copy(info.shareUrl)}>نسخ العنوان</button>
+          </div>
+          <div style={note}>
+            هذا العنوان مخصّص للأجهزة المصرّح لها على نفس الشبكة المحلية فقط. هو عنوان الخادم الحالي ({info.activeAddress}) ويُعاد حسابه عند كل تحديث.
+          </div>
+        </>
+      )}
+
+      {info.status === 'ok' && !configured && (
+        <div style={{ ...note, color: '#f59e0b' }}>
+          عنوان الخادم الحالي على الشبكة: <span style={mono}>{info.activeAddress}</span> — لكن لا يوجد عنوان HTTPS مُعدّ لوكيل الاتصال (CORS_ORIGINS) على هذا الجهاز،
+          لذلك لا يمكن عرض رابط جاهز للمشاركة. {info.proxy.state === 'conflicting' ? 'القائمة تحتوي على أكثر من منفذ HTTPS.' : ''}
+        </div>
+      )}
+
+      {info.status === 'ambiguous' && (
+        <>
+          <div style={{ ...note, color: '#f59e0b' }}>
+            يوجد أكثر من عنوان محتمل على هذا الجهاز ولا يمكن تحديد العنوان الصحيح بأمان. اختر العنوان الذي يخص شبكة الأجهزة الأخرى:
+          </div>
+          {info.candidates.map((c) => (
+            <div key={c.address} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11.5, color: 'var(--text-3)', minWidth: 90 }}>{c.name}</span>
+              <span style={{ ...mono, flex: 1 }}>{c.url || c.address}</span>
+              <button className="btn-secondary text-xs" onClick={() => copy(c.url || c.address)}>نسخ</button>
+            </div>
+          ))}
+          {!configured && <div style={note}>لا يوجد عنوان HTTPS مُعدّ لوكيل الاتصال، لذلك تظهر العناوين بدون منفذ.</div>}
+        </>
+      )}
+
+      {info.status === 'no-lan' && (
+        <div style={{ ...note, color: '#f87171' }}>لم يتم العثور على عنوان شبكة محلية فعّال على هذا الجهاز (تحقق من اتصال Wi-Fi أو الكابل).</div>
+      )}
+
+      {info.originMismatch && (
+        <div style={{ ...note, color: '#f59e0b' }}>
+          تنبيه: العنوان الحالي غير موجود في قائمة المصادر المسموحة للخادم، وقد ترفضه المتصفحات. القائمة الحالية: <span style={mono}>{info.proxy.origins.join(' , ')}</span>.
+          لا يغيّر التطبيق هذه القائمة تلقائياً — يعدّلها مسؤول النظام.
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+        {info.listening === true && <span style={note}>✔ المنفذ يستجيب على هذا الجهاز نفسه.</span>}
+        {info.listening === false && <span style={{ ...note, color: '#f87171' }}>✖ لا يوجد برنامج يستجيب على هذا العنوان والمنفذ على هذا الجهاز — وكيل HTTPS غير مشغّل أو يستمع على عنوان آخر.</span>}
+        <span style={note}>لم يتم التحقق من الوصول من أجهزة أخرى. قد يمنعه جدار الحماية أو الراوتر أو عزل الأجهزة في الواي فاي أو قائمة العناوين المسموحة.</span>
+        <span style={note}>
+          <strong>localhost</strong> والمنفذ الداخلي ({info.localOnly.backendUrl}) يعملان على هذا الجهاز فقط ولا يُشاركان مع أحد.
+        </span>
+        <span style={note}>
+          إن ظهر تحذير شهادة على جهاز آخر، يجب أن يثق ذلك الجهاز بشهادة وكيل الاتصال، وأن تحتوي الشهادة على هذا العنوان نفسه — وقد لا تصلح شهادة أُصدرت لعنوان سابق بعد تغيّره.
+          التطبيق لا يثبّت شهادات ولا يعطّل التحقق منها.
+        </span>
+        <span style={{ ...note, color: '#f59e0b' }}>
+          بدون تسجيل دخول: أي جهاز يصل إلى هذا العنوان ضمن الشبكة المسموحة يستطيع استخدام صلاحيات التطبيق (بما فيها تعديل الرواتب والحضور). تقييد الشبكة لا يحدد هوية المستخدم.
+        </span>
+        {info.excludedCount > 0 && (
+          <span style={note}>
+            <button onClick={() => setShowExcluded((v) => !v)} style={{ color: 'var(--accent)', cursor: 'pointer', background: 'none', border: 'none', padding: 0 }}>
+              {showExcluded ? 'إخفاء' : 'عرض'} الواجهات المستبعدة ({info.excludedCount})
+            </button>
+            {showExcluded && info.excluded.map((x, i) => (
+              <div key={i} style={{ direction: 'ltr', textAlign: 'right' }}>{x.name} · {x.address} · {EXCLUDED_REASON[x.reason] || x.reason}</div>
+            ))}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -297,7 +410,7 @@ export default function ConnectionSettingsPage() {
       let validUrl = false;
       try { validUrl = /^https?:$/.test(new URL(serverUrl.trim()).protocol); } catch { /* not a URL */ }
       if (!validUrl) {
-        toast.error('عنوان غير صالح — مثال: http://192.168.1.120:5000');
+        toast.error('عنوان غير صالح — يجب أن يبدأ بـ http:// أو https://');
         return;
       }
     }
@@ -343,7 +456,7 @@ export default function ConnectionSettingsPage() {
             وضع محلي (يشغّل الخادم على هذا الجهاز) أو وضع خادم (اتصال بخادم موجود على الشبكة)
           </p>
         </div>
-        {loading && <Loader2 className="w-5 h-5 animate-spin text-blue-400" />}
+        {loading && <Loader2 className="w-5 h-5 animate-spin text-accent" />}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -351,7 +464,7 @@ export default function ConnectionSettingsPage() {
         {/* ── Mode + URL ────────────────────────────────────────────────── */}
         <div className="card p-5 flex flex-col gap-4">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>
-            <PlugZap style={{ width: 16, height: 16, color: '#79C0FF' }} />
+            <PlugZap style={{ width: 16, height: 16, color: 'var(--accent)' }} />
             وضع التشغيل
           </h3>
 
@@ -361,11 +474,11 @@ export default function ConnectionSettingsPage() {
               style={{
                 flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
                 padding: '14px 10px', borderRadius: 10, cursor: 'pointer',
-                background: mode === 'local' ? 'rgba(47,129,247,0.12)' : 'var(--surface-2)',
-                border: mode === 'local' ? '1.5px solid #2F81F7' : '1px solid var(--border)',
+                background: mode === 'local' ? 'rgba(79,191,107,0.12)' : 'var(--surface-2)',
+                border: mode === 'local' ? '1.5px solid #1E7A34' : '1px solid var(--border)',
               }}
             >
-              <HardDrive style={{ width: 20, height: 20, color: mode === 'local' ? '#79C0FF' : 'var(--text-3)' }} />
+              <HardDrive style={{ width: 20, height: 20, color: mode === 'local' ? 'var(--accent)' : 'var(--text-3)' }} />
               <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>محلي</span>
               <span style={{ fontSize: 10.5, color: 'var(--text-3)', textAlign: 'center' }}>يشغّل التطبيق الخادم تلقائياً</span>
             </button>}
@@ -374,11 +487,11 @@ export default function ConnectionSettingsPage() {
               style={{
                 flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
                 padding: '14px 10px', borderRadius: 10, cursor: 'pointer',
-                background: mode === 'server' ? 'rgba(47,129,247,0.12)' : 'var(--surface-2)',
-                border: mode === 'server' ? '1.5px solid #2F81F7' : '1px solid var(--border)',
+                background: mode === 'server' ? 'rgba(79,191,107,0.12)' : 'var(--surface-2)',
+                border: mode === 'server' ? '1.5px solid #1E7A34' : '1px solid var(--border)',
               }}
             >
-              <Server style={{ width: 20, height: 20, color: mode === 'server' ? '#79C0FF' : 'var(--text-3)' }} />
+              <Server style={{ width: 20, height: 20, color: mode === 'server' ? 'var(--accent)' : 'var(--text-3)' }} />
               <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>خادم</span>
               <span style={{ fontSize: 10.5, color: 'var(--text-3)', textAlign: 'center' }}>اتصال بخادم موجود على الشبكة</span>
             </button>
@@ -389,14 +502,14 @@ export default function ConnectionSettingsPage() {
               <label style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-3)' }}>عنوان الخادم</label>
               <input
                 className="input text-sm"
-                placeholder="http://192.168.1.10:5000"
+                placeholder="https://SERVER-PC"
                 value={serverUrl}
                 onChange={(e) => setServerUrl(e.target.value)}
                 dir="ltr"
                 style={{ textAlign: 'left' }}
               />
               <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
-                الأفضل استخدام اسم جهاز الخادم (مثال: http://SERVER-PC:5000) لأن رقم IP قد يتغير · أمثلة أخرى: http://192.168.1.10:5000 · http://server.company.local:5000 · https://erp.company.com
+                الأفضل استخدام اسم جهاز الخادم (مثال: http://SERVER-PC:5000) لأن رقم IP قد يتغير · أو العنوان الذي تعرضه صفحة إعدادات الاتصال على جهاز الخادم · أو https://erp.company.com
               </span>
             </div>
           )}
@@ -436,7 +549,7 @@ export default function ConnectionSettingsPage() {
 
           {testing && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0' }}>
-              <Loader2 style={{ width: 14, height: 14, color: '#79C0FF', animation: 'spin 1s linear infinite' }} />
+              <Loader2 style={{ width: 14, height: 14, color: 'var(--accent)', animation: 'spin 1s linear infinite' }} />
               <span style={{ fontSize: 12, color: 'var(--text-3)' }}>جاري الفحص...</span>
             </div>
           )}
@@ -452,12 +565,14 @@ export default function ConnectionSettingsPage() {
               <ResultRow label="الإصدار متوافق" state={result.versionCompatible} />
               <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)', fontSize: 11, color: 'var(--text-3)', display: 'flex', flexDirection: 'column', gap: 2 }}>
                 <span dir="ltr" style={{ textAlign: 'right' }}>العنوان: {result.baseUrl}</span>
-                {result.remoteVersion && <span>إصدار الخادم: {result.remoteVersion} (بروتوكول {result.remoteApiVersion ?? '—'})</span>}
                 {result.error && <span style={{ color: '#f87171' }}>{result.error}</span>}
               </div>
             </div>
           )}
         </div>
+
+        {/* ── Server PC: shareable LAN address (local mode only, Server edition) ── */}
+        {!isManager && savedMode === 'local' && mode === 'local' && <LanAddressCard />}
       </div>
     </div>
   );

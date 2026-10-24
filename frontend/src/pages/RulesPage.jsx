@@ -23,7 +23,7 @@ import { useGridPagination } from '../hooks/useGridPagination';
 import api from '../lib/api';
 import { useTheme } from '../contexts/ThemeContext';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
-import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS } from '../lib/gridDefaults';
+import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, withHeaderFloor } from '../lib/gridDefaults';
 import { fmtDate, formatDuration, westernDigits } from '../lib/formatters';
 import RuleDrawer, { CATEGORY_LABELS, CAT_COLOR, TYPE_LABELS, TYPE_ICONS } from '../components/RuleDrawer';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
@@ -40,7 +40,7 @@ const CHIPS = ['all', ...Object.keys(CATEGORY_LABELS)];
 const INERT_KEYS = new Set(['late_limit', 'overtime_rounding']);
 
 const ACT_COLOR = {
-  created:'#10b981', updated:'#2F81F7', enabled:'#22c55e',
+  created:'#10b981', updated:'#1E7A34', enabled:'#22c55e',
   disabled:'#94a3b8', deleted:'#ef4444',
 };
 const ACT_AR = {
@@ -104,7 +104,7 @@ function AuditDrawer({ rule, onClose }) {
     })();
   }, [rule.id]);
 
-  const catColor = CAT_COLOR[rule.category] || '#2563eb';
+  const catColor = CAT_COLOR[rule.category] || '#1E7A34';
 
   return (
     <>
@@ -116,7 +116,7 @@ function AuditDrawer({ rule, onClose }) {
         animation:'slideIn .22s ease', boxShadow:'-8px 0 48px rgba(0,0,0,.4)' }}>
 
         {/* header */}
-        <div style={{ padding:'14px 18px', borderBottom:'1px solid var(--border)', flexShrink:0,
+        <div className="ci-cat-header" style={{ padding:'14px 18px', borderBottom:'1px solid var(--border)', flexShrink:0,
           background:`linear-gradient(135deg,${catColor}25,${catColor}05)`,
           borderTop:`3px solid ${catColor}` }}>
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
@@ -360,9 +360,9 @@ export default function RulesPage() {
         // Minutes-based values → human duration (never raw minute counts)
         const unit = String(data?.unit || '');
         if ((type === 'number' || !type) && /دقيق|min/i.test(unit) && value !== '' && !isNaN(Number(value))) {
-          return <span style={{ fontWeight:800, color: isLight ? '#3b82f6' : 'var(--text)' }}>{formatDuration(Number(value))}</span>;
+          return <span style={{ fontWeight:800, color: isLight ? '#1E7A34' : 'var(--text)' }}>{formatDuration(Number(value))}</span>;
         }
-        return <span style={{ fontWeight:800, color: isLight ? '#3b82f6' : 'var(--text)' }}>{westernDigits(String(value ?? ''))}</span>;
+        return <span style={{ fontWeight:800, color: isLight ? '#1E7A34' : 'var(--text)' }}>{westernDigits(String(value ?? ''))}</span>;
       },
       cellStyle:{ fontFamily:'Consolas,monospace', textAlign:'center', direction:'ltr', justifyContent:'center' },
     };
@@ -401,7 +401,7 @@ export default function RulesPage() {
             onClick={() => setEditing(data)}><Pencil style={{ width:13, height:13 }} /></IconBtn>
           {showAdvanced && (
             <>
-              <IconBtn title="سجل التعديلات" color='#2F81F7' bg='rgba(47,129,247,.1)'
+              <IconBtn title="سجل التعديلات" color='#1E7A34' bg='rgba(79,191,107,.1)'
                 onClick={() => setAuditRule(data)}><History style={{ width:13, height:13 }} /></IconBtn>
               <IconBtn title="حذف القاعدة" color='#ef4444' bg='rgba(239,68,68,.1)'
                 onClick={() => remove(data)}><Trash2 style={{ width:13, height:13 }} /></IconBtn>
@@ -412,7 +412,7 @@ export default function RulesPage() {
     };
 
     if (!showAdvanced) {
-      return [nameCol, valueCol, unitCol, descCol, statusCol, actionsCol];
+      return [nameCol, valueCol, unitCol, descCol, statusCol, actionsCol].map(withHeaderFloor);
     }
 
     // ── Advanced (opt-in) columns — for power users / implementers only ──────
@@ -456,7 +456,7 @@ export default function RulesPage() {
     return [
       nameCol, keyCol, categoryCol, typeCol, valueCol, unitCol,
       priorityCol, descCol, statusCol, updatedCol, actionsCol,
-    ];
+    ].map(withHeaderFloor);
   }, [showAdvanced, isNarrow]);
 
   const defaultColDef = useMemo(() => ({
@@ -471,13 +471,13 @@ export default function RulesPage() {
       <div className="page-header" style={{ alignItems:'flex-start' }}>
         <div>
           <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
-            <div style={{ width:32, height:32, borderRadius:8, background:'#2563eb',
+            <div style={{ width:32, height:32, borderRadius:8, background:'#1E7A34',
               display:'flex', alignItems:'center', justifyContent:'center' }}>
               <Database style={{ width:16, height:16, color:'#fff' }} />
             </div>
             <h1 className="page-title" style={{ margin:0 }}>محرك القواعد الديناميكي</h1>
-            <span style={{ padding:'2px 8px', borderRadius:6, background:'rgba(37,99,235,.15)',
-              color:'#2F81F7', fontSize:10.5, fontWeight:800, letterSpacing:.5 }}>ERP</span>
+            <span style={{ padding:'2px 8px', borderRadius:6, background:'rgba(79,191,107,.15)',
+              color:'#1E7A34', fontSize:10.5, fontWeight:800, letterSpacing:.5 }}>ERP</span>
           </div>
           <p style={{ fontSize:11.5, color:'var(--text-3)', margin:0 }}>
             قواعد قابلة للإنشاء والتعديل والتدقيق بالكامل · مرتبطة بمحركات الحضور والمرتبات
@@ -500,7 +500,7 @@ export default function RulesPage() {
           {/* Add */}
           <button onClick={() => setEditing({})}
             style={{ display:'flex', alignItems:'center', gap:7, padding:'9px 16px', borderRadius:9,
-              background:'#2563eb', color:'#fff', border:'none', fontWeight:700, fontSize:13, cursor:'pointer' }}>
+              background:'#1E7A34', color:'#fff', border:'none', fontWeight:700, fontSize:13, cursor:'pointer' }}>
             <Plus style={{ width:15, height:15 }} /> إضافة قاعدة
           </button>
         </div>
@@ -550,7 +550,7 @@ export default function RulesPage() {
       <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
         {CHIPS.map(c => {
           const on = cat === c;
-          const color = c === 'all' ? '#2563eb' : (CAT_COLOR[c] || '#64748b');
+          const color = c === 'all' ? '#1E7A34' : (CAT_COLOR[c] || '#64748b');
           const cnt = counts[c] || 0;
           return (
             <button key={c} onClick={() => setCat(c)}

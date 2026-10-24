@@ -155,7 +155,7 @@ const CSS = `
 .cps-td-month{
   text-align:center; font-size:9pt; font-weight:700; color:${COLORS.brandInk};
   padding:1.5mm 3mm; border-bottom:1.5px solid ${COLORS.i4};
-  background:linear-gradient(180deg,#F8FBFF,#EDF4FF); line-height:1.2; white-space:nowrap;
+  background:linear-gradient(180deg,#FFFFFF,#F8FAFC); line-height:1.2; white-space:nowrap;
 }
 
 /* ── Employee name row — same sharpened tone as the data rows below, so
@@ -237,7 +237,7 @@ const CSS = `
    reportTemplate.js's own tr.totals marks itself as the summary line. ── */
 .r-net td{
   background:${COLORS.softStrong}; border-top:1.5px solid ${COLORS.p}; border-bottom:none;
-  box-shadow:inset 0 3px 5px -3px rgba(15,39,75,0.35);
+  box-shadow:inset 0 3px 5px -3px rgba(32,40,43,0.35);
   vertical-align:middle; overflow:hidden;
 }
 .r-net .cps-td-lbl{font-size:9pt;font-weight:700;color:${COLORS.p};padding:0 2mm;}

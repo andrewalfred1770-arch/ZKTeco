@@ -642,7 +642,7 @@ table{ margin-bottom: 0; }
   overflow: hidden; line-height: 1;
 }
 .dh-brand-text{ direction: ltr; text-align: left; line-height: 1.15; }
-.dh-brand-name{ font-size: 19px; font-weight: 700; color: #0F274B; white-space: nowrap; }
+.dh-brand-name{ font-size: 19px; font-weight: 700; color: #20282B; white-space: nowrap; }
 .dh-brand-sub{ font-size: 13px; color: var(--i3); font-weight: 500; margin-top: 0; white-space: nowrap; }
 
 /* No min-width:0 here on purpose — that override was what let the flex
@@ -654,7 +654,7 @@ table{ margin-bottom: 0; }
    title area smaller than it needs to be). */
 .dh-report{ flex: 1; direction: rtl; text-align: right; }
 .dh-title{
-  font-size: 32px; font-weight: 800; color: #0F274B; line-height: 1.25;
+  font-size: 32px; font-weight: 800; color: #20282B; line-height: 1.25;
   letter-spacing: normal;
   /* Single line, but never clipped/truncated — the old overflow:hidden +
      text-overflow:ellipsis silently cut long titles short; a real
@@ -664,7 +664,7 @@ table{ margin-bottom: 0; }
   white-space: nowrap; overflow: visible;
   margin-bottom: 5px;
 }
-.dh-period{ font-size: 18px; font-weight: 600; color: #0F274B; margin-top: 0; line-height: 1.25; }
+.dh-period{ font-size: 18px; font-weight: 600; color: #20282B; margin-top: 0; line-height: 1.25; }
 .dh-subtitle{ font-size: 13px; color: var(--i3); font-weight: 500; margin-top: 0; line-height: 1.15; }
 
 /* ② Metadata cards — premium info blocks: white body, soft border, 10px
@@ -684,11 +684,11 @@ table{ margin-bottom: 0; }
   border-radius: 10px;
   box-shadow: var(--card-shadow);
 }
-.dh-meta-top{ display: flex; align-items: center; gap: 5px; color: #2563EB; line-height: 1; }
+.dh-meta-top{ display: flex; align-items: center; gap: 5px; color: #1E7A34; line-height: 1; }
 .dh-meta-icon{ display: flex; flex-shrink: 0; line-height: 1; }
 .dh-meta-icon svg{ display: block; }
 .dh-meta-label{ font-size: 13px; color: var(--i3); font-weight: 600; line-height: 1; }
-.dh-meta-value{ font-size: 17px; color: #0F274B; font-weight: 700; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dh-meta-value{ font-size: 17px; color: #20282B; font-weight: 700; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ③ Statistics row — premium KPI cards: white body, soft border, rounded
    corners, soft shadow, a 4px color accent on the TOP edge only. Equal
@@ -705,14 +705,14 @@ table{ margin-bottom: 0; }
   background: #fff;
   border: 1px solid var(--card-bd);
   border-radius: 8px;
-  border-top: 4px solid var(--kpi-accent, #2563EB);
+  border-top: 4px solid var(--kpi-accent, #1E7A34);
   box-shadow: var(--card-shadow);
   page-break-inside: avoid;
 }
-.dh-kpi-value{ font-size: 24px; font-weight: 700; color: #0F274B; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -0.2px; }
+.dh-kpi-value{ font-size: 24px; font-weight: 700; color: #20282B; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -0.2px; }
 .dh-kpi-label{ font-size: 13px; font-weight: 500; color: var(--i3); line-height: 1.2; white-space: nowrap; }
 
-.dh-kpi.c-blue  { --kpi-accent: #2563EB; }
+.dh-kpi.c-blue  { --kpi-accent: #1E7A34; }
 .dh-kpi.c-green { --kpi-accent: #16A34A; }
 .dh-kpi.c-red   { --kpi-accent: #DC2626; }
 .dh-kpi.c-amber { --kpi-accent: #F97316; }
@@ -752,8 +752,8 @@ thead{ display: ${repeatHeader ? 'table-header-group' : 'table-row-group'}; }
    the rounding reads correctly even where repeatHeader reprints the row
    at the top of every subsequent page. */
 thead th{
-  background: linear-gradient(180deg, #F8FBFF, #EDF4FF);
-  color: #0F274B;
+  background: linear-gradient(180deg, #FFFFFF, #F8FAFC);
+  color: #20282B;
   font-weight: 700; font-size: 14px;
   padding: var(--cv) var(--ch);
   text-align: right;
@@ -796,7 +796,7 @@ tbody tr.row-absent td:first-child{ box-shadow: inset -4px 0 0 var(--dng); }
    styling here — the corrected requirement keeps their existing (unchanged)
    presentation, only official holiday (data.isHoliday, an explicit
    Holiday-table match) becomes blue. */
-tbody tr.row-holiday td{ background: #DBEAFE; }
+tbody tr.row-holiday td{ background: #D3EEF4; }
 tbody tr.row-holiday td:first-child{ box-shadow: inset -4px 0 0 var(--a); }
 
 /* Row-index column (auto #) — same nowrap contract as .num above, plus its
@@ -935,7 +935,7 @@ tr.totals td.t-blank{
    ════════════════════════════════════════════════════════════════════════════ */
 .summary-strip{
   display: flex; flex-wrap: wrap; align-items: stretch;
-  background: #fff; border: 1px solid #E6ECF5; border-radius: 12px;
+  background: #fff; border: 1px solid #E5E7EB; border-radius: 12px;
   box-shadow: var(--card-shadow);
   padding: 16px 24px;
   margin-top: var(--sg); margin-bottom: 0;
@@ -944,7 +944,7 @@ tr.totals td.t-blank{
 .ss-item{
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 4px; flex: 1 1 0; min-width: 130px; padding: 0 20px;
-  border-inline-start: 1px solid #EEF1F6;
+  border-inline-start: 1px solid #F3F4F6;
 }
 .ss-item:first-child{ border-inline-start: none; padding-inline-start: 0; }
 .ss-item:last-child{ padding-inline-end: 0; }

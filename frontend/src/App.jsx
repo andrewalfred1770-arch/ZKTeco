@@ -33,7 +33,7 @@ function trace(step, data = null) {
   if (!TRACE_BOOT) return;
 
   const style =
-    'background:#2563eb;color:#fff;padding:2px 6px;border-radius:4px;font-weight:bold';
+    'background:#1E7A34;color:#fff;padding:2px 6px;border-radius:4px;font-weight:bold';
 
   if (data === null || data === undefined) {
     console.log('%c[BOOT]', style, step);
@@ -47,6 +47,7 @@ function trace(step, data = null) {
  * ========================================================================== */
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const LauncherPage = lazy(() => import('./pages/LauncherPage'));
 
 const AttendanceDailyPage = lazy(() =>
   import('./pages/AttendanceDailyPage')
@@ -119,12 +120,12 @@ function ConnectingScreen({ serverUrl, onRetry, onChangeServer }) {
       style={{
         position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'center', gap: 14,
-        background: 'var(--bg, #0b1220)', color: 'var(--text, #e2e8f0)', zIndex: 9999,
+        background: 'var(--bg, #090909)', color: 'var(--text, #e2e8f0)', zIndex: 9999,
       }}
     >
       <div style={{
         width: 36, height: 36, borderRadius: '50%',
-        border: '3px solid rgba(148,163,184,0.25)', borderTopColor: '#3b82f6',
+        border: '3px solid rgba(148,163,184,0.25)', borderTopColor: '#1E7A34',
         animation: 'spin 0.8s linear infinite',
       }} />
       <div style={{ fontSize: 14, fontWeight: 700 }}>جاري الاتصال بالخادم…</div>
@@ -139,7 +140,7 @@ function ConnectingScreen({ serverUrl, onRetry, onChangeServer }) {
           <div style={{ display: 'flex', gap: 10 }}>
             <button
               onClick={onRetry}
-              style={{ padding: '7px 18px', borderRadius: 8, border: '1px solid #2563eb', background: '#1d4ed8', color: '#fff', fontSize: 12.5, cursor: 'pointer' }}
+              style={{ padding: '7px 18px', borderRadius: 8, border: '1px solid #1E7A34', background: '#1E7A34', color: '#fff', fontSize: 12.5, cursor: 'pointer' }}
             >
               إعادة المحاولة الآن
             </button>
@@ -301,19 +302,19 @@ function AppRoutes() {
         .then((marker) => {
           console.log(
             `%c[PETSHROW ERP] ${marker}`,
-            "color:#2563eb;font-weight:bold;"
+            "color:#1E7A34;font-weight:bold;"
           );
         })
         .catch(() => {
           console.log(
             `%c[PETSHROW ERP] ${BRAND.buildMarker}`,
-            "color:#2563eb;font-weight:bold;"
+            "color:#1E7A34;font-weight:bold;"
           );
         });
     } else {
       console.log(
         `%c[PETSHROW ERP] ${BRAND.buildMarker}`,
-        "color:#2563eb;font-weight:bold;"
+        "color:#1E7A34;font-weight:bold;"
       );
     }
   }, []);
@@ -422,6 +423,15 @@ function AppShellRoutes() {
             element={
               <ErrorBoundary>
                 <DashboardPage />
+              </ErrorBoundary>
+            }
+          />
+
+          <Route
+            path="launcher"
+            element={
+              <ErrorBoundary>
+                <LauncherPage />
               </ErrorBoundary>
             }
           />

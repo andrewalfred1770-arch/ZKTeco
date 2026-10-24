@@ -17,36 +17,36 @@
 
 // ── Color / ink / surface palette ───────────────────────────────────────────
 export const COLORS = {
-  p:   '#17325C',  // primary navy   – headings, borders, totals
-  a:   '#2563EB',  // accent blue    – numeric highlights
+  p:   '#293438',  // primary charcoal – headings, borders, totals
+  a:   '#1E7A34',  // accent green   – numeric highlights
   suc: '#16A34A',  // success        – present, positive
   wrn: '#F59E0B',  // warning        – late, attention
   dng: '#DC2626',  // danger         – absent, deductions
   pur: '#7C3AED',  // purple         – overtime, special
 
   bg:    '#FFFFFF',
-  soft:  '#EAF2FF',  // period strip • table header • totals row
-  softStrong: '#EEF5FF', // totals row fill — one step stronger than soft
+  soft:  '#F8FAFC',  // period strip • table header • totals row
+  softStrong: '#E9F4EC', // totals row fill — one step stronger than soft
   alt:   '#F8FAFC',  // alternating table row
-  panel: '#F2F7FE',  // header info panel
+  panel: '#F8FAFC',  // header info panel
 
   i1: '#1F2937',   // primary body text
   i2: '#374151',   // secondary text
   i3: '#6B7280',   // labels, captions, muted
   i4: '#9CA3AF',   // faint – row numbers, icons
 
-  bd:   '#D8E2EE',  // outer border
-  bd2:  '#C3D5E8',  // inner thead cell separator
-  hair: '#D9E2EC',  // header hairline / divider
+  bd:   '#E5E7EB',  // outer border
+  bd2:  '#D1D5DB',  // inner thead cell separator
+  hair: '#E5E7EB',  // header hairline / divider
   cardBorder: '#E5E7EB',
-  brandInk: '#0F274B',  // letterhead heading ink — reportTemplate.js's .dh-title/.dh-brand-name/.dh-meta-value
+  brandInk: '#20282B',  // letterhead heading ink — reportTemplate.js's .dh-title/.dh-brand-name/.dh-meta-value
 };
 
 /** Same six accent colors as reportTemplate.js's `.dh-kpi.c-*` rules —
  *  exported so any React-rendered card (SalaryCard's Kpi, etc.) can pick the
  *  identical hex instead of re-deciding its own KPI palette. */
 export const KPI_ACCENTS = {
-  blue: '#2563EB', green: '#16A34A', red: '#DC2626',
+  blue: '#1E7A34', green: '#16A34A', red: '#DC2626',
   amber: '#F97316', purple: '#7C3AED', teal: '#0D9488',
 };
 
@@ -59,7 +59,7 @@ export const SPACING = {
 // ── Component tokens ─────────────────────────────────────────────────────────
 export const RADIUS = { card: 12, kpi: 8, meta: 10, chip: 6 };
 export const SHADOW = {
-  card: '0 2px 4px rgba(15,39,75,0.07), 0 1px 2px rgba(15,39,75,0.05)',
+  card: '0 2px 4px rgba(32,40,43,0.07), 0 1px 2px rgba(32,40,43,0.05)',
 };
 export const TABLE_RHYTHM = {
   ch: 10,  // cell horizontal padding

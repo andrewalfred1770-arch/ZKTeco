@@ -9,7 +9,7 @@
  * When AUTH_ENABLED=false they still work but the resulting token is
  * never required by other routes — useful for testing without enforcing auth.
  */
-const router  = require('express').Router();
+const router  = require('express').Router();
 const { sendError } = require('../utils/apiError');
 const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
@@ -17,7 +17,12 @@ const { getPrisma }    = require('../utils/prisma');
 const { authenticate, JWT_SECRET, AUTH_ENABLED } = require('../middleware/auth');
 const rateLimiter      = require('../middleware/rateLimiter');
 
+const { getDummyHash, bcryptCostOf, BCRYPT_COST } = require('../utils/passwordPolicy');
+const GENERIC_LOGIN_FAILURE = 'اسم المستخدم أو كلمة المرور غير صحيحة';
+const MAX_LOGIN_PASSWORD_CHARS = 1024;
+
 const prisma     = getPrisma();
+getDummyHash(bcrypt).catch(() => {});   // warm the stand-in hash off the request path
 const JWT_EXPIRES= process.env.JWT_EXPIRES || '8h';
 
 // ── Login ─────────────────────────────────────────────────────────────────────
@@ -25,9 +30,11 @@ const JWT_EXPIRES= process.env.JWT_EXPIRES || '8h';
 router.post('/login', rateLimiter(10, 60_000), async (req, res) => {
   const { username, password } = req.body || {};
 
-  if (!username?.trim() || !password) {
+  // Non-string / absurd inputs get the SAME generic answer as a wrong password (no type- or length-dependent oracle, no bcrypt work on junk).
+  if (typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password) {
     return res.status(400).json({ error: 'username و password مطلوبان' });
   }
+  if (username.length > 64 || password.length > MAX_LOGIN_PASSWORD_CHARS) return res.status(401).json({ error: GENERIC_LOGIN_FAILURE });
 
   try {
     const user = await prisma.user.findUnique({
@@ -35,13 +42,21 @@ router.post('/login', rateLimiter(10, 60_000), async (req, res) => {
       select: { id: true, username: true, name: true, role: true, active: true, password: true },
     });
 
-    // Constant-time comparison even on missing user (mitigates user-enumeration timing)
-    const sentinel = '$2a$10$CwTycUXWue0Thq9StjUM0uSmx0Y.v8Ml2y2DJX7.TiWNTTYKnvUkq';
-    const hash     = user?.password ?? sentinel;
-    const valid    = await bcrypt.compare(password, hash);
+    // The same bcrypt work whether or not the account exists (mitigates user-enumeration timing). The stand-in hash is generated
+    // per process at the policy cost (utils/passwordPolicy.js) — not a literal in source — and a disabled account is still compared.
+    const hash  = user?.password ?? await getDummyHash(bcrypt);
+    const valid = await bcrypt.compare(password, hash);
 
     if (!user || !user.active || !valid) {
-      return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
+      return res.status(401).json({ error: GENERIC_LOGIN_FAILURE });
+    }
+
+    // Transparent upgrade: a hash made below the policy cost (employee accounts used 10) is re-hashed now that the password is known.
+    // Best effort; a failure never affects the login.
+    if ((bcryptCostOf(user.password) || 0) < BCRYPT_COST) {
+      bcrypt.hash(password, BCRYPT_COST)
+        .then((upgraded) => prisma.user.update({ where: { id: user.id }, data: { password: upgraded } }))
+        .catch(() => {});
     }
 
     const token = jwt.sign(

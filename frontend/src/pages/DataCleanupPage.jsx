@@ -6,6 +6,9 @@ import {
 import toast from 'react-hot-toast';
 import api, { LONG_OP } from '../lib/api';
 import { getSocket } from '../lib/socket';
+import { describePreviewError } from '../lib/cleanupPreviewError';
+import { isStalePreviewError, STALE_PREVIEW_MESSAGE } from '../lib/cleanupExecuteError';
+import { closedSkipMessage } from '../lib/closedMonthSkip';
 
 // Same disabled-auth attribution pattern as RulesPage (ACTOR) — there is no
 // real session, so the operator's name is what makes the audit log meaningful.
@@ -26,6 +29,8 @@ const TYPE_DEFS = [
 ];
 
 function fmtNum(n) { return (n ?? 0).toLocaleString('en-US'); }
+// fromDate / toDate are calendar days stored at UTC midnight ("2026-10-14T00:00:00.000Z"); new Date(...) would show the previous day west of UTC.
+const historyDay = (v) => { const [y, m, d] = String(v).slice(0, 10).split('-').map(Number); return new Date(y, m - 1, d); };
 
 export default function DataCleanupPage() {
   const [step, setStep] = useState(1);
@@ -45,6 +50,7 @@ export default function DataCleanupPage() {
   const [executing, setExecuting] = useState(false);
   const [result, setResult] = useState(null);
   const [execError, setExecError] = useState(null);
+  const [staleNotice, setStaleNotice] = useState(false);   // execute answered 409 CLEANUP_DATA_CHANGED: a fresh preview is required
 
   const [history, setHistory] = useState([]);
 
@@ -92,10 +98,11 @@ export default function DataCleanupPage() {
       const { data } = await api.post('/cleanup/preview', { from: form.from, to: form.to, types: form.types }, LONG_OP);
       setPreview(data);
       setConfirmCurrentPeriod(false);
-      setConfirmFinalizedPayroll(false);
+      setStaleNotice(false);
       setStep(3);
     } catch (err) {
-      setPreviewError(err.response?.data?.error || 'فشل تحميل المعاينة');
+      // Display only: say WHAT failed (session / permission / input / backend / timeout / network) — the request itself is unchanged.
+      setPreviewError(describePreviewError(err).message);
     } finally { setPreviewLoading(false); }
   };
 
@@ -128,6 +135,13 @@ export default function DataCleanupPage() {
       toast.success('تم تنفيذ عملية التنظيف بنجاح');
       loadHistory();
     } catch (err) {
+      if (isStalePreviewError(err)) {
+        // Nothing was deleted (the server rolled back). Drop the stale preview and send the operator back to choose / preview again.
+        setPreview(null); setPreviewError(null); setConfirmText(''); setConfirmCurrentPeriod(false);
+        setExecError(null); setStaleNotice(true); setStep(2);
+        toast.error(STALE_PREVIEW_MESSAGE);
+        return;
+      }
       const msg = err.response?.data?.error || 'فشل تنفيذ عملية التنظيف';
       setExecError(msg);
       toast.error(msg);
@@ -137,8 +151,8 @@ export default function DataCleanupPage() {
   const startOver = () => {
     setStep(1); setForm({ from: '', to: '', types: { rawLogs: false, daily: false, payroll: false } });
     setPreview(null); setPreviewError(null); setConfirmText('');
-    setConfirmCurrentPeriod(false); setConfirmFinalizedPayroll(false);
-    setResult(null); setExecError(null);
+    setConfirmCurrentPeriod(false);
+    setResult(null); setExecError(null); setStaleNotice(false);
   };
 
   return (
@@ -156,7 +170,7 @@ export default function DataCleanupPage() {
       <div className="card p-4 flex items-center gap-2 overflow-x-auto">
         {STEPS.map((s, i) => (
           <React.Fragment key={s.id}>
-            <div className={`sm:flex-1 flex items-center justify-center gap-2.5 px-3 sm:px-4 py-3 rounded-lg text-sm transition-colors ${step === s.id ? 'bg-blue-600/20 text-blue-300 font-bold' : step > s.id ? 'text-emerald-400' : 'text-gray-500'}`}>
+            <div className={`sm:flex-1 flex items-center justify-center gap-2.5 px-3 sm:px-4 py-3 rounded-lg text-sm transition-colors ${step === s.id ? 'bg-primary-600/20 text-accent font-bold' : step > s.id ? 'text-emerald-400' : 'text-gray-500'}`}>
               {step > s.id ? <CheckCircle2 className="w-5 h-5 shrink-0" /> : <span className="w-6 h-6 rounded-full border border-current text-sm flex items-center justify-center shrink-0">{s.id}</span>}
               <span className="whitespace-nowrap hidden sm:inline">{s.label}</span>
             </div>
@@ -194,13 +208,19 @@ export default function DataCleanupPage() {
           )}
 
           {/* Step 2 — Data type selection */}
+          {staleNotice && step <= 2 && (
+            <div className="flex items-start gap-2 text-xs text-amber-300 bg-amber-900/20 border border-amber-800/40 rounded-lg p-3" data-testid="cleanup-stale-preview">
+              <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" /> {STALE_PREVIEW_MESSAGE}
+            </div>
+          )}
+
           {step === 2 && (
             <div className="card p-6 space-y-5">
               <h2 className="font-bold text-gray-200 text-base">حدد البيانات المراد حذفها</h2>
               <p className="text-xs text-gray-500">يبقى كل شيء آخر (الموظفون، الأقسام، القواعد، الأجهزة، الرواتب الأساسية، الإعدادات) محميًا تمامًا ولا يتأثر بهذه العملية.</p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 {TYPE_DEFS.map(t => (
-                  <label key={t.key} className={`flex items-start gap-3 p-4 rounded-lg border cursor-pointer transition-colors ${form.types[t.key] ? 'border-blue-500/50 bg-blue-600/10' : 'border-gray-800 hover:border-gray-700'}`}>
+                  <label key={t.key} className={`flex items-start gap-3 p-4 rounded-lg border cursor-pointer transition-colors ${form.types[t.key] ? 'border-primary-500/50 bg-primary-600/10' : 'border-gray-800 hover:border-gray-700'}`}>
                     <input type="checkbox" className="mt-1" checked={form.types[t.key]} onChange={() => toggleType(t.key)} />
                     <t.icon className="w-4 h-4 text-gray-400 mt-0.5" />
                     <div>
@@ -244,6 +264,19 @@ export default function DataCleanupPage() {
                 <div className="p-3 rounded-lg bg-gray-800/60"><p className="text-xs text-gray-500">الموظفون المتأثرون</p><p className="text-lg font-bold text-gray-100">{fmtNum(preview.employeesAffected)}</p></div>
               </div>
 
+              {preview.dailyProtection?.protectedRows > 0 && (
+                <div className="text-xs rounded-lg p-3 space-y-1.5 border text-emerald-200 bg-emerald-900/20 border-emerald-800/40" data-testid="cleanup-manual-protected">
+                  <p className="font-bold">
+                    🛡️ {fmtNum(preview.dailyProtection.protectedRows)} سجل حضور يحتوي على بيانات يدوية — محمي ولن يُحذف
+                  </p>
+                  <p>
+                    تعديل يدوي: {fmtNum(preview.dailyProtection.byPrimaryCategory?.manualEdit)} — خصم/إضافي يدوي: {fmtNum(preview.dailyProtection.byPrimaryCategory?.manualPenalty)} —
+                    سبب/بيانات غياب: {fmtNum(preview.dailyProtection.byPrimaryCategory?.absenceMetadata)} — تسويات: {fmtNum(preview.dailyProtection.byPrimaryCategory?.adjustment)}
+                    {' '}(كل سجل يُحتسب مرة واحدة). سجلات تدقيق التسويات المحفوظة: {fmtNum(preview.dailyProtection.adjustmentAuditLogs)}.
+                  </p>
+                </div>
+              )}
+
               {preview.warnings?.length > 0 && (
                 <div className="space-y-1.5">
                   {preview.warnings.map((w, i) => (
@@ -272,7 +305,7 @@ export default function DataCleanupPage() {
 
               <label className="flex items-center gap-2 text-sm text-gray-300">
                 <input type="checkbox" checked={backupFirst} onChange={e => setBackupFirst(e.target.checked)} />
-                تنزيل نسخة احتياطية (Excel) من البيانات قبل حذفها
+                تنزيل ملف Excel معلوماتي بالبيانات المحذوفة (غير قابل للاستعادة)
               </label>
 
               <div className="flex justify-between">
@@ -326,7 +359,7 @@ export default function DataCleanupPage() {
                       <span>{progress.total ? `${progress.done} / ${progress.total}` : ''}</span>
                     </div>
                     <div className="h-2 rounded-full bg-gray-800 overflow-hidden">
-                      <div className="h-full bg-blue-500 transition-all" style={{ width: progress.total ? `${Math.min(100, (progress.done / progress.total) * 100)}%` : '10%' }} />
+                      <div className="h-full bg-primary-500 transition-all" style={{ width: progress.total ? `${Math.min(100, (progress.done / progress.total) * 100)}%` : '10%' }} />
                     </div>
                   </div>
                 )}
@@ -359,6 +392,9 @@ export default function DataCleanupPage() {
                 <p className="text-xs text-emerald-300" data-testid="cleanup-result-protected">
                   🛡️ {result.protectedPayroll.total} سجل مرتب معتمد/مدفوع بقي كما هو (محمي) — استُبعد {result.recalcSkippedEmployeeMonths || 0} موظف-شهر من إعادة الاحتساب.
                 </p>
+              )}
+              {closedSkipMessage(result.skippedClosedPayroll) && (
+                <p className="text-xs text-amber-300" data-testid="cleanup-closed-skip">⚠ {closedSkipMessage(result.skippedClosedPayroll)}</p>
               )}
               {result.consistencyNotes?.length > 0 && (
                 <div className="space-y-1">
@@ -403,7 +439,7 @@ export default function DataCleanupPage() {
                   <div key={h.id} className="flex items-center justify-between text-xs py-1.5 border-b border-gray-800/60 last:border-0 gap-2">
                     <div className="min-w-0">
                       <p className="text-gray-300">
-                        {new Date(h.fromDate).toLocaleDateString('ar-EG')} → {new Date(h.toDate).toLocaleDateString('ar-EG')}
+                        {historyDay(h.fromDate).toLocaleDateString('ar-EG')} → {historyDay(h.toDate).toLocaleDateString('ar-EG')}
                         <span className="text-gray-600"> · بواسطة {h.executedByName}</span>
                       </p>
                       <p className="text-gray-600">

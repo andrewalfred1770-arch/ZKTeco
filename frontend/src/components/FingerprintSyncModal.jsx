@@ -157,8 +157,8 @@ export default function FingerprintSyncModal({ state, onClose, onRetry, onViewLo
 
   const accent = phase === 'error' ? '#ef4444'
     : phase === 'partial' ? '#f59e0b'
-    : phase === 'success' ? '#22c55e'
-    : '#2F81F7';
+    : phase === 'success' ? '#4FBF6B'
+    : '#1E7A34';
 
   return (
     <>
@@ -170,7 +170,7 @@ export default function FingerprintSyncModal({ state, onClose, onRetry, onViewLo
         showClose={false}
         maxWidth={480}
         className="fp-panel"
-        overlayStyle={{ background: 'rgba(6,10,20,0.72)' }}
+        overlayStyle={{ background: 'var(--ci-overlay-sync, rgba(6,10,20,0.72))' }}
         panelStyle={{
           borderRadius: 20,
           background: 'linear-gradient(165deg, rgba(255,255,255,0.055), rgba(255,255,255,0.015) 42%), var(--surface, #111927)',
@@ -261,10 +261,10 @@ function RunningView({
         <div style={{ marginInlineStart: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{
             width: 6, height: 6, borderRadius: '50%',
-            background: connected ? '#22c55e' : '#f59e0b',
+            background: connected ? '#4FBF6B' : '#f59e0b',
             boxShadow: `0 0 0 3px ${connected ? 'rgba(34,197,94,0.16)' : 'rgba(245,158,11,0.16)'}`,
           }} />
-          <span style={{ fontSize: 11.5, fontWeight: 700, color: connected ? '#22c55e' : '#f59e0b' }}>
+          <span style={{ fontSize: 11.5, fontWeight: 700, color: connected ? '#4FBF6B' : '#f59e0b' }}>
             {connected ? 'متصل' : 'جارٍ الاتصال'}
           </span>
         </div>
@@ -280,8 +280,7 @@ function RunningView({
           {determinate ? (
             <div style={{
               height: '100%', width: `${pct}%`, borderRadius: 999,
-              background: 'linear-gradient(90deg,#1F6FEB,#2F81F7 55%,#7dd3fc)',
-              boxShadow: '0 0 18px rgba(47,129,247,0.45)',
+              background: 'var(--ci-green)',
               transition: 'width .5s cubic-bezier(.22,.9,.32,1)',
               position: 'relative', overflow: 'hidden',
             }}>
@@ -296,8 +295,7 @@ function RunningView({
             // fabricated percentage.
             <div style={{
               position: 'absolute', insetBlock: 0, insetInlineStart: 0, borderRadius: 999,
-              background: 'linear-gradient(90deg,#1F6FEB,#7dd3fc)',
-              boxShadow: '0 0 18px rgba(47,129,247,0.45)',
+              background: 'var(--ci-green)',
               animation: 'fp-sweep 1.5s ease-in-out infinite',
             }} />
           )}
@@ -327,7 +325,7 @@ function RunningView({
       {/* Live statistics */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 8, marginBottom: 14 }}>
         <Stat label="إجمالي البصمات" value={counts ? num(counts.total) : '—'} />
-        <Stat label="تم القراءة" value={num(counts ? counts.current : recordsRead)} tone="#2F81F7" />
+        <Stat label="تم القراءة" value={num(counts ? counts.current : recordsRead)} tone="#1E7A34" />
         <Stat label="المتبقي" value={remaining == null ? '—' : num(remaining)} />
         <Stat label="المدة" value={fmtClock(elapsedMs)} mono />
       </div>
@@ -371,7 +369,7 @@ function stepDetailText(row, currentStep, detail, recordsRead) {
 function TimelineRow({ row, status, detail, isLast }) {
   const done = status === 'done';
   const active = status === 'active';
-  const color = done ? '#22c55e' : active ? '#2F81F7' : 'var(--text-3, #5a6b85)';
+  const color = done ? '#4FBF6B' : active ? '#1E7A34' : 'var(--text-3, #5a6b85)';
 
   return (
     <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
@@ -381,23 +379,23 @@ function TimelineRow({ row, status, detail, isLast }) {
           position: 'relative', flexShrink: 0,
           width: 19, height: 19, borderRadius: '50%',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          border: `1.5px solid ${done ? '#22c55e' : active ? '#2F81F7' : 'var(--border, #233047)'}`,
-          background: done ? '#22c55e' : active ? 'rgba(47,129,247,0.12)' : 'transparent',
+          border: `1.5px solid ${done ? '#4FBF6B' : active ? '#1E7A34' : 'var(--border, #233047)'}`,
+          background: done ? '#4FBF6B' : active ? 'rgba(79,191,107,0.12)' : 'transparent',
           transition: 'background .35s ease, border-color .35s ease',
         }}>
           {active && (
             <span style={{
               position: 'absolute', inset: -2, borderRadius: '50%',
-              border: '2px solid #2F81F7', animation: 'fp-pulse-ring 1.6s ease-out infinite',
+              border: '2px solid #1E7A34', animation: 'fp-pulse-ring 1.6s ease-out infinite',
             }} />
           )}
           {done && <CheckCircle2 style={{ width: 11, height: 11, color: '#fff' }} strokeWidth={3} />}
-          {active && <Loader2 className="fp-spin" style={{ width: 10, height: 10, color: '#2F81F7' }} />}
+          {active && <Loader2 className="fp-spin" style={{ width: 10, height: 10, color: '#1E7A34' }} />}
         </div>
         {!isLast && (
           <div style={{
             width: 2, flex: 1, minHeight: 10, marginBlock: 2, borderRadius: 2,
-            background: done ? '#22c55e' : 'var(--border, #233047)',
+            background: done ? '#4FBF6B' : 'var(--border, #233047)',
             opacity: done ? 0.55 : 1, transition: 'background .35s ease',
           }} />
         )}
@@ -415,7 +413,7 @@ function TimelineRow({ row, status, detail, isLast }) {
         {(detail || done) && (
           <span style={{
             marginInlineStart: 'auto', fontSize: 11, fontWeight: 700,
-            color: done ? '#22c55e' : '#79C0FF', fontVariantNumeric: 'tabular-nums',
+            color: done ? '#4FBF6B' : 'var(--accent)', fontVariantNumeric: 'tabular-nums',
             whiteSpace: 'nowrap',
           }}>
             {done ? 'تم' : detail}
@@ -453,7 +451,7 @@ function CompletedView({ phase, result, deviceName, onClose, onViewLogs }) {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 8, marginBottom: 8 }}>
         <Stat label="تم تحميلها" value={num(result.downloaded)} big />
-        <Stat label="تم استيرادها" value={num(result.imported)} tone="#22c55e" big />
+        <Stat label="تم استيرادها" value={num(result.imported)} tone="#4FBF6B" big />
         <Stat label="مكررة" value={num(result.duplicates)} big />
         <Stat label="فاشلة" value={num(result.failed)} tone={result.failed > 0 ? '#f87171' : undefined} big />
       </div>
@@ -486,11 +484,11 @@ function DrawnCheck() {
   return (
     <svg width="40" height="40" viewBox="0 0 52 52" fill="none" aria-hidden="true">
       <circle
-        cx="26" cy="26" r="22" stroke="#22c55e" strokeWidth="3" strokeLinecap="round"
+        cx="26" cy="26" r="22" stroke="#4FBF6B" strokeWidth="3" strokeLinecap="round"
         style={{ strokeDasharray: 140, strokeDashoffset: 140, animation: 'fp-draw .55s cubic-bezier(.65,0,.35,1) .1s forwards' }}
       />
       <path
-        d="M16 27.5 L23 34 L37 19" stroke="#22c55e" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"
+        d="M16 27.5 L23 34 L37 19" stroke="#4FBF6B" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"
         style={{ strokeDasharray: 42, strokeDashoffset: 42, animation: 'fp-draw .38s cubic-bezier(.65,0,.35,1) .5s forwards' }}
       />
     </svg>
@@ -545,7 +543,7 @@ function Header({ accent, icon, title, subtitle, pulse }) {
       <div style={{
         position: 'relative', width: 46, height: 46, borderRadius: 14, flexShrink: 0,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'var(--accent-soft, rgba(47,129,247,0.12))',
+        background: 'var(--accent-soft, rgba(79,191,107,0.12))',
         border: `1px solid ${accent}33`,
       }}>
         {pulse && (

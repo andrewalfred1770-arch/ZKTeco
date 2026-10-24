@@ -3,6 +3,7 @@ import { LogIn, Loader2, XCircle, UserRound, KeyRound } from 'lucide-react';
 import useAuthStore from '../store/authStore';
 import { useCompanyBrand } from '../lib/branding';
 import { useTheme } from '../contexts/ThemeContext';
+import { CheckInMark } from './brand/CheckInLogo';
 
 // ─── Manager Edition — Login gate (EP-011) ────────────────────────────────────
 // Shown when connected to a server that reports authEnabled:true (see
@@ -68,17 +69,17 @@ export default function LoginScreen() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 20 }}>
           <div style={{
             width: 46, height: 46, borderRadius: 11, flexShrink: 0, overflow: 'hidden',
-            background: brand.logoUrl ? 'var(--surface-2)' : (isLight ? 'rgba(59,130,246,0.12)' : 'rgba(47,129,247,0.12)'),
-            border: '1px solid ' + (isLight ? 'rgba(59,130,246,0.3)' : 'rgba(47,129,247,0.3)'),
+            background: brand.logoUrl ? 'var(--surface-2)' : 'transparent',
+            border: brand.logoUrl ? '1px solid var(--border)' : 'none',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
             {brand.logoUrl
               ? <img src={brand.logoUrl} alt={brand.name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-              : <LogIn style={{ width: 21, height: 21, color: isLight ? '#60a5fa' : '#79C0FF' }} />}
+              : <CheckInMark size={46} />}
           </div>
           <div style={{ minWidth: 0 }}>
             <h2 style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{brand.name}</h2>
-            <p style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>تسجيل الدخول · {brand.product}</p>
+            <p style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>تسجيل الدخول · {brand.appName}</p>
           </div>
         </div>
 
@@ -92,7 +93,7 @@ export default function LoginScreen() {
 
         {unsavedLabels.length > 0 && (
           <div role="alert" data-testid="unsaved-notice" style={{ padding: '9px 12px', borderRadius: 8, marginBottom: 14,
-            background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.30)', fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>
+            background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.32)', fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>
             <div style={{ fontWeight: 700 }}>لديك تعديلات غير محفوظة ({unsavedLabels.join('، ')})</div>
             <div>سُجّل الخروج قبل حفظها، لكنها ما زالت محفوظة في الذاكرة خلف هذه الشاشة. سجّل الدخول بالحساب نفسه لمتابعتها ثم اضغط «حفظ» من جديد — لن يُعاد إرسال أي شيء تلقائياً. تسجيل الدخول بحساب مختلف يتجاهل هذه التعديلات.</div>
             <button type="button" data-testid="discard-unsaved" onClick={discardUnsaved}

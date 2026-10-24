@@ -48,7 +48,7 @@ export default function Drawer({
       className="overlay-fade"
       style={{
         position: 'fixed', inset: 0, zIndex: 'var(--z-modal-backdrop)',
-        background: 'rgba(6,10,20,0.55)',
+        background: 'var(--ci-overlay-drawer, rgba(6,10,20,0.55))',
         backdropFilter: 'blur(6px)',
         WebkitBackdropFilter: 'blur(6px)',
       }}

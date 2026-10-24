@@ -56,6 +56,9 @@ function toHttpError(err) {
     return { status: 500, error: GENERIC_500, code: 'DB_ERROR' };
   }
 
+  // H3: a lock wait that ended a transaction (utils/lockWaitCap.js) — nothing was written; the client may retry.
+  if (err && err.code === 'LOCK_WAIT_TIMEOUT') return { status: 409, error: String(err.message), code: 'LOCK_WAIT_TIMEOUT' };
+
   // Errors that already carry a client status (body-parser, app-thrown).
   const carried = Number(err && (err.status || err.statusCode));
   if (carried >= 400 && carried < 500) {

@@ -10,6 +10,7 @@ import toast from 'react-hot-toast';
 import { useUnsavedWork } from '../hooks/useUnsavedWork';
 import { isSessionLostError } from '../lib/unsavedWork';
 import api, { LONG_OP } from '../lib/api';
+import { closedSkipMessage } from '../lib/closedMonthSkip';
 import { useTheme } from '../contexts/ThemeContext';
 import { useIsNarrowViewport } from '../hooks/useIsNarrowViewport';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
@@ -21,7 +22,7 @@ import {
   NUM, CENTER, nameCell, codeCell, deptCell, otCell, penaltyCell, timeCell, rowNumCell,
 } from '../lib/cellStyles';
 import {
-  ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_MEDIUM, tabToNextCell,
+  ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_MEDIUM, withHeaderFloor, tabToNextCell,
   isAbsentRow, attendanceRowClass,
 } from '../lib/gridDefaults';
 import PrintPreviewModal from '../components/PrintPreviewModal';
@@ -279,7 +280,7 @@ export default function AttendanceMonthlyPage() {
         color: p.data?.isAbsent
           ? (p.data?.absenceType === 'without_permission' ? 'var(--c-red, #ef4444)'
             : p.data?.absenceType === 'with_permission' ? 'var(--c-green, #22c55e)'
-            : p.data?.absenceType === 'custom' ? 'var(--accent, #2563eb)'
+            : p.data?.absenceType === 'custom' ? 'var(--accent, #1E7A34)'
             : 'var(--text-3)')
           : 'transparent',
         cursor: p.data?.isAbsent ? 'pointer' : 'default',
@@ -308,7 +309,7 @@ export default function AttendanceMonthlyPage() {
           : 'transparent',
       }),
     },
-  ], [isNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
+  ].map(withHeaderFloor), [isNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const defaultColDef = useMemo(() => ({ ...ENTERPRISE_DEFAULT_COL_DEF, cellClassRules: clip.cellClassRules }), [clip.cellClassRules]);
 
@@ -587,8 +588,10 @@ export default function AttendanceMonthlyPage() {
   const handleProcess = async () => {
     setProc(true);
     try {
-      await api.post('/attendance/process-month', { month, year }, LONG_OP);
+      const { data: pm } = await api.post('/attendance/process-month', { month, year }, LONG_OP);
       toast.success('تمت معالجة الشهر بنجاح');
+      const closedNote = closedSkipMessage(pm?.skippedClosedPayroll);
+      if (closedNote) toast(closedNote, { icon: '⚠️', duration: 12000 });
       load(true);
     } catch { toast.error('فشل في المعالجة'); }
     finally { setProc(false); }

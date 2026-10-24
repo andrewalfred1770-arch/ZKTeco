@@ -2,11 +2,12 @@ import { spawn, execSync } from 'child_process';
 import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import net from 'net';
-import http from 'http';
 import { app } from 'electron';
 import { BACKEND_PORT, IS_DEV, BACKEND_EXIT_STARTUP_BLOCKED } from './constants.js';
 import { isBenignPipeError } from './observability.js';
+import { fetchHealth as probeHealth, fetchStartupStatus as probeStartupStatus } from './healthProbe.js';
 import { state } from './state.js';
+import { createLaunchSecret, clearLaunchSecret, startHandoff, consumeBackendOutput } from './setupAuth.js';
 
 // ─── Port check (non-blocking) ───────────────────────────────────────────────
 function isPortListening(port) {
@@ -155,6 +156,9 @@ export async function killStaleBackend(paths) {
         // Backend already up and (as far as we can tell) matches current config — don't start another
         console.log('[Electron] Backend already running — will use it');
         state.backendReady = true;
+        // F-3: this process was not spawned by us, so it holds no setup secret. Recorded so the wizard reports it instead of failing
+        // with an opaque 403; it is NOT killed or restarted here (ownership of an arbitrary listener is not proven on this path).
+        state.backendAdopted = true;
         return;
       }
       console.log(`[Electron] Backend on port ${BACKEND_PORT} is running with a stale AUTH_ENABLED (${actualAuth}, expected ${expectedAuth}) — verifying ownership before replacing it`);
@@ -189,34 +193,17 @@ export async function killStaleBackend(paths) {
 // baseUrl defaults to the locally-spawned backend (Local Mode); Server Mode
 // passes the configured remote server's URL so the same splash/poll logic
 // works unchanged against either target (EP-003 Connection Layer).
+// http:// -> Node http (unchanged); https:// -> Electron net with full certificate verification (see healthProbe.js).
 export function fetchStartupStatus(timeoutMs = 400, baseUrl = `http://localhost:${BACKEND_PORT}`) {
-  return new Promise(resolve => {
-    const req = http.get(`${baseUrl}/api/startup-status`, res => {
-      let data = '';
-      res.on('data', c => { data += c; });
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); } catch { resolve(null); }
-      });
-    }).on('error', () => resolve(null));
-    req.setTimeout(timeoutMs, () => { req.destroy(); resolve(null); });
-  });
+  return probeStartupStatus(baseUrl, timeoutMs);
 }
 
 // ─── Health check against any base URL (local or remote) ────────────────────
 // Used by the Connection Settings "Test Connection" flow and by Server Mode's
 // startup readiness check. Never throws.
+// http:// -> Node http (unchanged); https:// -> Electron net with full certificate verification (see healthProbe.js).
 export function fetchHealth(baseUrl, timeoutMs = 3000) {
-  return new Promise(resolve => {
-    const req = http.get(`${baseUrl}/api/health`, res => {
-      let data = '';
-      res.on('data', c => { data += c; });
-      res.on('end', () => {
-        try { resolve({ ok: res.statusCode === 200, status: res.statusCode, body: JSON.parse(data) }); }
-        catch { resolve({ ok: false, status: res.statusCode, body: null }); }
-      });
-    }).on('error', (err) => resolve({ ok: false, status: null, body: null, error: err.message }));
-    req.setTimeout(timeoutMs, () => { req.destroy(); resolve({ ok: false, status: null, body: null, error: 'timeout' }); });
-  });
+  return probeHealth(baseUrl, timeoutMs);
 }
 
 // ─── Legacy .env migration (EP-010) ───────────────────────────────────────────
@@ -298,7 +285,19 @@ export function startBackend(paths, extraEnv = null) {
     detached:    false,
   });
   state.backendProcess = proc;
+  state.backendAdopted = false;
   writeBackendOwnerMarker(configDir, proc.pid);
+
+  // F1: fresh per-launch secret for /api/setup/* — handed to THIS child over its private stdin pipe only (not env, argv, file, log or
+  // renderer). The child acknowledges on stdout with a one-way tag (never the secret); the hand-off is retried within a bound and, if it
+  // is never acknowledged, setup is reported as unavailable (setupAuth.js getHandoffState) instead of failing with an opaque 403.
+  const setupSecret = createLaunchSecret();
+  const handoff = startHandoff({
+    secret: setupSecret,
+    write: (line) => { if (proc.stdin && proc.stdin.writable) proc.stdin.write(line); else throw new Error('stdin closed'); },
+    onGiveUp: () => console.warn('[Setup] the backend did not acknowledge the setup hand-off — database setup is unavailable until the next restart'),
+  });
+  proc.once('exit', () => { handoff.cancel(); clearLaunchSecret(setupSecret); });
 
   // Pipe-error guards on EVERY child stream: after the child exits (crash,
   // restart, kill), buffered writes/reads surface as async 'error' events.
@@ -310,7 +309,8 @@ export function startBackend(paths, extraEnv = null) {
   }
 
   proc.stdout?.on('data', d => {
-    const line = d.toString().trim();
+    // The hand-off acknowledgement carries only a one-way tag; it is consumed here and not logged.
+    const line = consumeBackendOutput(d.toString(), setupSecret);
     if (line) console.log(`[Backend] ${line}`);
     // Detect when server is ready
     if (line.includes('Server running') || line.includes('Server on port')) {

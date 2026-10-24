@@ -23,7 +23,7 @@ import EmployeeMonthlyStatementDrawer from '../components/EmployeeMonthlyStateme
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
 import { useDeviceLiveSync } from '../hooks/useDeviceLiveSync';
 import { useStaleGuard, keepCurrentRows } from '../lib/staleGuard';
-import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_TINY, tabToNextCell, safeRefreshCells } from '../lib/gridDefaults';
+import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, COL_TINY, withHeaderFloor, tabToNextCell, safeRefreshCells } from '../lib/gridDefaults';
 import { MONTHS_AR, getYearRange } from '../lib/constants';
 import { MobileActionsMenu } from '../components/ui';
 import { normalizeSearch } from '../lib/searchText';
@@ -347,7 +347,7 @@ export default function PayrollPage() {
       // The one number every reader ultimately scans down for — a soft
       // tinted column (not just bold text) so it visually anchors the row
       // the same way the pinned employee-name chip does on the other side.
-      cellStyle: { ...MONEY, fontSize: '13.5px', color: 'var(--c-net)', borderLeft: '2px solid #2563eb', background: 'var(--accent-soft)' },
+      cellStyle: { ...MONEY, fontSize: '13.5px', color: 'var(--c-net)', borderLeft: '2px solid #1E7A34', background: 'var(--accent-soft)' },
     },
     // ── Action: opens the full salary statement (pinned left) ─────────────────
     // Phase 20.3: the "الحالة" column was removed from this grid (the text
@@ -362,7 +362,7 @@ export default function PayrollPage() {
       cellRenderer: DetailBtnRenderer,
       cellStyle: { ...CENTER },
     },
-  ], [isNarrow]);
+  ].map(withHeaderFloor), [isNarrow]);
 
   // Quick filter (name search) must match the employee name/code only — never
   // salary figures — so every column opts out; the name column opts back in.
@@ -668,7 +668,7 @@ export default function PayrollPage() {
           4 stacked rows — same data, same numbers, just presented as a
           compact swipeable strip so the table below starts much higher on
           a phone screen. Desktop (md+) keeps the original wrapping grid. */}
-      <div className="card flex-nowrap overflow-x-auto md:flex-wrap md:overflow-hidden" style={{ display: 'flex', padding: 0 }}>
+      <div className="card flex-nowrap overflow-x-auto" style={{ display: 'flex', padding: 0 }}>
         {[
           { label: 'إجمالي الرواتب',     value: totals.basic,       accent: 'var(--accent)', color: 'var(--text)' },
           { label: 'إجمالي الإضافي',     value: totals.ot,          accent: '#8b5cf6', color: '#8b5cf6' },
@@ -676,9 +676,9 @@ export default function PayrollPage() {
           { label: 'إجمالي ساعات الخصم', value: totals.deductHours, accent: '#ef4444', color: '#ef4444', penaltyHours: true },
           { label: 'إجمالي السلف',       value: totals.advances,    accent: '#f59e0b', color: '#f59e0b' },
           { label: 'إجمالي خصم إداري',   value: totals.adminDeduct, accent: '#ef4444', color: '#ef4444' },
-          { label: 'إجمالي صافي',        value: totals.net,         accent: '#2F81F7', color: '#2F81F7' },
+          { label: 'إجمالي صافي',        value: totals.net,         accent: '#1E7A34', color: '#1E7A34' },
         ].map((m, i) => (
-          <div key={m.label} style={{ flex: '1 1 150px', flexShrink: 0, borderRight: i ? '1px solid var(--border)' : 'none' }}>
+          <div key={m.label} style={{ flex: '1 0 128px', flexShrink: 0, borderRight: i ? '1px solid var(--border)' : 'none' }}>
             <PayrollMetric {...m} />
           </div>
         ))}
@@ -688,7 +688,7 @@ export default function PayrollPage() {
         <button
           onClick={() => setReviewPanelOpen(v => !v)}
           style={{
-            flex: '1 1 150px', flexShrink: 0, borderRight: '1px solid var(--border)', border: 0, borderInlineStart: '1px solid var(--border)',
+            flex: '1 0 128px', flexShrink: 0, borderRight: '1px solid var(--border)', border: 0, borderInlineStart: '1px solid var(--border)',
             background: reviewFlags.length ? 'rgba(245,158,11,0.06)' : 'transparent', cursor: 'pointer', textAlign: 'inherit',
           }}
         >

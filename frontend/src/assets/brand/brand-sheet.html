@@ -1,0 +1,232 @@
+<!doctype html><html lang="ar" dir="rtl" class="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CheckIn brand sheet</title>
+<style>/* CheckIn launcher + startup screen. Motion rule: transform / opacity / stroke-dashoffset only; no continuous blur; every loop is slow. */
+
+.ci-stage { position: relative; color: var(--ci-text); font-family: var(--font-ui); }
+
+/* ── Symbol assembling: the arc draws itself, then the check draws, then one soft light pass along the arc ── */
+.ci-mark-animate .ci-mark-arc,
+.ci-mark-animate .ci-mark-check { stroke-dasharray: 1; stroke-dashoffset: 1; }
+.ci-mark-animate .ci-mark-arc   { animation: ci-draw 700ms var(--ci-ease) 100ms forwards; }
+.ci-mark-animate .ci-mark-check { animation: ci-draw 420ms var(--ci-ease) 700ms forwards; }
+@keyframes ci-draw { to { stroke-dashoffset: 0; } }
+
+/* the travelling light: a short bright dash running once around the arc (a copy of the arc, drawn above it) */
+.ci-hero-light { stroke-dasharray: 0.07 1; stroke-dashoffset: 0.07; opacity: 0; animation: ci-light 2.4s ease-in-out 1.1s 2 forwards; }
+@keyframes ci-light { 0% { stroke-dashoffset: 0.07; opacity: 0; } 15% { opacity: 0.95; } 85% { opacity: 0.95; } 100% { stroke-dashoffset: -1; opacity: 0; } }
+
+/* hologram floating a few pixels (slow, small) */
+.ci-float { animation: ci-float 7s ease-in-out infinite; }
+@keyframes ci-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+
+/* fingerprint scan line sweeping the sensor */
+.ci-scan { animation: ci-scan 2.8s ease-in-out infinite; }
+@keyframes ci-scan { 0% { transform: translateY(-30px); opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } 100% { transform: translateY(30px); opacity: 0; } }
+
+/* thin data streams: dashes travel along the lines, lines fade in gradually */
+.ci-stream { stroke-dasharray: 3 9; animation: ci-stream 3.2s linear infinite, ci-fade-in 900ms var(--ci-ease) both; }
+.ci-stream:nth-of-type(2) { animation-delay: 0s, 200ms; }
+.ci-stream:nth-of-type(3) { animation-delay: 0s, 400ms; }
+.ci-stream:nth-of-type(4) { animation-delay: 0s, 600ms; }
+@keyframes ci-stream { to { stroke-dashoffset: -48; } }
+@keyframes ci-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── Module cards: staggered fade/translate in, hover = lift + border highlight ── */
+.ci-card {
+  display: flex; flex-direction: column; gap: 10px; text-align: start; text-decoration: none; cursor: pointer;
+  padding: 16px; border-radius: 14px; background: var(--surface); border: 1px solid var(--border); color: var(--text);
+  transition: transform var(--ci-dur-ui) var(--ci-ease), border-color var(--ci-dur-ui) var(--ci-ease), background-color var(--ci-dur-ui) var(--ci-ease), box-shadow var(--ci-dur-ui) var(--ci-ease);
+  animation: ci-card-in var(--ci-dur-scene) var(--ci-ease) both;
+  animation-delay: calc(var(--i, 0) * 45ms + 250ms);
+}
+.ci-card:hover, .ci-card:focus-visible { transform: translateY(-2px); border-color: var(--ci-electric); background: var(--surface-2); box-shadow: 0 10px 24px -14px rgba(0,0,0,0.6); }
+.ci-card-icon { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; background: var(--surface-2); color: var(--accent-text, var(--accent)); border: 1px solid var(--border); }
+.ci-card h3 { font-size: 15px; font-weight: 700; line-height: 1.3; }
+.ci-card p  { font-size: 12.5px; line-height: 1.5; color: var(--text-3); }
+@keyframes ci-card-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+.ci-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+
+/* ── Startup screen ──────────────────────────────────────────────────────────── */
+.ci-startup { position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column; background: var(--ci-bg);
+  background-image: radial-gradient(60% 50% at 50% 38%, rgba(255,255,255,0.04), transparent 70%); }
+.ci-startup-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 28px; }
+.ci-startup-body { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 12px 24px; min-height: 0; }
+.ci-steps { display: grid; gap: 8px; width: min(420px, 90vw); }
+.ci-step { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--ci-muted); transition: color var(--ci-dur-ui) var(--ci-ease); }
+.ci-step.is-done { color: var(--ci-text); }
+.ci-step-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid #525252; flex: none; transition: background-color var(--ci-dur-ui), border-color var(--ci-dur-ui); }
+.ci-step.is-done .ci-step-dot { background: var(--ci-success); border-color: var(--ci-success); }
+.ci-step.is-waiting .ci-step-dot { border-color: var(--ci-electric); animation: ci-pulse 1.4s ease-in-out infinite; }
+@keyframes ci-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+.ci-segments { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; width: min(420px, 90vw); }
+.ci-seg { height: 4px; border-radius: 2px; background: #242424; overflow: hidden; position: relative; }
+.ci-seg > i { position: absolute; inset: 0; background: var(--ci-electric); transform-origin: left center; transform: scaleX(0); transition: transform var(--ci-dur-scene) var(--ci-ease); }
+.ci-seg.is-done > i { transform: scaleX(1); }
+[dir="rtl"] .ci-seg > i { transform-origin: right center; }
+.ci-indeterminate { position: absolute; inset: 0; background: linear-gradient(90deg, transparent, var(--ci-electric), transparent); width: 40%; animation: ci-slide 1.6s ease-in-out infinite; }
+@keyframes ci-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
+.ci-retry { padding: 8px 20px; border-radius: 9px; border: 1px solid var(--ci-blue); background: var(--ci-blue); color: #fff; font-size: 13px; cursor: pointer; }
+.ci-retry:hover { background: #1D4ED8; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ci-mark-animate .ci-mark-arc, .ci-mark-animate .ci-mark-check { animation: none; stroke-dashoffset: 0; }
+  .ci-hero-light, .ci-scan { display: none; }
+  .ci-float, .ci-stream, .ci-card, .ci-step.is-waiting .ci-step-dot, .ci-indeterminate { animation: none; }
+  .ci-card { opacity: 1; transform: none; }
+  .ci-seg > i { transition: none; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CheckIn — design tokens (loaded AFTER index.css, so it only re-points existing variables).
+   DARK MODE IS NEUTRAL CHARCOAL, not navy/blue: every dark surface is a pure grey step; blue (#2563EB) and electric blue (#38BDF8) appear
+   only on brand marks, primary actions, the active navigation item, focus rings and the startup/launcher accents.
+   Dark ramp:  app #0A0A0A · sidebar #0D0D0D · cards/tables/panels #141414 · elevated (dialogs, menus) #1B1B1B · hover #242424 · border #303030
+   Text:       primary #F5F5F5 · secondary #A3A3A3 · muted #737373 (decorative/disabled) — body hints use #8A8A8A so they keep AA contrast
+   EVERYTHING dark is scoped to `html.dark, html:not(.light)`. The light theme is not touched by this file (it only gets the accent blue).
+   The brand navy (#0B1220 …) survives ONLY inside the logo / app-icon files, where it is part of the identity.
+═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* brand identity constants (logo, app icon, accents) */
+  --ci-navy:      #0B1220;
+  --ci-blue:      #2563EB;
+  --ci-electric:  #38BDF8;
+  --ci-success:   #10B981;
+  --ci-warning:   #F59E0B;
+  --ci-error:     #EF4444;
+
+  /* neutral dark ramp, usable by the launcher / startup layers */
+  --ci-bg:        #0A0A0A;
+  --ci-side:      #0D0D0D;
+  --ci-card:      #141414;
+  --ci-elev:      #1B1B1B;
+  --ci-hover:     #242424;
+  --ci-border:    #303030;
+  --ci-text:      #F5F5F5;
+  --ci-text-2:    #A3A3A3;
+  --ci-muted:     #8A8A8A;
+  --ci-faint:     #737373;
+
+  /* UI transitions: 180–350 ms (brief). The startup/launcher choreography uses the longer --ci-dur-scene values. */
+  --ci-dur-ui:    200ms;
+  --ci-dur-scene: 320ms;
+  --ci-ease:      cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  --font-brand: 'Cairo', 'IBM Plex Sans Arabic', 'Segoe UI', sans-serif;
+}
+
+/* ── Dark theme: neutral charcoal ─────────────────────────────────────────────── */
+html.dark, html:not(.light) {
+  --bg:           #0A0A0A;
+  --surface:      #141414;
+  --surface-2:    #1B1B1B;
+  --surface-3:    #242424;
+  --surface-4:    #2E2E2E;
+  --border:       #303030;
+  --border-2:     rgba(255,255,255,0.06);
+  --text:         #F5F5F5;
+  --text-2:       #A3A3A3;
+  --text-3:       #8A8A8A;        /* 5.6:1 on #0A0A0A, 5.3:1 on #141414 */
+  --text-muted:   #737373;        /* decorative / disabled only */
+  --accent:       #2563EB;
+  --accent-2:     #2563EB;        /* .btn-primary fill and the active theme chip: white text on it is 5.2:1 */
+  --accent-text:  #38BDF8;        /* electric blue for accent text / icons (focus, selected) */
+  --accent-soft:  rgba(37,99,235,0.12);   /* selected / active chips and tabs only: a restrained blue wash, never a surface */
+  --input-bg:     #0A0A0A;
+  --input-b:      #303030;
+  --focus-ring:   0 0 0 3px rgba(56,189,248,0.26), 0 0 0 1px #38BDF8;
+  --shadow-card:  0 1px 2px rgba(0,0,0,0.5), 0 6px 18px -8px rgba(0,0,0,0.6);
+  --shadow-pop:   0 20px 48px -12px rgba(0,0,0,0.75), 0 0 0 1px rgba(255,255,255,0.06);
+
+  --sidebar-background:      #0D0D0D;
+  --sidebar-surface-hover:   #242424;
+  --sidebar-surface-active:  rgba(37,99,235,0.20);   /* blue only for the active item */
+  --sidebar-border:          #262626;
+  --sidebar-accent:          #38BDF8;
+  --sidebar-text-primary:    #F5F5F5;
+  --sidebar-text-secondary:  #D4D4D4;
+  --sidebar-text-muted:      #8A8A8A;
+  --sidebar-icon:            #A3A3A3;
+  --sidebar-icon-active:     #FFFFFF;
+
+  --status-present:        #10B981;  --status-present-bg:   rgba(16,185,129,0.14);
+  --status-late:           #F59E0B;  --status-late-bg:      rgba(245,158,11,0.14);
+  --status-absent:         #EF4444;  --status-absent-bg:    rgba(239,68,68,0.14);
+  --status-weekend:        #8A8A8A;  --status-weekend-bg:   rgba(163,163,163,0.10);
+  --c-green:               #10B981;
+  --c-red:                 #EF4444;
+
+  /* data tables */
+  --ag-background-color:              #141414;
+  --ag-header-background-color:       #1B1B1B;
+  --ag-foreground-color:              #D4D4D4;
+  --ag-header-foreground-color:       #F5F5F5;
+  --ag-odd-row-background-color:      #141414;
+  --ag-even-row-background-color:     #181818;
+  --ag-border-color:                  #303030;
+  --ag-row-border-color:              #242424;
+  --ag-row-hover-color:               #242424;
+  --ag-selected-row-background-color: rgba(37,99,235,0.18);
+  --ag-header-column-separator-color: #303030;
+
+  --h-grad: #1B1B1B; --h-accent: #303030; --h-text: #F5F5F5; --total-bg: #1B1B1B; --pin-b: #303030;
+  --cell-b: rgba(255,255,255,0.05);
+  --c-name: #F5F5F5; --c-code: #8A8A8A; --c-dept: #A3A3A3; --c-val: #D4D4D4; --c-muted: #737373;
+  --c-time: #F5F5F5; --c-money: #F5F5F5; --c-net: #F5F5F5;
+  --erp-text: #F5F5F5; --erp-text-muted: #A3A3A3; --erp-text-faint: #8A8A8A; --erp-border: #303030; --erp-ag-header-bg-end: #1B1B1B;
+}
+
+/* the AG Grid dark theme pins its own copy of the variables with a (0,1,1) selector: out-rank it with the neutral values */
+html:not(.light) .ag-theme-quartz-dark, html.dark .ag-theme-quartz-dark {
+  --ag-background-color: #141414; --ag-foreground-color: #D4D4D4; --ag-header-background-color: #1B1B1B; --ag-header-foreground-color: #F5F5F5;
+  --ag-odd-row-background-color: #141414; --ag-even-row-background-color: #181818; --ag-border-color: #303030; --ag-row-border-color: #242424;
+  --ag-row-hover-color: #242424; --ag-selected-row-background-color: rgba(37,99,235,0.18);
+}
+
+/* ── Light theme: untouched (only the accent is aligned with the brand blue) ───── */
+html.light { --accent: #2563EB; }
+
+/* ── Tailwind `gray-*` utilities, dark theme ONLY ─────────────────────────────────
+   The pages style a lot of surfaces with these classes. Light mode keeps Tailwind's stock values (and its own html.light overrides). */
+html:not(.light) .bg-gray-950 { background-color: #0A0A0A; }
+html:not(.light) .bg-gray-900 { background-color: #141414; }
+html:not(.light) .bg-gray-800 { background-color: #1B1B1B; }
+html:not(.light) .bg-gray-700 { background-color: #242424; }
+html:not(.light) .bg-gray-600, html:not(.light) .hover\:bg-gray-600:hover { background-color: #303030; }
+html:not(.light) .bg-gray-950\/50 { background-color: rgba(10,10,10,0.5); }
+html:not(.light) .bg-gray-900\/50 { background-color: rgba(20,20,20,0.5); }
+html:not(.light) .bg-gray-800\/50 { background-color: rgba(27,27,27,0.5); }
+html:not(.light) .bg-gray-800\/60 { background-color: rgba(27,27,27,0.6); }
+html:not(.light) .border-gray-800 { border-color: #242424; }
+html:not(.light) .border-gray-800\/60 { border-color: rgba(36,36,36,0.6); }
+html:not(.light) .border-gray-700, html:not(.light) .hover\:border-gray-700:hover { border-color: #303030; }
+html:not(.light) .text-gray-100 { color: #F5F5F5; }
+html:not(.light) .text-gray-200 { color: #E5E5E5; }
+html:not(.light) .text-gray-300 { color: #D4D4D4; }
+html:not(.light) .text-gray-400 { color: #A3A3A3; }
+html:not(.light) .text-gray-500 { color: #8A8A8A; }
+html:not(.light) .text-gray-600 { color: #737373; }
+html:not(.light) .text-gray-700 { color: #525252; }
+
+/* ── Shared component layer (dark only): badges ──────────────────────────────────── */
+html.dark .badge-blue, html:not(.light) .badge-blue { background: rgba(37,99,235,0.16); color: #7DD3FC; border-color: rgba(56,189,248,0.26); }
+html.dark .badge-gray, html:not(.light) .badge-gray { background: rgba(163,163,163,0.14); color: #D4D4D4; border-color: rgba(163,163,163,0.26); }
+html:not(.light) .btn-primary:hover:not(:disabled) { background: #1D4ED8; border-color: #1D4ED8; }
+html:not(.light) select.input option { background: #1B1B1B; color: #F5F5F5; }
+html:not(.light) .data-table tbody tr:hover td { background: #242424; }   /* hover = neutral grey, not a blue wash */
+.page-title { letter-spacing: -0.01em; }
+::selection { background: rgba(56,189,248,0.30); }
+
+/* ── Keyboard focus: one consistent, clearly visible ring ─────────────────────── */
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--ci-electric);
+  outline-offset: 2px;
+}
+
+/* ── Reduced motion: no decorative motion anywhere in the CheckIn layers ──────── */
+@media (prefers-reduced-motion: reduce) {
+  .ci-anim, .ci-anim * { animation: none !important; transition: none !important; }
+}
+
+html,body{margin:0;background:#0B1220;color:#F8FAFC;font-family:'IBM Plex Sans Arabic','Cairo','Segoe UI',Tahoma,sans-serif}
+:root{--font-ui:'IBM Plex Sans Arabic','Cairo','Segoe UI',Tahoma,sans-serif}</style></head><body><div class="ci-stage" dir="rtl" style="max-width:1000px;margin:0 auto;padding:24px"><h2 style="color:#F8FAFC">CheckIn — brand sheet (rendered from the real components)</h2><div style="background:#0B1220;padding:24px;border-radius:14px;display:flex;align-items:center;gap:28px;flex-wrap:wrap"><span class="ci-logo" dir="ltr" style="display:inline-flex;align-items:center;gap:12px;line-height:1"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="56" height="56" fill="none" role="img" aria-label="" class=""><title></title><path class="ci-mark-arc" d="M44.62 14A22 22 0 1 0 44.62 50" pathLength="1" stroke="#2563EB" stroke-width="7" stroke-linecap="round"></path><path class="ci-mark-check" d="M21.5 33.5L29 41L51 22" pathLength="1" stroke="#38BDF8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path></svg><span style="font-family:var(--font-brand, Cairo, &quot;Segoe UI&quot;, sans-serif);font-weight:700;font-size:34px;letter-spacing:0.01em;color:#F8FAFC">Check<span style="color:#38BDF8">In</span></span></span><span class="ci-logo" dir="ltr" style="display:inline-flex;align-items:center;gap:7px;line-height:1"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="32" height="32" fill="none" role="img" aria-label="" class=""><title></title><path class="ci-mark-arc" d="M44.62 14A22 22 0 1 0 44.62 50" pathLength="1" stroke="#2563EB" stroke-width="7" stroke-linecap="round"></path><path class="ci-mark-check" d="M21.5 33.5L29 41L51 22" pathLength="1" stroke="#38BDF8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path></svg><span style="font-family:var(--font-brand, Cairo, &quot;Segoe UI&quot;, sans-serif);font-weight:700;font-size:19px;letter-spacing:0.01em;color:#F8FAFC">Check<span style="color:#38BDF8">In</span></span></span><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none" role="img" aria-label="CheckIn" class=""><title>CheckIn</title><path class="ci-mark-arc" d="M44.62 14A22 22 0 1 0 44.62 50" pathLength="1" stroke="#2563EB" stroke-width="7" stroke-linecap="round"></path><path class="ci-mark-check" d="M21.5 33.5L29 41L51 22" pathLength="1" stroke="#38BDF8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path></svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="32" height="32" fill="none" role="img" aria-label="CheckIn" class=""><title>CheckIn</title><path class="ci-mark-arc" d="M44.62 14A22 22 0 1 0 44.62 50" pathLength="1" stroke="#2563EB" stroke-width="7" stroke-linecap="round"></path><path class="ci-mark-check" d="M21.5 33.5L29 41L51 22" pathLength="1" stroke="#38BDF8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path></svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="16" height="16" fill="none" role="img" aria-label="CheckIn" class=""><title>CheckIn</title><path class="ci-mark-arc" d="M44.62 14A22 22 0 1 0 44.62 50" pathLength="1" stroke="#2563EB" stroke-width="7" stroke-linecap="round"></path><path class="ci-mark-check" d="M21.5 33.5L29 41L51 22" pathLength="1" stroke="#38BDF8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path></svg><span class="ci-logo" dir="ltr" style="display:inline-flex;align-items:center;gap:7px;line-height:1"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="32" height="32" fill="none" role="img" aria-label="" class=""><title></title><path class="ci-mark-arc" d="M44.62 14A22 22 0 1 0 44.62 50" pathLength="1" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"></path><path class="ci-mark-check" d="M21.5 33.5L29 41L51 22" pathLength="1" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path></svg><span style="font-family:var(--font-brand, Cairo, &quot;Segoe UI&quot;, sans-serif);font-weight:700;font-size:19px;letter-spacing:0.01em;color:#FFFFFF">Check<span style="color:#FFFFFF">In</span></span></span></div><div style="background:#F8FAFC;padding:24px;border-radius:14px;display:flex;align-items:center;gap:28px;flex-wrap:wrap;margin-top:14px"><span class="ci-logo" dir="ltr" style="display:inline-flex;align-items:center;gap:12px;line-height:1"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="56" height="56" fill="none" role="img" aria-label="" class=""><title></title><path class="ci-mark-arc" d="M44.62 14A22 22 0 1 0 44.62 50" pathLength="1" stroke="#2563EB" stroke-width="7" stroke-linecap="round"></path><path class="ci-mark-check" d="M21.5 33.5L29 41L51 22" pathLength="1" stroke="#38BDF8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path></svg><span style="font-family:var(--font-brand, Cairo, &quot;Segoe UI&quot;, sans-serif);font-weight:700;font-size:34px;letter-spacing:0.01em;color:#0B1220">Check<span style="color:#2563EB">In</span></span></span><span class="ci-logo" dir="ltr" style="display:inline-flex;align-items:center;gap:7px;line-height:1"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="32" height="32" fill="none" role="img" aria-label="" class=""><title></title><path class="ci-mark-arc" d="M44.62 14A22 22 0 1 0 44.62 50" pathLength="1" stroke="#2563EB" stroke-width="7" stroke-linecap="round"></path><path class="ci-mark-check" d="M21.5 33.5L29 41L51 22" pathLength="1" stroke="#38BDF8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path></svg><span style="font-family:var(--font-brand, Cairo, &quot;Segoe UI&quot;, sans-serif);font-weight:700;font-size:19px;letter-spacing:0.01em;color:#0B1220">Check<span style="color:#2563EB">In</span></span></span><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none" role="img" aria-label="CheckIn" class=""><title>CheckIn</title><path class="ci-mark-arc" d="M44.62 14A22 22 0 1 0 44.62 50" pathLength="1" stroke="#0B1220" stroke-width="7" stroke-linecap="round"></path><path class="ci-mark-check" d="M21.5 33.5L29 41L51 22" pathLength="1" stroke="#0B1220" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path></svg><span class="ci-logo" dir="ltr" style="display:inline-flex;align-items:center;gap:7px;line-height:1"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="32" height="32" fill="none" role="img" aria-label="" class=""><title></title><path class="ci-mark-arc" d="M44.62 14A22 22 0 1 0 44.62 50" pathLength="1" stroke="#0B1220" stroke-width="7" stroke-linecap="round"></path><path class="ci-mark-check" d="M21.5 33.5L29 41L51 22" pathLength="1" stroke="#0B1220" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path></svg><span style="font-family:var(--font-brand, Cairo, &quot;Segoe UI&quot;, sans-serif);font-weight:700;font-size:19px;letter-spacing:0.01em;color:#0B1220">Check<span style="color:#0B1220">In</span></span></span></div><div style="background:#0B1220;padding:24px;border-radius:14px;display:flex;align-items:center;gap:28px;flex-wrap:wrap;margin-top:14px;justify-content:center"><svg viewBox="0 0 360 300" role="img" aria-label="CheckIn" class="ci-anim" style="width:100%;max-width:380px;height:auto;display:block"><defs><linearGradient id="ci-hero-body" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#262626"></stop><stop offset="1" stop-color="#141414"></stop></linearGradient><linearGradient id="ci-hero-beam" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#38BDF8" stop-opacity="0.30"></stop><stop offset="1" stop-color="#38BDF8" stop-opacity="0"></stop></linearGradient><radialGradient id="ci-hero-floor" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#2563EB" stop-opacity="0.16"></stop><stop offset="1" stop-color="#2563EB" stop-opacity="0"></stop></radialGradient><clipPath id="ci-hero-sensor-clip"><circle cx="180" cy="214" r="28"></circle></clipPath></defs><ellipse cx="180" cy="276" rx="120" ry="16" fill="url(#ci-hero-floor)"></ellipse><g fill="none" stroke="#38BDF8" stroke-width="1" opacity="0.55" stroke-linecap="round"><path class="ci-stream" d="M120 196C80 196 54 168 18 168"></path><path class="ci-stream" d="M240 196C280 196 306 168 342 168"></path><path class="ci-stream" d="M120 236C84 236 54 256 18 256"></path><path class="ci-stream" d="M240 236C276 236 306 256 342 256"></path></g><g fill="#38BDF8" opacity="0.7"><circle cx="18" cy="168" r="2.2"></circle><circle cx="342" cy="168" r="2.2"></circle><circle cx="18" cy="256" r="2.2"></circle><circle cx="342" cy="256" r="2.2"></circle></g><polygon points="158,184 202,184 222,100 138,100" fill="url(#ci-hero-beam)"></polygon><rect x="120" y="128" width="120" height="146" rx="16" fill="url(#ci-hero-body)" stroke="#303030"></rect><rect x="132" y="140" width="96" height="40" rx="7" fill="#0A0A0A" stroke="#303030"></rect><g fill="#404040"><rect x="140" y="150" width="40" height="4" rx="2"></rect><rect x="140" y="160" width="62" height="4" rx="2"></rect><rect x="140" y="169" width="28" height="4" rx="2"></rect></g><circle cx="218" cy="150" r="3" fill="#10B981"></circle><circle cx="180" cy="214" r="31" fill="#0A0A0A" stroke="#38BDF8" stroke-opacity="0.45"></circle><g fill="none" stroke="#38BDF8" stroke-opacity="0.5" stroke-width="1.6" stroke-linecap="round"><path d="M164 214a16 16 0 0 1 32 0"></path><path d="M158 218a22 22 0 0 1 44 0"></path><path d="M170 214a10 10 0 0 1 20 0"></path><path d="M168 222a12 12 0 0 0 24 0"></path><path d="M162 226a18 18 0 0 0 36 0"></path></g><g clip-path="url(#ci-hero-sensor-clip)"><rect class="ci-scan" x="148" y="213" width="64" height="2.5" fill="#38BDF8" opacity="0.9"></rect></g><g class="ci-float"><g transform="translate(132 8) scale(1.5)"><g transform="translate(0 7.199999999999999)" opacity="0.12"><path d="M44.62 14A22 22 0 1 0 44.62 50" stroke="#2563EB" stroke-width="7" stroke-linecap="round" fill="none"></path><path d="M21.5 33.5L29 41L51 22" stroke="#38BDF8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></g><g transform="translate(0 4.8)" opacity="0.24"><path d="M44.62 14A22 22 0 1 0 44.62 50" stroke="#2563EB" stroke-width="7" stroke-linecap="round" fill="none"></path><path d="M21.5 33.5L29 41L51 22" stroke="#38BDF8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></g><g transform="translate(0 2.4)" opacity="0.36"><path d="M44.62 14A22 22 0 1 0 44.62 50" stroke="#2563EB" stroke-width="7" stroke-linecap="round" fill="none"></path><path d="M21.5 33.5L29 41L51 22" stroke="#38BDF8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></g><g class="ci-mark-animate"><path class="ci-mark-arc" d="M44.62 14A22 22 0 1 0 44.62 50" pathLength="1" stroke="#2563EB" stroke-width="7" stroke-linecap="round" fill="none"></path><path class="ci-mark-check" d="M21.5 33.5L29 41L51 22" pathLength="1" stroke="#38BDF8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path class="ci-hero-light" d="M44.62 14A22 22 0 1 0 44.62 50" pathLength="1" stroke="#E0F2FE" stroke-width="3" stroke-linecap="round" fill="none"></path></g></g></g></svg></div><div class="ci-grid" style="margin-top:14px"><a class="ci-card" style="--i:0" href="#"><span class="ci-card-icon"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-users "><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg></span><h3>الموظفون</h3><p>بيانات الموظفين والأقسام والورديات</p></a><a class="ci-card" style="--i:1" href="#"><span class="ci-card-icon"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-fingerprint "><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"></path><path d="M14 13.12c0 2.38 0 6.38-1 8.88"></path><path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"></path><path d="M2 12a10 10 0 0 1 18-6"></path><path d="M2 16h.01"></path><path d="M21.8 16c.2-2 .131-5.354 0-6"></path><path d="M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2"></path><path d="M8.65 22c.21-.66.45-1.32.57-2"></path><path d="M9 6.8a6 6 0 0 1 9 5.2v2"></path></svg></span><h3>أجهزة البصمة</h3><p>الأجهزة والمزامنة والحالة</p></a><a class="ci-card" style="--i:2" href="#"><span class="ci-card-icon"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-calendar-check "><path d="M8 2v4"></path><path d="M16 2v4"></path><rect width="18" height="18" x="3" y="4" rx="2"></rect><path d="M3 10h18"></path><path d="m9 16 2 2 4-4"></path></svg></span><h3>الحضور والانصراف</h3><p>السجل اليومي والتعديل اليدوي</p></a><a class="ci-card" style="--i:3" href="#"><span class="ci-card-icon"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-calendar-range "><rect width="18" height="18" x="3" y="4" rx="2"></rect><path d="M16 2v4"></path><path d="M3 10h18"></path><path d="M8 2v4"></path><path d="M17 14h-6"></path><path d="M13 18H7"></path><path d="M7 14h.01"></path><path d="M17 18h.01"></path></svg></span><h3>الدوام الشهري</h3><p>التقرير الشهري لكل موظف</p></a><a class="ci-card" style="--i:4" href="#"><span class="ci-card-icon"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-wallet "><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"></path><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"></path></svg></span><h3>المرتبات</h3><p>الرواتب والسلف والخصومات</p></a><a class="ci-card" style="--i:5" href="#"><span class="ci-card-icon"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-bar-chart3 "><path d="M3 3v18h18"></path><path d="M18 17V9"></path><path d="M13 17V5"></path><path d="M8 17v-3"></path></svg></span><h3>التقارير</h3><p>لوحة المؤشرات والطباعة والتصدير</p></a><a class="ci-card" style="--i:6" href="#"><span class="ci-card-icon"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-settings "><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg></span><h3>الإعدادات</h3><p>إعدادات النظام والشركة والقواعد</p></a><a class="ci-card" style="--i:7" href="#"><span class="ci-card-icon"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-wrench "><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg></span><h3>أدوات الصيانة</h3><p>تنظيف الحركات وأدوات الإدارة</p></a></div></div></body></html>

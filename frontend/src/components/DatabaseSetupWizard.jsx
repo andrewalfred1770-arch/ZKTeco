@@ -3,6 +3,17 @@ import { Database, CheckCircle2, XCircle, Loader2, Save, RotateCcw, PlugZap } fr
 import api from '../lib/api';
 import { useTheme } from '../contexts/ThemeContext';
 
+// Setup calls go through the Electron main process (window.electron.setup), which signs them with a per-launch secret the renderer never
+// sees. Outside the desktop shell there is no way to reach /api/setup/* — it fails closed. Mimics axios: resolves {data} on 2xx, otherwise
+// throws {response:{data,status}} so the existing handlers below are unchanged.
+async function setupCall(op, body) {
+  const bridge = typeof window !== 'undefined' ? window.electron?.setup : undefined;
+  if (!bridge) throw { response: { status: 403, data: { error: 'إعداد قاعدة البيانات متاح من تطبيق سطح المكتب فقط' } } };
+  const r = await bridge.request(op, body);
+  if (r && r.status >= 200 && r.status < 300) return { data: r.data };
+  throw { response: { status: r?.status || 0, data: r?.data || {} } };
+}
+
 // ─── Database Configuration Wizard (EP-010.1) ────────────────────────────────
 // Lets a non-technical user fix a bad DATABASE_URL from the UI instead of
 // hand-editing %APPDATA%/PETSHROW ERP/.env. Zero Electron-specific code —
@@ -84,7 +95,7 @@ export default function DatabaseSetupWizard() {
   useEffect(() => {
     if (!visible || prefilled) return;
     setPrefilled(true);
-    api.get('/setup/current', { _noRetry: true })
+    setupCall('current')
       .then(({ data }) => {
         setFields(f => ({
           ...f,
@@ -103,10 +114,12 @@ export default function DatabaseSetupWizard() {
     setTesting(true);
     setTestResult(null);
     try {
-      const { data } = await api.post('/setup/test-connection', fields, { _noRetry: true });
+      const { data } = await setupCall('test-connection', fields);
       setTestResult(data);
     } catch (err) {
       setTestResult({ ok: false, reason: err.response?.data?.reason || 'unknown' });
+      // A SETUP_* code means the desktop shell itself cannot offer setup right now (adopted backend, hand-off pending/failed) — say why.
+      if (String(err.response?.data?.code || '').startsWith('SETUP_')) setSaveError(err.response.data.error);
     } finally {
       setTesting(false);
     }
@@ -131,7 +144,7 @@ export default function DatabaseSetupWizard() {
     setSaving(true);
     setSaveError(null);
     try {
-      const { data } = await api.post('/setup/save', fields, { _noRetry: true });
+      const { data } = await setupCall('save', fields);
       if (data.ok) {
         setSaving(false);
         setRestarting(true);
@@ -166,11 +179,11 @@ export default function DatabaseSetupWizard() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
           <div style={{
             width: 36, height: 36, borderRadius: 9, flexShrink: 0,
-            background: isLight ? 'rgba(59,130,246,0.12)' : 'rgba(47,129,247,0.12)',
-            border: '1px solid ' + (isLight ? 'rgba(59,130,246,0.3)' : 'rgba(47,129,247,0.3)'),
+            background: isLight ? 'rgba(79,191,107,0.12)' : 'rgba(79,191,107,0.12)',
+            border: '1px solid ' + (isLight ? 'rgba(79,191,107,0.3)' : 'rgba(79,191,107,0.3)'),
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
-            <Database style={{ width: 18, height: 18, color: isLight ? '#60a5fa' : '#79C0FF' }} />
+            <Database style={{ width: 18, height: 18, color: isLight ? 'var(--accent)' : 'var(--accent)' }} />
           </div>
           <div>
             <h3 style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-1)' }}>إعداد قاعدة البيانات</h3>
@@ -184,7 +197,7 @@ export default function DatabaseSetupWizard() {
 
         {restarting ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '24px 0' }}>
-            <Loader2 style={{ width: 28, height: 28, color: isLight ? '#60a5fa' : '#79C0FF', animation: 'spin 1s linear infinite' }} />
+            <Loader2 style={{ width: 28, height: 28, color: isLight ? 'var(--accent)' : 'var(--accent)', animation: 'spin 1s linear infinite' }} />
             <span style={{ fontSize: 13, color: 'var(--text-2)', fontWeight: 600 }}>
               جارٍ إعادة تشغيل الخادم...
             </span>

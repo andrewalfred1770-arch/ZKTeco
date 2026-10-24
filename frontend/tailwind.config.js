@@ -9,18 +9,29 @@ export default {
         mono: ['Consolas', 'Courier New', 'monospace'],
       },
       colors: {
+        // NOTE: Tailwind's default `gray` scale is intentionally NOT overridden here (the light theme depends on the stock values).
+        // The dark theme re-colours the gray-* utilities only under `html:not(.light)` in src/styles/checkin-tokens.css.
+        // CheckIn brand green, sampled from the approved logo. 500 = logo green (#4FBF6B); 600 is the accessible fill for white text (5.1:1).
         primary: {
-          50:  '#eff6ff',
-          100: '#dbeafe',
-          200: '#bfdbfe',
-          300: '#93c5fd',
-          400: '#60a5fa',
-          500: '#3b82f6',
-          600: '#2563eb',
-          700: '#1d4ed8',
-          800: '#1e40af',
-          900: '#1e3a8a',
+          50:  '#E9F4EC',
+          100: '#D3EADA',
+          200: '#A9D5B5',
+          300: '#7FC08F',
+          400: '#5FC57A',
+          500: '#4FBF6B',
+          600: '#1E7A34',
+          700: '#17632A',
+          800: '#124F22',
+          900: '#0D3B19',
         },
+        brand: {
+          charcoal: '#293438',
+          deep:     '#20282B',
+          green:    '#4FBF6B',
+          'green-dark': '#3FA85C',
+          tint:     '#E9F4EC',
+        },
+        accent: 'var(--accent)',
       },
       spacing: {
         '18': '4.5rem',

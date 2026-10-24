@@ -18,7 +18,7 @@ function ResultRow({ label, state }) {
   const icon = state === true
     ? <CheckCircle2 style={{ width: 15, height: 15, color: '#10b981' }} />
     : state === 'auth_required'
-      ? <Info style={{ width: 15, height: 15, color: '#3b82f6' }} />
+      ? <Info style={{ width: 15, height: 15, color: '#1E7A34' }} />
       : state === false
         ? <XCircle style={{ width: 15, height: 15, color: '#ef4444' }} />
         : <span style={{ width: 15, height: 15, display: 'inline-block', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>—</span>;
@@ -91,11 +91,11 @@ export default function ConnectionWizard({ initialUrl = '' }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
           <div style={{
             width: 40, height: 40, borderRadius: 10, flexShrink: 0,
-            background: isLight ? 'rgba(59,130,246,0.12)' : 'rgba(47,129,247,0.12)',
-            border: '1px solid ' + (isLight ? 'rgba(59,130,246,0.3)' : 'rgba(47,129,247,0.3)'),
+            background: isLight ? 'rgba(79,191,107,0.12)' : 'rgba(79,191,107,0.12)',
+            border: '1px solid ' + (isLight ? 'rgba(79,191,107,0.3)' : 'rgba(79,191,107,0.3)'),
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
-            <Server style={{ width: 20, height: 20, color: isLight ? '#60a5fa' : '#79C0FF' }} />
+            <Server style={{ width: 20, height: 20, color: isLight ? 'var(--accent)' : 'var(--accent)' }} />
           </div>
           <div>
             <h2 style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-1)' }}>الاتصال بخادم PETSHROW ERP</h2>
@@ -113,12 +113,12 @@ export default function ConnectionWizard({ initialUrl = '' }) {
             className="input text-sm"
             dir="ltr"
             style={{ textAlign: 'left' }}
-            placeholder="http://192.168.1.145:5000"
+            placeholder="https://SERVER-PC"
             value={serverUrl}
             onChange={(e) => { setServerUrl(e.target.value); setResult(null); }}
           />
           <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
-            الأفضل استخدام اسم جهاز الخادم (مثال: http://SERVER-PC:5000) لأن رقم IP قد يتغير · أو http://192.168.1.145:5000 · أو https://erp.company.com
+            الأفضل استخدام اسم جهاز الخادم (مثال: http://SERVER-PC:5000) لأن رقم IP قد يتغير · أو العنوان الظاهر في صفحة إعدادات الاتصال على جهاز الخادم · أو https://erp.company.com
           </span>
         </div>
 
@@ -139,11 +139,6 @@ export default function ConnectionWizard({ initialUrl = '' }) {
               state={result.reachable ? (result.socketStatus === 'connected' ? true : result.socketStatus === 'auth_required' ? 'auth_required' : false) : null}
             />
             <ResultRow label="الإصدار متوافق" state={result.versionCompatible} />
-            {result.remoteVersion && (
-              <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 4 }}>
-                إصدار الخادم: {result.remoteVersion} (بروتوكول {result.remoteApiVersion ?? '—'})
-              </div>
-            )}
           </div>
         )}
 

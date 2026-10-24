@@ -11,8 +11,10 @@ router.post('/process', authorize('admin', 'hr'), async (req, res) => {
   try {
     const { date, branchId, employeeId } = req.body;
     if (employeeId) {
-      await processDate(new Date(date), parseInt(employeeId));
-      return res.json({ message: 'Processing complete', skipped: false });
+      const one = await processDate(new Date(date), parseInt(employeeId));
+      const skippedClosedPayroll = [];
+      if (one && one.skipped === 'closed-evidence-loss') skippedClosedPayroll.push({ employeeId: one.employeeId, month: one.month, year: one.year, payrollStatus: one.payrollStatus, days: [one.date] });
+      return res.json({ message: 'Processing complete', skipped: false, ...(skippedClosedPayroll.length ? { skippedClosedPayroll } : {}) });
     }
     const result = await processToday(branchId ? parseInt(branchId) : null, date ? new Date(date) : null);
     if (result?.skipped) {
@@ -21,7 +23,7 @@ router.post('/process', authorize('admin', 'hr'), async (req, res) => {
         skipped: true, reason: result.reason,
       });
     }
-    res.json({ message: 'Processing complete', skipped: false, processedCount: result?.processedCount ?? null });
+    res.json({ message: 'Processing complete', skipped: false, processedCount: result?.processedCount ?? null, ...(result?.skippedClosedPayroll?.length ? { skippedClosedPayroll: result.skippedClosedPayroll } : {}) });
   } catch (err) {
     sendError(res, err);
   }
@@ -33,9 +35,12 @@ router.post('/process-month', authorize('admin', 'hr'), async (req, res) => {
     const { year, month, branchId } = req.body;
     const result = await processMonth(parseInt(year), parseInt(month), branchId ? parseInt(branchId) : null);
     // Additive: a day skipped (e.g. its date lock timed out and was rejected) is reported, not hidden.
-    res.json(result && result.failedDays > 0
-      ? { message: 'Month processing complete', failedDays: result.failedDays }
-      : { message: 'Month processing complete' });
+    res.json({
+      message: 'Month processing complete',
+      ...(result && result.failedDays > 0 ? { failedDays: result.failedDays } : {}),
+      // Additive: closed (finalized/paid) employee-months whose days were left untouched because their raw punches are missing.
+      ...(result?.skippedClosedPayroll?.length ? { skippedClosedPayroll: result.skippedClosedPayroll } : {}),
+    });
   } catch (err) {
     sendError(res, err);
   }

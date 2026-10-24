@@ -113,21 +113,21 @@ html.dark, html:not(.light) {
      from these five stops + the accent hue, so the whole app shares one
      coherent depth model: App bg → Sidebar → Page → Cards → Tables →
      Inputs → Dialogs → Hover → Selected. */
-  --bg:           #0D1117;  /* L0 — page canvas */
-  --surface:      #161B22;  /* L1 — cards */
-  --surface-2:    #21262D;  /* L2 — card header strips, zebra alt rows, table headers */
-  --surface-3:    #30363D;  /* L3 — dropdown/menu panels, elevated dialog surface */
+  --bg:           #0B1220;  /* L0 — page canvas */
+  --surface:      #111827;  /* L1 — cards */
+  --surface-2:    #172033;  /* L2 — card header strips, zebra alt rows, table headers */
+  --surface-3:    #334155;  /* L3 — dropdown/menu panels, elevated dialog surface */
   --surface-4:    #3D444D;  /* L4 — hover fills, dividers-on-elevated */
-  --border:       #30363D;
+  --border:       #334155;
   --border-2:     rgba(240,246,252,0.06);
-  --text:         #F0F6FC;  /* bright, near-white primary — always this, never dimmed */
-  --text-2:       #C9D1D9;  /* secondary */
-  --text-3:       #8B949E;  /* muted */
-  --accent:       #2F81F7;  /* accent — nav/focus/buttons/links/selection ONLY, never a surface fill */
-  --accent-2:     #2F81F7;
-  --accent-soft:  rgba(31,111,235,0.13);
+  --text:         #F8FAFC;  /* bright, near-white primary — always this, never dimmed */
+  --text-2:       #CBD5E1;  /* secondary */
+  --text-3:       #94A3B8;  /* muted */
+  --accent:       #4FBF6B;  /* accent — nav/focus/buttons/links/selection ONLY, never a surface fill */
+  --accent-2:     #4FBF6B;
+  --accent-soft:  rgba(79,191,107,0.13);
   --input-bg:     #010409;  /* recessed one step below page canvas — distinct "sunken field" */
-  --input-b:      #30363D;
+  --input-b:      #334155;
   --shadow-card:  0 1px 2px rgba(0,0,0,0.35), 0 6px 18px -8px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.02);
   --shadow-pop:   0 20px 48px -12px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.05);
   --shadow-glow:  none;
@@ -136,15 +136,15 @@ html.dark, html:not(.light) {
      GitHub Dark + Linear + VS Code identity: neutral graphite, no navy tint.
      Semantic Sidebar Design Tokens — dark theme values only, never used
      inside :root so light/dark stay fully independent palettes. */
-  --sidebar-background:      #0D1117;
-  --sidebar-surface-hover:   #21262D;
-  --sidebar-surface-active:  rgba(31,111,235,.14);
-  --sidebar-border:          #30363D;
-  --sidebar-accent:          #2F81F7;
-  --sidebar-text-primary:    #F0F6FC;
-  --sidebar-text-secondary:  #C9D1D9;
-  --sidebar-text-muted:      #8B949E;
-  --sidebar-icon:            #C9D1D9;
+  --sidebar-background:      #0B1220;
+  --sidebar-surface-hover:   #172033;
+  --sidebar-surface-active:  rgba(79,191,107,.14);
+  --sidebar-border:          #334155;
+  --sidebar-accent:          #4FBF6B;
+  --sidebar-text-primary:    #F8FAFC;
+  --sidebar-text-secondary:  #CBD5E1;
+  --sidebar-text-muted:      #94A3B8;
+  --sidebar-icon:            #CBD5E1;
   --sidebar-icon-active:     #FFFFFF;
 
   /* Shadow scale — real elevation, each stop deeper than the last */
@@ -166,8 +166,8 @@ html.dark, html:not(.light) {
   --status-early-leave:    #DB6D28;
   --status-early-leave-bg: rgba(219,109,40,0.15);
   /* --status-half-day removed 2026-06-22 */
-  --status-weekend:        #8B949E;
-  --status-weekend-bg:     rgba(139,148,158,0.12);
+  --status-weekend:        #94A3B8;
+  --status-weekend-bg:     rgba(148,163,184,0.12);
   /* Official holiday — the ONLY state Phase 19 recolors. Sourced exclusively
      from data.isHoliday (rulesEngine.js#isHoliday: an exact-date match
      against the Holiday table) — never inferred from weekend/leave. Value
@@ -181,50 +181,50 @@ html.dark, html:not(.light) {
      elevation step (per the Background→Sidebar→Page→Cards→Tables→Inputs→
      Dialogs ladder), not just "a card with rows in it". */
   --ag-background-color:              #12161C;
-  --ag-header-background-color:       #21262D;
-  --ag-foreground-color:              #C9D1D9;
-  --ag-header-foreground-color:       #F0F6FC;
+  --ag-header-background-color:       #172033;
+  --ag-foreground-color:              #CBD5E1;
+  --ag-header-foreground-color:       #F8FAFC;
   --ag-odd-row-background-color:      #12161C;
   --ag-even-row-background-color:     #171B21;
-  --ag-border-color:                  #30363D;
-  --ag-row-border-color:              #21262D;
-  --ag-row-hover-color:               #21262D;
-  --ag-selected-row-background-color: rgba(31,111,235,0.13);
+  --ag-border-color:                  #334155;
+  --ag-row-border-color:              #172033;
+  --ag-row-hover-color:               #172033;
+  --ag-selected-row-background-color: rgba(79,191,107,0.13);
   --ag-row-border-style:              solid;
   --ag-row-border-width:              1px;
-  --ag-header-column-separator-color: #30363D;
+  --ag-header-column-separator-color: #334155;
 
-  --h-grad:   #21262D;
-  --h-accent: #30363D;
-  --h-text:   #F0F6FC;
+  --h-grad:   #172033;
+  --h-accent: #334155;
+  --h-text:   #F8FAFC;
   --cell-b:   rgba(240,246,252,0.045);
-  --pin-b:    #30363D;
-  --total-bg: #21262D;
+  --pin-b:    #334155;
+  --total-bg: #172033;
 
   /* Muted text alias */
-  --text-muted:    #8B949E;
+  --text-muted:    #94A3B8;
 
   /* Semantic cell colors */
-  --c-name:    #F0F6FC;
-  --c-code:    #8B949E;
-  --c-dept:    #C9D1D9;
-  --c-val:     #C9D1D9;
+  --c-name:    #F8FAFC;
+  --c-code:    #94A3B8;
+  --c-dept:    #CBD5E1;
+  --c-val:     #CBD5E1;
   --c-muted:   #6E7681;
-  --c-time:    #F0F6FC;  /* bright, bold weight (set in cellStyles.js) carries emphasis — blue is reserved for interactive elements, not data */
-  --c-money:   #F0F6FC;
+  --c-time:    #F8FAFC;  /* bright, bold weight (set in cellStyles.js) carries emphasis — blue is reserved for interactive elements, not data */
+  --c-money:   #F8FAFC;
   --c-ot:      #A371F7;
   --c-penalty: #DB6D28;
-  --c-net:     #F0F6FC;
+  --c-net:     #F8FAFC;
   --c-green:   #3FB950;
   --c-red:     #F85149;
   --c-net-border: rgba(240,246,252,0.16);
 
   /* Legacy ERP aliases — used by EmployeeMovementPage */
-  --erp-text:              #F0F6FC;
-  --erp-text-muted:        #C9D1D9;
-  --erp-text-faint:        #8B949E;
-  --erp-border:            #30363D;
-  --erp-ag-header-bg-end:  #21262D;
+  --erp-text:              #F8FAFC;
+  --erp-text-muted:        #CBD5E1;
+  --erp-text-faint:        #94A3B8;
+  --erp-border:            #334155;
+  --erp-ag-header-bg-end:  #172033;
   --erp-ag-header-accent:  #3D444D;
 }
 
@@ -241,9 +241,9 @@ html.light {
   --text:         #0f1c2e;
   --text-2:       #3d5068;
   --text-3:       #6b7f98;
-  --accent:       #1d4ed8;
-  --accent-2:     #1e3a8a;
-  --accent-soft:  rgba(29,78,216,0.09);
+  --accent:       #1E7A34;
+  --accent-2:     #17632A;
+  --accent-soft:  rgba(79,191,107,0.09);
   --input-bg:     #ffffff;
   --input-b:      #b8c6db;
   --shadow-card:  0 1px 4px rgba(15,23,42,0.10), 0 0 0 1px rgba(15,23,42,0.04);
@@ -253,15 +253,15 @@ html.light {
   /* ── Sidebar chrome — light theme, Crystal/Fiori identity. Independent
      from the dark sidebar tokens above; switches with the app theme. ──── */
   --sidebar-background:      #F8FAFD;
-  --sidebar-surface-hover:   #EEF4FF;
-  --sidebar-surface-active:  #DCEBFF;
+  --sidebar-surface-hover:   #F8FAFC;
+  --sidebar-surface-active:  #E9F4EC;
   --sidebar-border:          #D7E0EC;
-  --sidebar-accent:          #1D4ED8;
+  --sidebar-accent:          #1E7A34;
   --sidebar-text-primary:    #0F172A;
   --sidebar-text-secondary:  #334155;
   --sidebar-text-muted:      #5B6778;
   --sidebar-icon:            #334155;
-  --sidebar-icon-active:     #1D4ED8;
+  --sidebar-icon-active:     #1E7A34;
 
   /* Shadow scale + focus ring — new tokens, not previously used anywhere,
      so adding them cannot change any existing light-mode rendering. */
@@ -281,8 +281,8 @@ html.light {
   --ag-even-row-background-color:     #f5f8fd;
   --ag-border-color:                  #cdd6e6;
   --ag-row-border-color:              #d8e0ec;
-  --ag-row-hover-color:               rgba(29,78,216,0.09);
-  --ag-selected-row-background-color: rgba(29,78,216,0.14);
+  --ag-row-hover-color:               rgba(79,191,107,0.09);
+  --ag-selected-row-background-color: rgba(79,191,107,0.14);
   --ag-row-border-style:              solid;
   --ag-row-border-width:              1px;
   --ag-header-column-separator-color: #c2cedf;
@@ -300,14 +300,14 @@ html.light {
   --c-dept:    #3d5068;
   --c-val:     #0f1c2e;
   --c-muted:   #5c7190;
-  --c-time:    #1545b8;
+  --c-time:    #20282B;
   --c-money:   #0f1c2e;
   --c-ot:      #5b21b6;
   --c-penalty: #b83600;
-  --c-net:     #075985;
+  --c-net:     #20282B;
   --c-green:   #145e3b;
   --c-red:     #991515;
-  --c-net-border: rgba(37,99,235,0.25);
+  --c-net-border: rgba(79,191,107,0.25);
 
   /* Muted text alias used by AbsenceTypeModal and other components */
   --text-muted:            #6b7f98;
@@ -327,8 +327,8 @@ html.light {
   --status-weekend-bg:     rgba(71,85,105,0.08);
   /* Official holiday — see the dark-theme block's comment. Value unchanged
      from before Phase 19. */
-  --status-holiday:        #1d4ed8;
-  --status-holiday-bg:     rgba(29,78,216,0.11);
+  --status-holiday:        #1E7A34;
+  --status-holiday-bg:     rgba(79,191,107,0.11);
 
   /* Legacy ERP aliases — used by EmployeeMovementPage */
   --erp-text:              #0f1c2e;
@@ -336,7 +336,7 @@ html.light {
   --erp-text-faint:        #6b7f98;
   --erp-border:            #cdd6e6;
   --erp-ag-header-bg-end:  #edf2fb;
-  --erp-ag-header-accent:  #1d4ed8;
+  --erp-ag-header-accent:  #1E7A34;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -598,15 +598,15 @@ html.light .text-emerald-400 { color: var(--c-green) !important; }
   html.light .badge-green  { background:#dcfce7; color:#15803d; border:1px solid #bbf7d0; }
   html.light .badge-red    { background:#fee2e2; color:#b91c1c; border:1px solid #fca5a5; }
   html.light .badge-yellow { background:#fef3c7; color:#a16207; border:1px solid #fde68a; }
-  html.light .badge-blue   { background:#dbeafe; color:#1d4ed8; border:1px solid #bfdbfe; }
+  html.light .badge-blue   { background:#E9F4EC; color:#1E7A34; border:1px solid #BBDCC3; }
   html.light .badge-gray   { background:#eef2f8; color:#51637f; border:1px solid #dbe2ee; }
   html.light .badge-purple { background:#f3e8ff; color:#6d28d9; border:1px solid #ddd6fe; }
 
   html.dark .badge-green  { background:rgba(35,134,54,0.15);  color:#3FB950; border:1px solid rgba(63,185,80,0.28); }
   html.dark .badge-red    { background:rgba(218,54,51,0.15);  color:#F85149; border:1px solid rgba(248,81,73,0.28); }
   html.dark .badge-yellow { background:rgba(210,153,34,0.16); color:#E3B341; border:1px solid rgba(210,153,34,0.30); }
-  html.dark .badge-blue   { background:rgba(47,129,247,0.15); color:#79C0FF; border:1px solid rgba(47,129,247,0.28); }
-  html.dark .badge-gray   { background:rgba(139,148,158,0.16);color:#C9D1D9; border:1px solid rgba(139,148,158,0.26); }
+  html.dark .badge-blue   { background:rgba(79,191,107,0.15); color:#6FD088; border:1px solid rgba(79,191,107,0.28); }
+  html.dark .badge-gray   { background:rgba(148,163,184,0.16);color:#CBD5E1; border:1px solid rgba(148,163,184,0.26); }
   html.dark .badge-purple { background:rgba(137,87,229,0.15); color:#D2A8FF; border:1px solid rgba(137,87,229,0.28); }
 
   /* ── Typography ──────────────────────────────────────────────────────── */
@@ -686,21 +686,21 @@ html.light .ag-theme-quartz {
   --ag-even-row-background-color:     #f5f8fd;
   --ag-border-color:                  #cdd6e6;
   --ag-row-border-color:              #d8e0ec;
-  --ag-row-hover-color:               rgba(29,78,216,0.09);
-  --ag-selected-row-background-color: rgba(29,78,216,0.14);
+  --ag-row-hover-color:               rgba(79,191,107,0.09);
+  --ag-selected-row-background-color: rgba(79,191,107,0.14);
 }
 
 html .ag-theme-quartz-dark {
   --ag-background-color:              #12161C;
-  --ag-foreground-color:              #C9D1D9;
-  --ag-header-background-color:       #21262D;
-  --ag-header-foreground-color:       #F0F6FC;
+  --ag-foreground-color:              #CBD5E1;
+  --ag-header-background-color:       #172033;
+  --ag-header-foreground-color:       #F8FAFC;
   --ag-odd-row-background-color:      #12161C;
   --ag-even-row-background-color:     #171B21;
-  --ag-border-color:                  #30363D;
-  --ag-row-border-color:              #21262D;
-  --ag-row-hover-color:               #21262D;
-  --ag-selected-row-background-color: rgba(31,111,235,0.13);
+  --ag-border-color:                  #334155;
+  --ag-row-border-color:              #172033;
+  --ag-row-hover-color:               #172033;
+  --ag-selected-row-background-color: rgba(79,191,107,0.13);
 }
 
 .ag-root-wrapper {
@@ -826,7 +826,7 @@ html.dark .ag-body-vertical-scroll-viewport::-webkit-scrollbar-thumb:hover { bac
 /* Editable payroll cells (manual deduction / advances) — subtle
    affordance so HR can spot which cells accept inline edits, plus a
    clearer focus ring while navigating with the keyboard. */
-.cell-editable { cursor:text; box-shadow:inset 0 0 0 1px rgba(37,99,235,0.12); }
+.cell-editable { cursor:text; box-shadow:inset 0 0 0 1px rgba(79,191,107,0.12); }
 .cell-editable.ag-cell-focus:not(.ag-cell-inline-editing) {
   box-shadow:inset 0 0 0 1.5px var(--accent) !important;
   background:var(--accent-soft) !important;
@@ -838,7 +838,7 @@ html.dark .ag-body-vertical-scroll-viewport::-webkit-scrollbar-thumb:hover { bac
 .cell-range { background:var(--accent-soft) !important; box-shadow:inset 0 0 0 1px var(--accent) !important; }
 .cell-range-anchor { box-shadow:inset 0 0 0 2px var(--accent) !important; }
 .cell-copied { outline:2px dashed var(--accent); outline-offset:-2px; }
-.cell-paste-saving { opacity:.6; background-image:repeating-linear-gradient(45deg,transparent 0 6px,rgba(37,99,235,.12) 6px 12px) !important; }
+.cell-paste-saving { opacity:.6; background-image:repeating-linear-gradient(45deg,transparent 0 6px,rgba(79,191,107,.12) 6px 12px) !important; }
 .cell-paste-saved { box-shadow:inset 0 0 0 2px #16a34a !important; }
 .cell-paste-adjusted { box-shadow:inset 0 0 0 2px #d97706 !important; }
 .cell-paste-failed, .cell-paste-invalid { box-shadow:inset 0 0 0 2px #dc2626 !important; background:rgba(220,38,38,.12) !important; }
@@ -921,12 +921,12 @@ html.light .ag-cell { border-right-color: rgba(15,23,42,0.09) !important; }
 /* Focused editable cell — visible ring in light */
 html.light .cell-editable.ag-cell-focus:not(.ag-cell-inline-editing) {
   box-shadow: inset 0 0 0 2px var(--accent) !important;
-  background: rgba(29,78,216,0.07) !important;
+  background: rgba(79,191,107,0.07) !important;
 }
 /* Stronger data-table row lines in light */
 html.light .data-table tbody td { border-bottom: 1px solid var(--border) !important; }
 html.light .data-table thead th { border-bottom: 2px solid var(--border) !important; background: var(--surface-2) !important; }
-html.light .data-table tbody tr:hover td { background: rgba(29,78,216,0.06) !important; }
+html.light .data-table tbody tr:hover td { background: rgba(79,191,107,0.06) !important; }
 
 /* ═══════════════════════════════════════════════════════════════════════════
    ROW STATE COLORING
@@ -963,7 +963,7 @@ html.light .row-late     { background:#fde68a !important; box-shadow: inset 5px 
 html.light .row-overtime { background:#c7d2fe !important; box-shadow: inset 5px 0 0 #4338ca; }
 /* row-half-day removed 2026-06-22 */
 html.light .row-weekend  { background:#e2e8f0 !important; opacity:0.72 !important; }
-html.light .ag-row.row-holiday  { background:#bfdbfe !important; box-shadow: inset 5px 0 0 #1d4ed8; color:#1e3a8a !important; }
+html.light .ag-row.row-holiday  { background:#D3EEF4 !important; box-shadow: inset 5px 0 0 #0E7490; color:#0B4F63 !important; }
 /* Monitored rows: highest visual priority — declared last to win over all state rows */
 html.light .row-monitored { background:rgba(245,158,11,0.18) !important; }
 

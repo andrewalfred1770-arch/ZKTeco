@@ -53,7 +53,7 @@ export default function Dialog({
       style={{
         position: 'fixed', inset: 0, zIndex: 'var(--z-modal-backdrop)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
-        background: 'rgba(6,10,20,0.6)',
+        background: 'var(--ci-overlay-dialog, rgba(6,10,20,0.6))',
         backdropFilter: 'blur(8px) saturate(120%)',
         WebkitBackdropFilter: 'blur(8px) saturate(120%)',
         ...overlayStyle,

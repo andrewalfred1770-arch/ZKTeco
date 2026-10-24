@@ -246,7 +246,7 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
       {/* Overlay */}
       <div onClick={onClose} style={{
         position:'fixed', inset:0, zIndex:60,
-        background: isLight ? 'rgba(37,99,235,0.10)' : 'rgba(0,0,0,0.65)',
+        background: isLight ? 'rgba(32,40,43,0.45)' : 'rgba(0,0,0,0.65)',
         backdropFilter:'blur(6px)',
       }} />
 
@@ -272,7 +272,7 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
           display:'flex', alignItems:'center', justifyContent:'space-between',
           padding:'14px 20px', borderBottom:'1px solid var(--border)',
           background: isLight
-            ? 'linear-gradient(135deg,#1d4ed8,#1e40af)'
+            ? 'linear-gradient(135deg,#293438,#20282B)'
             : 'linear-gradient(135deg,var(--surface-3),var(--surface-2))',
           flexShrink:0,
         }}>
@@ -312,15 +312,15 @@ export default function FinalSalaryModal({ payrollRow, month, year, onClose, bul
             <div style={{ width:1, height:24, background:'rgba(255,255,255,0.2)' }} />
 
             {/* Actions */}
-            <button onClick={exportExcel} style={btnStyle('#34d399', 'rgba(16,185,129,0.15)')} title="تصدير Excel">
+            <button onClick={exportExcel} style={isLight ? btnStyle('#047857', '#ffffff') : btnStyle('#34d399', 'rgba(16,185,129,0.15)')} title="تصدير Excel">
               <FileSpreadsheet style={{ width:15, height:15 }} />
               <span style={{ fontSize:11.5, marginRight:4 }}>Excel</span>
             </button>
-            <button onClick={handlePDF} style={btnStyle('#f87171', 'rgba(239,68,68,0.15)')} title="تصدير PDF">
+            <button onClick={handlePDF} style={isLight ? btnStyle('#b91c1c', '#ffffff') : btnStyle('#f87171', 'rgba(239,68,68,0.15)')} title="تصدير PDF">
               <FileText style={{ width:15, height:15 }} />
               <span style={{ fontSize:11.5, marginRight:4 }}>PDF</span>
             </button>
-            <button onClick={handlePrint} style={btnStyle('#60a5fa', 'rgba(96,165,250,0.15)')} title="طباعة">
+            <button onClick={handlePrint} style={isLight ? btnStyle('#1E7A34', '#ffffff') : btnStyle('var(--accent)', 'rgba(79,191,107,0.15)')} title="طباعة">
               <Printer style={{ width:15, height:15 }} />
               <span style={{ fontSize:11.5, marginRight:4 }}>طباعة</span>
             </button>

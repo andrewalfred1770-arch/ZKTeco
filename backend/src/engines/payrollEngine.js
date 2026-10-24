@@ -1,9 +1,12 @@
 const { getPrisma } = require('../utils/prisma');
 const moment = require('moment');
-const { getRules, getRulesBatch, parseTime } = require('./rulesEngine');
+const { getRules, getRulesBatch, parseTime, isWeekend } = require('./rulesEngine');
 const { mergeEffectivePenalty } = require('./attendanceEngine');
-const { effectiveAbsencePenaltyDays } = require('../utils/absencePolicy');
+const { effectiveAbsencePenaltyDays, AUTOMATIC_ABSENCE_PENALTY_DAYS } = require('../utils/absencePolicy');
+const { preHireDaysInMonth, prorationFactor, virtualAbsentDates } = require('../utils/payrollPeriod');
+const { buildHolidayIndex } = require('../utils/dayClassification');
 const { monthRange } = require('../utils/monthRange');
+const { monthPeriod, hasStarted, startedWhere } = require('../utils/employmentEligibility');
 const logger = require('../utils/logger');
 
 const prisma = getPrisma();
@@ -39,6 +42,32 @@ function computeRates(basicSalary, monthDays, workHoursPerDay) {
   const dailyRate = basicSalary / (monthDays || 30);
   const hourlyRate = dailyRate / (workHoursPerDay || 8);
   return { dailyRate, hourlyRate };
+}
+
+// The month's public holidays (one query). null = the lookup failed or is unavailable: the caller then adds NO derived absences — a holiday
+// we could not read must never become a deduction.
+async function loadMonthHolidays(client, month, year) {
+  try {
+    return await client.holiday.findMany({ where: { date: { gte: new Date(Date.UTC(year, month - 1, 1)), lte: new Date(Date.UTC(year, month, 0)) } } });
+  } catch (err) {
+    logger.warn(`[PAYROLL] holiday lookup unavailable for ${month}/${year} (${(err && err.message) || 'error'}) — days without a row are not counted as absences`);
+    return null;
+  }
+}
+
+// The ONE count of "eligible past working days that have no AttendanceDaily row" (approved derived-absence rule, utils/payrollPeriod.js).
+// computePayroll() prices it; the monthly attendance report/export and the final sheet display the same number, so an absence count
+// can never differ between a report and the payroll it feeds. `holidayRows === null` (lookup unavailable) => 0, never a guessed deduction.
+function countDerivedAbsences({ employee, month, year, rawRecords, rules, holidayRows, today }) {
+  if (holidayRows === null || holidayRows === undefined) return 0;
+  const holidayOn = buildHolidayIndex(holidayRows);
+  return virtualAbsentDates({
+    employee, month, year,
+    rowDates: new Set((rawRecords || []).map(r => moment(r.date).format('YYYY-MM-DD'))),
+    today: today || moment().format('YYYY-MM-DD'),
+    isWeekendDay: (ds) => isWeekend(new Date(`${ds}T12:00:00`), (rules || {}).weekend_days),
+    isHolidayOn: holidayOn,
+  }).length;
 }
 
 // ─── Approved-adjustment overlay ──────────────────────────────────────────────
@@ -169,7 +198,8 @@ async function computePayroll(employeeId, month, year, opts = {}) {
   records = records.map(r => mergeEffectivePenalty(r));
   const appliedAdjustments = rawRecords.filter(r => adjByDailyId.has(r.id)).length;
 
-  const basicSalary = employee.salary || 0;
+  // The FULL monthly salary: the rates below — and therefore what one absent day costs — always derive from it.
+  const monthlySalary = employee.salary || 0;
 
   // Single source of truth — all rates derived from policy rules only.
   // Enterprise Financial Precision (Business Rule Change, approved): dailyRate
@@ -179,7 +209,12 @@ async function computePayroll(employeeId, month, year, opts = {}) {
   // must all use the exact value.
   const monthDays = parseFloat(rules.month_days || 30);
   const workingHours = parseFloat(rules.work_hours_per_day || 8);
-  const { dailyRate, hourlyRate } = computeRates(basicSalary, monthDays, workingHours);
+  const { dailyRate, hourlyRate } = computeRates(monthlySalary, monthDays, workingHours);
+  // Approved rule (utils/payrollPeriod.js): a hire date INSIDE the month pays only the days from the hire date on. The basic that is PAID is
+  // therefore pro-rated, so every total/sheet/export that adds basic + overtime − deductions − advances stays consistent by construction.
+  const preHireDays = preHireDaysInMonth(employee.hireDate, month, year);
+  const factor = prorationFactor(preHireDays, monthDays);
+  const basicSalary = factor === 1 ? monthlySalary : monthlySalary * factor;
   // A stored multiplier that is empty, non-numeric, NaN or infinite must never reach the money math
   // (it turned overtimeAmount and net into NaN). Falls back to the general overtime multiplier.
   const otMultiplier = safeMultiplier(rules.overtime_multiplier, 1.5);
@@ -192,7 +227,11 @@ async function computePayroll(employeeId, month, year, opts = {}) {
 
   // half_day removed 2026-06-22 — status set: present | late | early_leave | absent | weekend | holiday
   const workDays   = records.filter(r => ['present', 'late', 'early_leave'].includes(r.status)).length;
-  const absentDays = records.filter(r => r.isAbsent).length;
+  // Approved rule (utils/payrollPeriod.js): an eligible past working day with NO stored row is an absence — the row the engine would create.
+  // Only the dates that have no AttendanceDaily row at all are considered (a stored row, whatever it says, is never overridden).
+  const holidayRows = preload?.holidays !== undefined ? preload.holidays : await loadMonthHolidays(client, month, year);
+  const derivedAbsentDays = countDerivedAbsences({ employee, month, year, rawRecords, rules, holidayRows, today: opts.today });
+  const absentDays = records.filter(r => r.isAbsent).length + derivedAbsentDays;
   const totalLateMinutes = records.reduce((sum, r) => sum + (r.lateMinutes || 0), 0);
   const totalLatePenaltyUnits = records.reduce((sum, r) => sum + (r.effectiveLatePenalty || 0), 0);
   const totalEarlyCheckoutUnits = records.reduce((sum, r) => sum + (r.effectiveEarlyPenalty || 0), 0);
@@ -280,7 +319,8 @@ async function computePayroll(employeeId, month, year, opts = {}) {
   // "with permission" absence with a FIXED 1-day deduction (no configurable default exists any more).
   const totalAbsencePenaltyDays = records
     .filter(r => r.isAbsent)
-    .reduce((sum, r) => sum + effectiveAbsencePenaltyDays(r), 0);
+    .reduce((sum, r) => sum + effectiveAbsencePenaltyDays(r), 0)
+    + derivedAbsentDays * AUTOMATIC_ABSENCE_PENALTY_DAYS;   // derived absences are automatic ones: exactly one salary day each (D5)
   const absentDeduction = totalAbsencePenaltyDays * dailyRate;
 
   // Canonical late/early-leave penalty: Policy Engine deduction units
@@ -346,6 +386,9 @@ async function computePayroll(employeeId, month, year, opts = {}) {
 
   return {
     basicSalary,
+    // Additive (employment-period rules): the full monthly salary, the calendar days before the hire date inside this month, the paid
+    // fraction, and how many absences were derived from days that have no stored row.
+    monthlySalary, preHireDays, prorationFactor: factor, derivedAbsentDays,
     dailyRate,
     hourlyRate,
     workDays,
@@ -529,6 +572,25 @@ async function calculatePayrollImpl(employeeId, month, year, opts = {}) {
   // employee/attendance reads would go through the shared singleton (missing
   // an in-flight transaction's uncommitted writes) or re-issue the very
   // per-employee queries opts.preload exists to skip.
+  // START-OF-EMPLOYMENT GUARD (the one write point every caller shares: bulk calculate, recalc cascade, realtime/relink/rebuild
+  // triggers, manual-edit and adjustment cascades). An employee whose hireDate is AFTER this month, and who has no punch in it, has
+  // no payroll for it: creating or refreshing one would pay the full basic salary for a month before they were employed.
+  // Nothing is created, nothing is overwritten; whatever row already exists is returned untouched. (A caller that already holds
+  // a precomputed figure — syncStoredPayroll refreshing an EXISTING row — is not affected.)
+  if (!opts.precomputed) {
+    const empRow = (preload && preload.employee) || await client.employee.findUnique({ where: { id: employeeId }, select: { hireDate: true } });
+    const period = monthPeriod(year, month);
+    if (empRow && empRow.hireDate && !hasStarted(empRow, period, false)) {
+      const evidence = await client.attendanceDaily.count({
+        where: { employeeId, date: { gte: period.from, lte: period.to }, OR: [{ checkIn: { not: null } }, { checkOut: { not: null } }] },
+      });
+      if (!hasStarted(empRow, period, evidence > 0)) {
+        logger.info(`[PAYROLL-NOT-STARTED] emp=${employeeId} ${month}/${year}: hireDate ${moment(empRow.hireDate).format('YYYY-MM-DD')} is after this month and there are no punches in it — no payroll generated`);
+        return client.payroll.findUnique({ where: { employeeId_month_year: { employeeId, month, year } } });
+      }
+    }
+  }
+
   const computed = opts.precomputed || await computePayroll(employeeId, month, year, { tx: opts.tx, preload });
   const {
     basicSalary, hourlyRate, workDays, absentDays, latePenalty,
@@ -841,6 +903,7 @@ async function buildPayrollPreloadMap(targets, employees) {
     const adjustmentsByEmployee = groupByEmployeeId(adjustmentsAll);
     const advancesByEmployee = groupByEmployeeId(advancesAll);
     const existingPayrollByEmployee = new Map(existingPayrollsAll.map(p => [p.employeeId, p]));
+    const monthHolidays = await loadMonthHolidays(prisma, month, year);   // one query per month group (null = unavailable)
 
     for (const t of monthTargets) {
       preloadMap.set(`${t.employeeId}|${month}|${year}`, {
@@ -850,6 +913,7 @@ async function buildPayrollPreloadMap(targets, employees) {
         monthAdjustments: adjustmentsByEmployee.get(t.employeeId) || [],
         existingPayroll: existingPayrollByEmployee.get(t.employeeId) || null,
         advancesList: advancesByEmployee.get(t.employeeId) || [],
+        holidays: monthHolidays,
       });
     }
   }
@@ -858,7 +922,9 @@ async function buildPayrollPreloadMap(targets, employees) {
 
 async function calculateMonthlyPayroll(month, year, branchId) {
   const employees = await prisma.employee.findMany({
-    where: { status: true, branchId: branchId || undefined },
+    // An employee who had not started by the end of this month (hireDate after it, no punches in it) has no payroll for it — see
+    // utils/employmentEligibility.js (start side). Everyone else is selected exactly as before.
+    where: { status: true, branchId: branchId || undefined, ...startedWhere(monthPeriod(year, month)) },
   });
 
   // C1: this is the "احتساب المرتبات" bulk button — a whole-month/branch
@@ -898,4 +964,4 @@ async function calculateMonthlyPayroll(month, year, branchId) {
   return { results, protectedTargets };
 }
 
-module.exports = { PAYROLL_STATUSES, CLOSED_PAYROLL_STATUSES, PAYROLL_TRANSITIONS, isClosedPayrollStatus, PayrollPolicyError, validatePayrollStatusValue, planPayrollEdit, lockPayrollStatus, assertPayrollOpen, replyPayrollPolicyError, safeMultiplier, calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, computeDeductionsBreakdown, withPayrollKeyLock, calculatePayrollImpl, syncStoredPayroll, payrollSnapshotDiffers, PAYROLL_LOCK_ACQUIRE_TIMEOUT_MS, PAYROLL_LOCK_TIMEOUT_CODE, selectOvertimeMultiplier, computeRates, filterProtectedPayrollTargets, buildPayrollPreloadMap };
+module.exports = { PAYROLL_STATUSES, CLOSED_PAYROLL_STATUSES, PAYROLL_TRANSITIONS, isClosedPayrollStatus, PayrollPolicyError, validatePayrollStatusValue, planPayrollEdit, lockPayrollStatus, assertPayrollOpen, replyPayrollPolicyError, safeMultiplier, calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, computeDeductionsBreakdown, withPayrollKeyLock, calculatePayrollImpl, syncStoredPayroll, payrollSnapshotDiffers, PAYROLL_LOCK_ACQUIRE_TIMEOUT_MS, PAYROLL_LOCK_TIMEOUT_CODE, selectOvertimeMultiplier, computeRates, filterProtectedPayrollTargets, buildPayrollPreloadMap, loadMonthHolidays, countDerivedAbsences };

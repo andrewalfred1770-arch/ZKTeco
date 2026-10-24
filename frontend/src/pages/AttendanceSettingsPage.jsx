@@ -576,7 +576,7 @@ export default function AttendanceSettingsPage() {
           </button>
           <button onClick={saveAll} disabled={saving || !dirty || hasErrors}
             style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 20px', borderRadius: 7, fontSize: 13.5, fontWeight: 700, cursor: (dirty && !hasErrors) ? 'pointer' : 'not-allowed', border: 'none',
-              background: (dirty && !hasErrors) ? 'var(--accent)' : 'var(--surface-2)', color: (dirty && !hasErrors) ? '#fff' : 'var(--text-3)' }}>
+              background: (dirty && !hasErrors) ? 'var(--accent-2)' : 'var(--surface-2)', color: (dirty && !hasErrors) ? 'var(--btn-primary-text)' : 'var(--text-3)' }}>
             {saving ? <Loader2 style={{ width: 15, height: 15, animation: 'spin 1s linear infinite' }} />
                     : <Save style={{ width: 15, height: 15 }} />}
             {saving ? 'جاري الحفظ...' : hasErrors ? 'صحّح الأخطاء أولاً' : dirty ? 'حفظ التغييرات' : 'لا توجد تغييرات'}
@@ -637,9 +637,9 @@ export default function AttendanceSettingsPage() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(480px, 100%), 1fr))', gap: 16, alignItems: 'start' }}>
 
         {/* ── 1. Shift Timing — ONLY shift boundaries ────────────────── */}
-        <Card title="توقيت الدوام" icon={Clock} accent="#1d4ed8" subtitle="الوقت الرسمي لبداية ونهاية الوردية"
+        <Card title="توقيت الدوام" icon={Clock} accent="#1E7A34" subtitle="الوقت الرسمي لبداية ونهاية الوردية"
           badge={ruleMap.work_start?.isActive ? 'القواعد المحفوظة' : 'القواعد الافتراضية'}
-          badgeColor={ruleMap.work_start?.isActive ? '#15803d' : '#1d4ed8'}>
+          badgeColor={ruleMap.work_start?.isActive ? '#15803d' : '#6B7280'}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 16px' }}>
             <Field label="بداية الدوام" ruleKey="work_start" ruleMap={ruleMap}>
               <input type="time" value={vals.work_start} onChange={e => set('work_start', e.target.value)} className="input text-sm py-1.5" dir="ltr" />
@@ -660,7 +660,7 @@ export default function AttendanceSettingsPage() {
         <Card title="قواعد التأخير" icon={Clock} accent="#b45309"
           subtitle="جدول ساعات الخصم حسب وقت الحضور — 1 ساعة خصم = ساعة راتب"
           badge={ruleMap.late_rules?.isActive ? '✓ القواعد المحفوظة' : '⚡ القواعد الافتراضية'}
-          badgeColor={ruleMap.late_rules?.isActive ? '#15803d' : '#1d4ed8'}>
+          badgeColor={ruleMap.late_rules?.isActive ? '#15803d' : '#6B7280'}>
           <div style={{ marginBottom: 12 }}>
             <Field label="دقائق السماح للتأخير" horizontal ruleKey="late_grace" ruleMap={ruleMap}>
               <NumInput value={vals.late_grace} onChange={v => set('late_grace', v)} min={0} max={480} step="any" width={80} />
@@ -683,7 +683,7 @@ export default function AttendanceSettingsPage() {
         <Card title="قواعد الانصراف المبكر" icon={Clock} accent="#7c3aed"
           subtitle="جدول ساعات الخصم حسب وقت الانصراف — 1 ساعة خصم = ساعة راتب"
           badge={ruleMap.early_rules?.isActive ? '✓ القواعد المحفوظة' : '⚡ القواعد الافتراضية'}
-          badgeColor={ruleMap.early_rules?.isActive ? '#15803d' : '#1d4ed8'}>
+          badgeColor={ruleMap.early_rules?.isActive ? '#15803d' : '#6B7280'}>
           <div style={{ marginBottom: 12 }}>
             <Field label="دقائق السماح للانصراف المبكر" horizontal ruleKey="early_leave_grace" ruleMap={ruleMap}>
               <NumInput value={vals.early_leave_grace} onChange={v => set('early_leave_grace', v)} min={0} max={480} step="any" width={80} />
@@ -747,7 +747,7 @@ export default function AttendanceSettingsPage() {
               {[
                 { label: 'غياب بإذن', days: '1 يوم', color: '#15803d', bg: 'rgba(22,163,74,0.08)' },
                 { label: 'غياب بدون إذن', days: '2 أيام', color: '#dc2626', bg: 'rgba(220,38,38,0.08)' },
-                { label: 'مخصص', days: 'يحدده المستخدم', color: '#1d4ed8', bg: 'rgba(29,78,216,0.08)' },
+                { label: 'مخصص', days: 'يحدده المستخدم', color: '#1E7A34', bg: 'rgba(79,191,107,0.08)' },
               ].map(t => (
                 <div key={t.label} style={{ padding: '10px 12px', borderRadius: 8, background: t.bg, border: `1px solid ${t.color}25`, textAlign: 'center' }}>
                   <p style={{ fontSize: 12, fontWeight: 700, color: t.color, margin: 0 }}>{t.label}</p>

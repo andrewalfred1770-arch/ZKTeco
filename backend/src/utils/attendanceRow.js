@@ -25,14 +25,16 @@ const { effectiveAbsencePenaltyDays, effectiveAbsenceType } = require('./absence
 // @param {object} employee - Employee row with department/branch/shift included
 // @param {object|null} merged - mergeEffectivePenalty(applyApprovedAdjustment(rec, adj)) result, or null when no AttendanceDaily row exists yet for this employee/date
 // @param {string} dateStr - "YYYY-MM-DD" for the row's date; used only when merged is null (no rec.date to read)
+// @param {object|null} [missingDay] - utils/dayClassification.classifyMissingDay() result for a day with NO stored row. When given (and merged is null) the row
+//   carries the engine's own verdict for that day (pre-hire / weekly off / holiday are NOT absences). When omitted the legacy answer (absent) is kept.
 // @param {Set<number>} [verifiedManualIds] - from resolveVerifiedManualEditIds()
 // @param {object|null} [adj] - the approved AttendanceAdjustment for this record, if any
-function buildAttendanceRow({ employee, merged, dateStr, verifiedManualIds, adj }) {
-  const isWeekendOrHoliday = !!(merged?.isWeekend || merged?.isHoliday);
+function buildAttendanceRow({ employee, merged, dateStr, verifiedManualIds, adj, missingDay = null }) {
+  const isWeekendOrHoliday = merged ? !!(merged.isWeekend || merged.isHoliday) : !!(missingDay && (missingDay.isWeekend || missingDay.isHoliday));
   const manualEdit = merged
     ? hasVerifiedManualEdit(merged, verifiedManualIds || new Set(), !!adj)
     : false;
-  const rowIsAbsent = isWeekendOrHoliday ? false : (merged ? (merged.isAbsent ?? (merged.status === 'absent')) : true);
+  const rowIsAbsent = isWeekendOrHoliday ? false : (merged ? (merged.isAbsent ?? (merged.status === 'absent')) : (missingDay ? missingDay.isAbsent : true));
 
   return {
     id: merged?.id ?? null,
@@ -72,15 +74,17 @@ function buildAttendanceRow({ employee, merged, dateStr, verifiedManualIds, adj 
     manualPenaltyReason: merged?.manualPenaltyReason ?? null,
     manualPenaltyByName: merged?.manualPenaltyByName ?? null,
     manualPenaltyAt: merged?.manualPenaltyAt ?? null,
-    status: merged?.status || 'absent',
+    status: merged?.status || (missingDay && missingDay.status) || 'absent',
     isAbsent: rowIsAbsent,
-    isWeekend: merged?.isWeekend ?? false,
-    isHoliday: merged?.isHoliday ?? false,
+    isWeekend: merged ? (merged.isWeekend ?? false) : !!(missingDay && missingDay.isWeekend),
+    isHoliday: merged ? (merged.isHoliday ?? false) : !!(missingDay && missingDay.isHoliday),
     manualEdit,
     // D5: an absent day nobody classified is an automatic "with permission" absence of exactly 1 day —
     // show what payroll will deduct (utils/absencePolicy.js), not a blank that payroll then prices differently.
-    absenceType: isWeekendOrHoliday ? null : (merged && rowIsAbsent ? effectiveAbsenceType(merged) : (merged?.absenceType || null)),
-    penaltyDays: isWeekendOrHoliday ? null : (merged && rowIsAbsent ? effectiveAbsencePenaltyDays(merged) : (merged?.penaltyDays ?? null)),
+    // A day with NO stored row that is absent gets the same automatic D5 answer as a stored absent row (payroll deducts exactly that once the
+    // engine creates the row) — it used to show null/0 here, so Movement's penalty-day total disagreed with the payroll it feeds.
+    absenceType: isWeekendOrHoliday ? null : (rowIsAbsent ? effectiveAbsenceType(merged || {}) : (merged?.absenceType || null)),
+    penaltyDays: isWeekendOrHoliday ? null : (rowIsAbsent ? effectiveAbsencePenaltyDays(merged || {}) : (merged?.penaltyDays ?? null)),
     absenceReason: isWeekendOrHoliday ? null : (merged?.absenceReason || null),
     absenceSetBy: merged?.absenceSetBy || null,
     absenceSetAt: merged?.absenceSetAt ?? null,

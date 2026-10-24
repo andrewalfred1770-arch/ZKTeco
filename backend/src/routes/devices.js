@@ -28,6 +28,7 @@ const { getPrisma } = require('../utils/prisma');
 const { pullLogs, pullAllDevices, testConnection, pingDevice, getDeviceUsers } = require('../services/zktecoService');
 const { relinkAttendanceLogs, getRelinkDiagnostics } = require('../services/relinkService');
 const realtimeListener = require('../services/realtimeListenerService');
+const { deviceOpsGuard } = require('../middleware/deviceOpsGuard');   // 409 on a SKIP_SCHEDULER (LAN) instance: it must never open a device session
 const deviceUserDiscovery = require('../services/deviceUserDiscoveryService');
 const { authenticate, authorize } = require('../middleware/auth');
 const { recordDeviceAudit, actorFromReq, pickDeviceFields, ACTION, RESULT } = require('../utils/deviceAudit');
@@ -182,7 +183,7 @@ router.get('/new-users', authorize('admin', 'hr'), async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 // Starts (or joins) the single non-overlapping scan and answers with the fresh view. Reads only.
-router.post('/new-users/scan', authorize('admin', 'hr'), async (req, res) => {
+router.post('/new-users/scan', authorize('admin', 'hr'), deviceOpsGuard, async (req, res) => {
   try {
     res.json(await deviceUserDiscovery.scanAll(req.io, { force: true }));   // explicit operator action: bypasses the retry back-off
   } catch (err) { sendError(res, err); }
@@ -300,7 +301,7 @@ async function findDuplicateEndpoint(ipAddress, port, excludeId = null) {
 }
 
 // ── Create device ─────────────────────────────────────────────────────────────
-router.post('/', authorize('admin'), async (req, res) => {
+router.post('/', authorize('admin'), deviceOpsGuard, async (req, res) => {
   try {
     const { name, ipAddress, port, branchId, enabled, deviceNumber, syncInterval, autoSync } = req.body;
     const portNum = parseInt(port) || 4370;
@@ -353,7 +354,7 @@ router.post('/', authorize('admin'), async (req, res) => {
 });
 
 // ── Update device ─────────────────────────────────────────────────────────────
-router.put('/:id', authorize('admin'), async (req, res) => {
+router.put('/:id', authorize('admin'), deviceOpsGuard, async (req, res) => {
   try {
     const { name, ipAddress, port, branchId, enabled, deviceNumber, syncInterval, autoSync } = req.body;
     const id = parseInt(req.params.id);
@@ -417,7 +418,7 @@ router.put('/:id', authorize('admin'), async (req, res) => {
 // foreign key. If any raw logs exist, the hard delete throws (FK constraint), so
 // we fall back to a soft delete (isArchived = true) which hides the device from
 // every list/stat query while preserving its biometric history.
-router.delete('/:id', authorize('admin'), async (req, res) => {
+router.delete('/:id', authorize('admin'), deviceOpsGuard, async (req, res) => {
   const id = parseInt(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ error: 'معرف الجهاز غير صالح' });
 
@@ -499,7 +500,7 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
 });
 
 // ── Manual sync ───────────────────────────────────────────────────────────────
-router.post('/:id/sync', authorize('admin', 'hr'), async (req, res) => {
+router.post('/:id/sync', authorize('admin', 'hr'), deviceOpsGuard, async (req, res) => {
   try {
     const deviceId = parseInt(req.params.id);
     const result   = await pullLogs(deviceId, req.io, 'manual', actorFromReq(req));
@@ -510,7 +511,7 @@ router.post('/:id/sync', authorize('admin', 'hr'), async (req, res) => {
 });
 
 // ── Sync all enabled devices ──────────────────────────────────────────────────
-router.post('/sync-all', authorize('admin', 'hr'), async (req, res) => {
+router.post('/sync-all', authorize('admin', 'hr'), deviceOpsGuard, async (req, res) => {
   try {
     const results = await pullAllDevices(req.io, actorFromReq(req));
     const total   = results.reduce((s, r) => s + (r.count || 0), 0);
@@ -521,7 +522,7 @@ router.post('/sync-all', authorize('admin', 'hr'), async (req, res) => {
 });
 
 // ── Test connection ───────────────────────────────────────────────────────────
-router.post('/test-connection', authorize('admin'), async (req, res) => {
+router.post('/test-connection', authorize('admin'), deviceOpsGuard, async (req, res) => {
   try {
     const { ipAddress, port } = req.body;
     const result = await testConnection(ipAddress, port);
@@ -539,7 +540,7 @@ router.post('/test-connection', authorize('admin'), async (req, res) => {
 });
 
 // ── Live ping ─────────────────────────────────────────────────────────────────
-router.post('/:id/ping', authorize('admin', 'hr'), async (req, res) => {
+router.post('/:id/ping', authorize('admin', 'hr'), deviceOpsGuard, async (req, res) => {
   try {
     const result = await pingDevice(parseInt(req.params.id));
     res.json(result);
@@ -549,7 +550,7 @@ router.post('/:id/ping', authorize('admin', 'hr'), async (req, res) => {
 });
 
 // ── Restart realtime listener ─────────────────────────────────────────────────
-router.post('/:id/realtime/restart', authorize('admin', 'hr'), async (req, res) => {
+router.post('/:id/realtime/restart', authorize('admin', 'hr'), deviceOpsGuard, async (req, res) => {
   try {
     const deviceId = parseInt(req.params.id);
     realtimeListener.restartListener(deviceId, req.io);
@@ -568,7 +569,8 @@ router.post('/:id/realtime/restart', authorize('admin', 'hr'), async (req, res) 
 // Re-links ALL attendance_logs with employeeId = NULL to any Employee sharing
 // the same zkUserId, then regenerates attendance_daily + recalculates payroll
 // for the affected employees/date ranges. No new sync required.
-router.post('/relink', authorize('admin', 'hr'), async (req, res) => {
+// DB-only (no device call), but it rewrites attendance/payroll data: a SKIP_SCHEDULER (LAN) instance answers 409 (deviceOpsGuard).
+router.post('/relink', authorize('admin', 'hr'), deviceOpsGuard, async (req, res) => {
   try {
     const result = await relinkAttendanceLogs({ io: req.io, reason: 'manual-relink' });
     res.json(result);
@@ -578,7 +580,7 @@ router.post('/relink', authorize('admin', 'hr'), async (req, res) => {
 });
 
 // ── Device users ──────────────────────────────────────────────────────────────
-router.get('/:id/users', authorize('admin'), async (req, res) => {
+router.get('/:id/users', authorize('admin'), deviceOpsGuard, async (req, res) => {
   try {
     const users = await getDeviceUsers(parseInt(req.params.id));
     res.json(users);

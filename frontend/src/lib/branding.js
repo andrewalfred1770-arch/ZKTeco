@@ -16,20 +16,26 @@ export const BRAND = {
   product:     'PETSHROW ERP',
   productAr:   'PETSHROW — نظام تخطيط موارد المؤسسات',
 
+  // CheckIn product identity — ON-SCREEN UI only (sidebar, startup screen, launcher, login). `name`, `company`, `product`, `FILE_PREFIX`
+  // above/below are intentionally unchanged: they feed company defaults, printed documents, Excel properties and export file names.
+  appName:       'CheckIn',
+  appNameAr:     'نظام إدارة الحضور والانصراف والموارد البشرية',
+  appDescriptor: 'ATTENDANCE & WORKFORCE MANAGEMENT',
+
   // Taglines
   tagline:     'إدارة الموارد البشرية والرواتب',
   taglineEn:   'Enterprise Resource Planning',
   module:      'الحضور والرواتب',
 
   // Meta
-  version:     '10.10.10',
-  buildMarker: 'BUILD: 2026-10-14-release-10.10.10',
+  version:     '1.1.5',
+  buildMarker: 'BUILD: 2026-10-22-checkin',
   copyright:   `© ${new Date().getFullYear()} PETSHROW ERP`,
 
   // Brand colors (kept in sync with the enterprise palette in index.css)
-  primary:     '#2563eb',
-  primaryDark: '#1d4ed8',
-  ink:         '#0b1a35',
+  primary:     '#1E7A34',
+  primaryDark: '#17632A',
+  ink:         '#20282B',
 };
 
 /** Filename-safe brand prefix for exported files (CSV/PDF/Excel). */
@@ -60,6 +66,9 @@ export function useCompanyBrand() {
       company:     nameAr,
       product:     BRAND.product,
       productAr:   BRAND.productAr,
+      appName:       BRAND.appName,
+      appNameAr:     BRAND.appNameAr,
+      appDescriptor: BRAND.appDescriptor,
       description: s.company_description || BRAND.tagline,
       tagline:     s.company_description || BRAND.tagline,
       taglineEn:   BRAND.taglineEn,

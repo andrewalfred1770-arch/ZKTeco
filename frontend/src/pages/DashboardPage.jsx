@@ -9,6 +9,7 @@ import api, { LONG_OP } from '../lib/api';
 import toast from 'react-hot-toast';
 import { westernDigits, fmtTime, fmtPenaltyUnits, fmtOvertimeUnits, STATUS_LABELS } from '../lib/formatters';
 import { todayStr } from '../lib/businessDate';
+import { buildSyncToast } from '../lib/syncResultSummary';
 import { attendanceRowClass } from '../lib/gridDefaults';
 import { useTheme } from '../contexts/ThemeContext';
 import { useRulesLiveSync } from '../hooks/useRulesLiveSync';
@@ -190,8 +191,15 @@ export default function DashboardPage() {
   const syncAll = async () => {
     setSyncing(true);
     try {
-      await Promise.all(devices.filter(d => d.enabled).map(d => api.post(`/devices/${d.id}/sync`, null, LONG_OP).catch(() => {})));
-      toast.success('تمت مزامنة الأجهزة'); load();
+      // Each device's real answer is kept (a skipped / busy or failed device is NOT a success) and summarized once.
+      const results = await Promise.all(devices.filter(d => d.enabled).map(d => api.post(`/devices/${d.id}/sync`, null, LONG_OP)
+        .then(r => ({ deviceId: d.id, name: d.name, ...(r.data || {}) }))
+        .catch(err => ({ deviceId: d.id, name: d.name, count: 0, error: err?.response?.data?.error || err?.message || 'فشل الاتصال بالخادم' }))));
+      const t = buildSyncToast(results);
+      if (t.level === 'success') toast.success(t.message);
+      else if (t.level === 'error') toast.error(t.message, { duration: 8000 });
+      else toast(t.message, { icon: '⚠️', duration: 7000 });
+      load();
     } catch { toast.error('فشل المزامنة'); }
     finally { setSyncing(false); }
   };
@@ -277,19 +285,19 @@ export default function DashboardPage() {
   // keeps the new token-driven palette introduced by the design system pass.
   // Order fixed per spec Row 1: Attendance % → Overtime → Late → Absent → Present → Total.
   const metrics = deptFilter ? [
-    { label:'نسبة الحضور', icon:Percent,    value:`${W(filteredRoster.length ? Math.round(deptPresent/filteredRoster.length*100) : 0)}%`, accent: isLight ? '#0ea5e9' : 'var(--c-net)', color: isLight ? '#0ea5e9' : 'var(--c-net)' },
-    { label:'الإضافي',     icon:Zap,        value:deptOT,                      accent: isLight ? '#8b5cf6' : 'var(--status-overtime)', color: isLight ? '#8b5cf6' : 'var(--status-overtime)' },
-    { label:'المتأخرون',   icon:Clock,      value:deptLate,                    accent: isLight ? '#f59e0b' : 'var(--status-late)',     color: isLight ? '#f59e0b' : 'var(--status-late)' },
-    { label:'الغياب',      icon:UserX,      value:deptAbsent,                  accent: isLight ? '#ef4444' : 'var(--status-absent)',   color: isLight ? '#ef4444' : 'var(--status-absent)' },
-    { label:'حضور اليوم', icon:UserCheck,  value:deptPresent,                 accent: isLight ? '#10b981' : 'var(--status-present)',  color: isLight ? '#10b981' : 'var(--status-present)' },
-    { label:'الموظفون',    icon:Users,      value:filteredRoster.length,       accent: isLight ? '#3b82f6' : 'var(--accent)',          color: isLight ? 'var(--text)' : 'var(--text)' },
+    { label:'نسبة الحضور', icon:Percent,    value:`${W(filteredRoster.length ? Math.round(deptPresent/filteredRoster.length*100) : 0)}%`, accent: 'var(--accent)', color: 'var(--accent)' },
+    { label:'الإضافي',     icon:Zap,        value:deptOT,                      accent: 'var(--status-overtime)', color: 'var(--status-overtime)' },
+    { label:'المتأخرون',   icon:Clock,      value:deptLate,                    accent: 'var(--status-late)',     color: 'var(--status-late)' },
+    { label:'الغياب',      icon:UserX,      value:deptAbsent,                  accent: 'var(--status-absent)',   color: 'var(--status-absent)' },
+    { label:'حضور اليوم', icon:UserCheck,  value:deptPresent,                 accent: 'var(--status-present)',  color: 'var(--status-present)' },
+    { label:'الموظفون',    icon:Users,      value:filteredRoster.length,       accent: 'var(--c-net)',          color: 'var(--text)' },
   ] : [
-    { label:'نسبة الحضور',      icon:Percent,   value:`${W(rate)}%`,   accent: isLight ? '#0ea5e9' : 'var(--c-net)',           color: isLight ? '#0ea5e9' : 'var(--c-net)' },
-    { label:'الإضافي',          icon:Zap,       value:data?.overtime,  accent: isLight ? '#8b5cf6' : 'var(--status-overtime)', color: isLight ? '#8b5cf6' : 'var(--status-overtime)', sub:'موظف' },
-    { label:'المتأخرون',        icon:Clock,     value:data?.late,      accent: isLight ? '#f59e0b' : 'var(--status-late)',     color: isLight ? '#f59e0b' : 'var(--status-late)' },
-    { label:'الغياب',          icon:UserX,     value:data?.absent,    accent: isLight ? '#ef4444' : 'var(--status-absent)',   color: isLight ? '#ef4444' : 'var(--status-absent)' },
-    { label:'حضور اليوم',      icon:UserCheck, value:present,         accent: isLight ? '#10b981' : 'var(--status-present)',  color: isLight ? '#10b981' : 'var(--status-present)', sub:`${W(data?.onTime ?? 0)} في الوقت` },
-    { label:'إجمالي الموظفين', icon:Users,     value:total,          accent: isLight ? '#3b82f6' : 'var(--accent)',          color: isLight ? 'var(--text)' : 'var(--text)' },
+    { label:'نسبة الحضور',      icon:Percent,   value:`${W(rate)}%`,   accent: 'var(--accent)',           color: 'var(--accent)' },
+    { label:'الإضافي',          icon:Zap,       value:data?.overtime,  accent: 'var(--status-overtime)', color: 'var(--status-overtime)', sub:'موظف' },
+    { label:'المتأخرون',        icon:Clock,     value:data?.late,      accent: 'var(--status-late)',     color: 'var(--status-late)' },
+    { label:'الغياب',          icon:UserX,     value:data?.absent,    accent: 'var(--status-absent)',   color: 'var(--status-absent)' },
+    { label:'حضور اليوم',      icon:UserCheck, value:present,         accent: 'var(--status-present)',  color: 'var(--status-present)', sub:`${W(data?.onTime ?? 0)} في الوقت` },
+    { label:'إجمالي الموظفين', icon:Users,     value:total,          accent: 'var(--c-net)',          color: 'var(--text)' },
   ];
 
   const weeklyData = useMemo(
@@ -376,17 +384,17 @@ export default function DashboardPage() {
         </Button>
         <Button variant="ghost" onClick={() => openPrint('attendance_dashboard')}
           icon={<Printer className="w-4 h-4" />}
-          style={{ ...PRINT_BTN_SIZE, background: isLight ? 'rgba(16,185,129,0.12)' : 'var(--status-present-bg)', color: isLight ? '#10b981' : 'var(--status-present)', border: '1px solid ' + (isLight ? 'rgba(16,185,129,0.3)' : 'color-mix(in srgb, var(--status-present) 30%, transparent)') }}>
+          style={{ ...PRINT_BTN_SIZE, background: isLight ? 'rgba(16,185,129,0.12)' : 'var(--status-present-bg)', color: 'var(--status-present)', border: '1px solid ' + (isLight ? 'rgba(16,185,129,0.3)' : 'color-mix(in srgb, var(--status-present) 30%, transparent)') }}>
           طباعة الحضور
         </Button>
         <Button variant="ghost" onClick={() => openPrint('attendance_daily_absent')}
           icon={<UserX className="w-4 h-4" />}
-          style={{ ...PRINT_BTN_SIZE, background: isLight ? 'rgba(239,68,68,0.12)' : 'var(--status-absent-bg)', color: isLight ? '#ef4444' : 'var(--status-absent)', border: '1px solid ' + (isLight ? 'rgba(239,68,68,0.3)' : 'color-mix(in srgb, var(--status-absent) 30%, transparent)') }}>
+          style={{ ...PRINT_BTN_SIZE, background: isLight ? 'rgba(239,68,68,0.12)' : 'var(--status-absent-bg)', color: 'var(--status-absent)', border: '1px solid ' + (isLight ? 'rgba(239,68,68,0.3)' : 'color-mix(in srgb, var(--status-absent) 30%, transparent)') }}>
           طباعة الغياب
         </Button>
         <Button variant="ghost" onClick={() => openPrint('attendance_daily_late')}
           icon={<Clock className="w-4 h-4" />}
-          style={{ ...PRINT_BTN_SIZE, background: isLight ? 'rgba(245,158,11,0.12)' : 'var(--status-late-bg)', color: isLight ? '#f59e0b' : 'var(--status-late)', border: '1px solid ' + (isLight ? 'rgba(245,158,11,0.3)' : 'color-mix(in srgb, var(--status-late) 30%, transparent)') }}>
+          style={{ ...PRINT_BTN_SIZE, background: isLight ? 'rgba(245,158,11,0.12)' : 'var(--status-late-bg)', color: 'var(--status-late)', border: '1px solid ' + (isLight ? 'rgba(245,158,11,0.3)' : 'color-mix(in srgb, var(--status-late) 30%, transparent)') }}>
           طباعة المتأخرين
         </Button>
 
@@ -458,7 +466,7 @@ export default function DashboardPage() {
                     contentStyle={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:'var(--radius-sm)', fontSize:13, direction:'rtl' }}
                     labelStyle={{ color:'var(--text-2)' }}
                     formatter={(v, n) => [W(v), n === 'present' ? 'حاضر' : 'غائب']} />
-                  <Bar dataKey="present" name="present" fill={isLight ? '#3b82f6' : 'var(--accent)'} radius={[3,3,0,0]} isAnimationActive={false} />
+                  <Bar dataKey="present" name="present" fill="var(--status-present)" radius={[3,3,0,0]} isAnimationActive={false} />
                   <Bar dataKey="absent"  name="absent"  fill={isLight ? '#e11d48' : 'var(--status-absent)'} radius={[3,3,0,0]} isAnimationActive={false} />
                 </BarChart>
               </ResponsiveContainer>

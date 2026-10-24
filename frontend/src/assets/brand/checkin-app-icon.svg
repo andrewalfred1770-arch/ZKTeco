@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" role="img" aria-label="CheckIn">
+  <title>CheckIn application icon</title>
+  <!-- Application icon master (square, rounded). Simplified: solid navy tile + the symbol, no gradients, legible at 16 px. -->
+  <rect width="256" height="256" rx="56" fill="#0B1220"/>
+  <g transform="translate(52 48) scale(2.5)">
+    <path d="M44.62 14A22 22 0 1 0 44.62 50" stroke="#2563EB" stroke-width="7.5" stroke-linecap="round"/>
+    <path d="M21.5 33.5L29 41L51 22" stroke="#38BDF8" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

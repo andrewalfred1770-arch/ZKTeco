@@ -3,14 +3,17 @@ import { existsSync, writeFileSync, unlinkSync, mkdirSync, readFileSync } from '
 import os from 'os';
 import { join } from 'path';
 import { io as socketIOClient } from 'socket.io-client';
-import { IS_DEV, BUILD_MARKER, REQUIRED_API_VERSION } from './constants.js';
+import { IS_DEV, BUILD_MARKER, REQUIRED_API_VERSION, BACKEND_PORT } from './constants.js';
+import { performSetupRequest } from './setupBridge.js';
 import { state } from './state.js';
 import { fetchHealth, requestBackendShutdown, startBackend } from './backend.js';
+import { probeSocketHandshake } from './healthProbe.js';
 import { readConnectionSettings, writeConnectionSettings, getEffectiveBackendBaseUrl, isSelfPointingServerUrl } from './connectionSettings.js';
 import { isStandalone, isManager } from './edition.js';
 import { createBackup, listBackups, restoreBackup } from './standaloneBackup.js';
 import { getConnectionEnv } from './mysqlManager.js';
 import { getPaths } from './paths.js';
+import { getLanInfo } from './lanAddress.js';
 import { secureHandle, secureOn, asHtml, asBool, asCopies, asString, asConnectionPatch, isHttpUrl, installSecurityGuards } from './security.js';
 
 // ─── IPC handlers ─────────────────────────────────────────────────────────────
@@ -20,6 +23,15 @@ secureOn('app:maximize', () =>
 );
 secureOn('app:close', () => state.mainWindow?.hide());
 secureOn('app:quit',  () => { app.isQuitting = true; app.quit(); });
+// ─── Database Setup Wizard bridge (F1) ────────────────────────────────────────
+// The renderer never talks to /api/setup/* itself and never sees the per-launch secret: it asks main (trusted sender only), and main
+// signs the request and sends it to the backend THIS app spawned (electron/setupBridge.js — allow-listed operations and fields, handshake
+// state checks, fixed error messages). Refused when there is no local backend, or only an adopted one that holds no secret.
+secureHandle('setup:request', (_e, arg) => performSetupRequest(arg, {
+  getBackend: () => ({ proc: state.backendProcess, adopted: state.backendAdopted }),
+  port: BACKEND_PORT,
+}));
+
 secureHandle('app:version', () => app.getVersion());
 secureHandle('app:is-dev',  () => IS_DEV);
 secureHandle('app:build-marker', () => BUILD_MARKER);
@@ -45,6 +57,18 @@ secureHandle('connection:set-settings', (_e, rawPatch) => {
     throw new Error('SELF_POINTING_SERVER_URL');
   }
   return writeConnectionSettings(patch);
+});
+
+// Read-only: the address LAN clients would use to reach this server PC (electron/lanAddress.js). Recomputed on every call, nothing is
+// persisted or changed; only CORS_ORIGINS / TRUST_PROXY are looked at in the .env and nothing from it other than the derived URLs is returned.
+secureHandle('connection:get-lan-info', async () => {
+  if (isStandalone || isManager || readConnectionSettings().mode !== 'local') return { applicable: false };
+  let envText = null;
+  try {
+    const envFile = getPaths().envFile;
+    if (envFile && existsSync(envFile)) envText = readFileSync(envFile, 'utf8');
+  } catch { /* unreadable .env: the proxy port is then reported as not configured */ }
+  return getLanInfo({ nets: os.networkInterfaces(), envText, backendPort: BACKEND_PORT });
 });
 
 // Synchronous by design: preload.cjs reads this once, before the page loads,
@@ -230,7 +254,9 @@ function classifySocketError(err) {
 // succeeds fine. reconnection stays false — this is a single bounded probe
 // for a UI button, not a long-lived connection; the app's real socket keeps
 // its own infinite-retry policy untouched.
-function testSocketReachable(baseUrl, timeoutMs = 8000) {
+function testSocketReachable(baseUrl, timeoutMs = 8000, health = null) {
+  // https: socket.io-client (Node) would verify with Node's CA bundle instead of the Windows store - use the verified Chromium transport
+  if (/^https:/i.test(baseUrl)) return probeSocketHandshake(baseUrl, timeoutMs, health);
   return new Promise((resolve) => {
     let settled = false;
     let sock;
@@ -263,7 +289,7 @@ secureHandle('connection:test', async (_e, arg) => {
   }
   const baseUrl = getEffectiveBackendBaseUrl({ mode: mode || 'local', serverUrl: serverUrl || '' });
   const health = await fetchHealth(baseUrl, 4000);
-  const socket = health.ok ? await testSocketReachable(baseUrl) : { status: 'unreachable', detail: null };
+  const socket = health.ok ? await testSocketReachable(baseUrl, 8000, health) : { status: 'unreachable', detail: null };
   const remoteApiVersion = health.body?.apiVersion ?? null;
   return {
     baseUrl,

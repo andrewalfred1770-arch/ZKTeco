@@ -177,7 +177,7 @@ export default function ManualEditDrawer({ record, onClose, onSaved }) {
         <>
           <button onClick={handleSave} disabled={saving}
             style={{ display:'flex', alignItems:'center', gap:7, padding:'10px 22px', borderRadius:9,
-              background:'var(--accent)', color:'#fff', border:'none', fontWeight:700, fontSize:13.5,
+              background:'var(--accent-2)', color:'var(--btn-primary-text)', border:'none', fontWeight:700, fontSize:13.5,
               cursor: saving ? 'wait' : 'pointer', opacity: saving ? .7 : 1 }}>
             {saving ? <Loader2 style={{ width:15, height:15, animation:'spin 1s linear infinite' }} />
                     : <Save style={{ width:15, height:15 }} />}

@@ -22,11 +22,16 @@ contextBridge.exposeInMainWorld('electron', {
   version:     () => ipcRenderer.invoke('app:version'),
   isDev:       () => ipcRenderer.invoke('app:is-dev'),
   buildMarker: () => ipcRenderer.invoke('app:build-marker'),
+  // Database Setup Wizard — main signs and forwards the request; the per-launch secret never reaches the renderer.
+  setup: {
+    request: (op, body) => ipcRenderer.invoke('setup:request', { op, body }),
+  },
   // Connection Layer (EP-003) — Connection Settings page IPC bridge.
   connection: {
     getSettings: () => ipcRenderer.invoke('connection:get-settings'),
     setSettings: (patch) => ipcRenderer.invoke('connection:set-settings', patch),
     test:        (candidate) => ipcRenderer.invoke('connection:test', candidate),
+    getLanInfo:  () => ipcRenderer.invoke('connection:get-lan-info'),
   },
   // Session persistence (EP-011 Manager Edition auth) — encrypted JWT storage.
   session: {

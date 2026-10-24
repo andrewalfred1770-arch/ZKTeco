@@ -7,8 +7,9 @@ import {
   DollarSign, Settings, FileText, BookOpen, Building2,
   ChevronRight, PanelLeftClose, ShieldCheck, UserSquare2,
   Sun, Moon, Monitor as MonitorIcon, Fingerprint, Trash2, SlidersHorizontal,
-  PlugZap, Menu, X,
+  PlugZap, Menu, X, Compass,
 } from 'lucide-react';
+import { CheckInMark } from './brand/CheckInLogo';
 import { useTheme } from '../contexts/ThemeContext';
 import { useCompanyBrand } from '../lib/branding';
 import { isManager } from '../lib/edition';
@@ -23,6 +24,7 @@ import { isManager } from '../lib/edition';
 const NAV = [
   { id: 'overview', label: 'عام', items: [
     { to: '/dashboard', icon: LayoutDashboard, label: 'الرئيسية' },
+    { to: '/launcher',  icon: Compass,          label: 'المشغّل' },
   ]},
   { id: 'attendance', label: 'الحضور', items: [
     { to: '/attendance/daily',       icon: CalendarDays,  label: 'الحضور اليومي'  },
@@ -59,15 +61,15 @@ function ThemeSwitcher() {
     { id: 'system', icon: MonitorIcon, label: 'تلقائي' },
   ];
   const containerStyle = isLight
-    ? { background: '#f1f5f9', border: '1px solid #b8c6db', borderRadius: 8 }
+    ? { background: 'var(--surface-2)', border: '1px solid var(--input-b)', borderRadius: 8 }
     : { background: 'rgba(255,255,255,0.10)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 8 };
   return (
     <div className="flex items-center rounded-lg overflow-hidden gap-px p-0.5" style={containerStyle}>
       {options.map(({ id, icon: Icon, label }) => {
         const active = theme === id;
         const btnColor = active
-          ? '#fff'
-          : isLight ? '#1e3a5f' : 'rgba(255,255,255,0.65)';
+          ? 'var(--btn-primary-text)'
+          : isLight ? 'var(--text-2)' : 'rgba(255,255,255,0.65)';
         return (
           <button key={id} onClick={() => setTheme(id)} title={label}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md font-semibold transition-colors"
@@ -84,70 +86,44 @@ function ThemeSwitcher() {
 // ─── Sidebar nav link ────────────────────────────────────────────────────────
 function SideLink({ item, collapsed }) {
   const [hovered, setHovered] = useState(false);
-  const { isLight } = useTheme();
   const location = useLocation();
   return (
     <NavLink to={item.to} title={collapsed ? item.label : undefined}
       onClick={(e) => { if (location.pathname !== item.to && !confirmLeaveIfUnsaved()) e.preventDefault(); }}
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
-      style={({ isActive }) => (isLight ? {
-        /* ── Light theme: restored to the original PETSHROW sidebar identity
-           (always-dark-navy chrome, blue glow accent) — independent of the
-           tokenized dark-theme styling below. ── */
+      style={({ isActive }) => ({
         position: 'relative', display: 'flex', alignItems: 'center', gap: 10,
-        padding: collapsed ? '8px 0' : '8px 12px', borderRadius: 7, marginBottom: 2,
-        fontWeight: isActive ? 800 : 500, fontSize: 13.5,
-        transition: 'background 0.15s, color 0.15s',
-        background: isActive ? 'rgba(59,130,246,0.28)' : hovered ? 'rgba(255,255,255,0.07)' : 'transparent',
-        color: isActive ? '#dbeafe' : 'rgba(226,232,240,0.72)',
-        justifyContent: collapsed ? 'center' : 'flex-start',
-        textDecoration: 'none',
-        letterSpacing: isActive ? '-0.01em' : 'normal',
-      } : {
-        position: 'relative', display: 'flex', alignItems: 'center', gap: 10,
-        padding: collapsed ? '9px 0' : '8px 12px', borderRadius: 8, marginBottom: 2,
-        fontWeight: isActive ? 700 : 500, fontSize: 13.5,
+        padding: collapsed ? '9px 0' : '8px 11px', borderRadius: 8, marginBottom: 2,
+        fontWeight: isActive ? 600 : 500, fontSize: 14.5, lineHeight: 1.35,
         transition: 'background var(--motion-fast) cubic-bezier(.2,0,0,1), color var(--motion-fast) cubic-bezier(.2,0,0,1)',
         background: isActive ? 'var(--sidebar-surface-active)' : hovered ? 'var(--sidebar-surface-hover)' : 'transparent',
-        color: isActive ? 'var(--sidebar-text-primary)' : 'var(--sidebar-text-secondary)',
+        color: 'var(--sidebar-text-primary)',
         justifyContent: collapsed ? 'center' : 'flex-start',
         textDecoration: 'none',
-        letterSpacing: isActive ? '-0.01em' : 'normal',
+        letterSpacing: 'normal',
       })}>
       {({ isActive }) => (
         <>
           {/* Active accent bar — right side in RTL */}
           {isActive && (
-            <span style={isLight ? {
-              position:'absolute', right:0, top:4, bottom:4, width:4,
-              borderRadius:'2px 0 0 2px', background:'#60a5fa',
-              boxShadow:'0 0 12px rgba(96,165,250,0.7)',
-            } : {
-              position:'absolute', right:-1, top:5, bottom:5, width:2,
-              borderRadius:'2px 0 0 2px', background:'var(--sidebar-accent)',
+            <span style={{
+              position:'absolute', right:-1, top:5, bottom:5, width:3,
+              borderRadius:'2px 0 0 2px', background:'var(--sidebar-accent)', boxShadow:'none',
             }} />
           )}
-          <item.icon style={isLight ? {
-            width:16, height:16, flexShrink:0,
-            color: isActive ? '#93c5fd' : 'rgba(226,232,240,0.55)',
-            filter: isActive ? 'drop-shadow(0 0 5px rgba(96,165,250,0.55))' : 'none',
-          } : {
-            width:16, height:16, flexShrink:0,
+          <item.icon style={{
+            width:19, height:19, flexShrink:0, strokeWidth:1.9,
             color: isActive ? 'var(--sidebar-icon-active)' : hovered ? 'var(--sidebar-text-primary)' : 'var(--sidebar-icon)',
           }} />
           {!collapsed && (
             <span style={{ flex:1, display:'flex', alignItems:'center', gap:6, minWidth:0 }}>
               <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.label}</span>
               {item.badge && (
-                <span style={isLight ? {
-                  fontSize:9, fontWeight:800, padding:'1px 5px', borderRadius:4, lineHeight:'15px', flexShrink:0,
-                  background: item.badge === 'ERP' ? '#6d28d9' : item.badge === 'ZK' ? '#0891b2' : '#059669',
-                  color:'#fff',
-                } : {
-                  fontSize:9, fontWeight:800, padding:'1px 5px', borderRadius:4, lineHeight:'15px', flexShrink:0,
-                  background: item.badge === 'ERP' ? 'rgba(165,148,249,0.20)' : item.badge === 'ZK' ? 'rgba(88,166,255,0.20)' : 'rgba(63,185,80,0.20)',
-                  color: item.badge === 'ERP' ? '#C7BBFF' : item.badge === 'ZK' ? '#93C5FD' : '#6EE096',
-                  border: '1px solid ' + (item.badge === 'ERP' ? 'rgba(165,148,249,0.35)' : item.badge === 'ZK' ? 'rgba(88,166,255,0.35)' : 'rgba(63,185,80,0.35)'),
+                <span style={{
+                  fontSize:10, fontWeight:700, padding:'1px 6px', borderRadius:4, lineHeight:'16px', flexShrink:0, letterSpacing:'0.02em',
+                  background: `var(--nav-badge-${item.badge === 'ERP' ? 'erp' : item.badge === 'ZK' ? 'zk' : 'ok'}-bg)`,
+                  color: `var(--nav-badge-${item.badge === 'ERP' ? 'erp' : item.badge === 'ZK' ? 'zk' : 'ok'}-fg)`,
+                  border: `1px solid var(--nav-badge-${item.badge === 'ERP' ? 'erp' : item.badge === 'ZK' ? 'zk' : 'ok'}-bd)`,
                 }}>{item.badge}</span>
               )}
             </span>
@@ -163,7 +139,6 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const brand = useCompanyBrand();
-  const { isLight } = useTheme();
   const location = useLocation();
   useBeforeUnloadGuard();   // plain-browser tab close / reload with unsaved work (not installed inside Electron)
 
@@ -188,9 +163,8 @@ export default function Layout() {
         <div className="ps-sidebar-overlay md:hidden" onClick={() => setMobileOpen(false)} aria-hidden="true" />
       )}
 
-      {/* ═══ Sidebar — restored original PETSHROW Light Theme identity: the
-          sidebar was always dark-navy chrome regardless of app theme; the
-          Dark Theme keeps its current tokenized styling untouched.
+      {/* ═══ Sidebar — tokenized in both themes (--sidebar-*): deep charcoal chrome
+          in Light, neutral near-black in Dark; green only marks the active item.
           .ps-sidebar / .is-open (index.css, <768px only) turn this into a
           slide-in drawer on mobile — desktop's inline width/flex behavior
           below is completely untouched at ≥768px. ═══ */}
@@ -200,8 +174,8 @@ export default function Layout() {
         aria-modal={mobileOpen ? 'true' : undefined}
         style={{
         width: collapsed ? '58px' : '212px',
-        background: isLight ? '#0b1220' : 'var(--sidebar-background)',
-        borderLeft: '1px solid ' + (isLight ? 'rgba(255,255,255,0.06)' : 'var(--sidebar-border)'),
+        background: 'var(--sidebar-background)',
+        borderLeft: '1px solid var(--sidebar-border)',
         transition: 'width 0.2s cubic-bezier(0.4,0,0.2,1)',
         flexShrink: 0, display: 'flex', flexDirection: 'column',
       }}>
@@ -211,26 +185,24 @@ export default function Layout() {
             of the whole sidebar rather than just another nav row. */}
         <div style={{
           display:'flex', alignItems:'center', gap:11, padding: collapsed ? '16px 0' : '18px 14px',
-          borderBottom:'1px solid ' + (isLight ? 'rgba(255,255,255,0.06)' : 'var(--sidebar-border)'), flexShrink:0,
+          borderBottom:'1px solid var(--sidebar-border)', flexShrink:0,
           justifyContent: collapsed ? 'center' : 'flex-start',
-          background: isLight ? 'linear-gradient(180deg,rgba(59,130,246,0.07),transparent)' : 'linear-gradient(180deg,rgba(47,129,247,0.08),transparent)',
+          background: 'transparent',
         }}>
+          {/* CheckIn product identity (the approved logo on a white tile: the sidebar is dark in both themes). The company's own name still appears under it once the owner has set it in
+              "بيانات الشركة"; the company logo is used on reports and the login screen. */}
           <div style={{
             width:40, height:40, borderRadius:11, flexShrink:0, overflow:'hidden',
-            background: brand.logoUrl ? 'rgba(255,255,255,0.04)' : (isLight ? 'linear-gradient(135deg,#3b82f6 0%,#1d4ed8 100%)' : 'linear-gradient(135deg,#2F81F7 0%,#1F6FEB 100%)'),
             display:'flex', alignItems:'center', justifyContent:'center',
-            fontWeight:900, fontSize:21, color:'#fff', fontFamily:'Cairo,sans-serif',
-            boxShadow: brand.logoUrl ? '0 2px 12px rgba(0,0,0,0.25)' : '0 2px 12px rgba(37,99,235,0.45)',
-            border: brand.logoUrl ? '1px solid rgba(255,255,255,0.08)' : 'none',
           }}>
-            {brand.logoUrl
-              ? <img src={brand.logoUrl} alt={brand.name} style={{ width:'100%', height:'100%', objectFit:'contain' }} />
-              : brand.mark}
+            <CheckInMark size={40} plated />
           </div>
           {!collapsed && (
             <div style={{ lineHeight:1.25, minWidth:0, flex:1 }}>
-              <p style={{ color: isLight ? '#fff' : 'var(--sidebar-text-primary)', fontWeight:800, fontSize:16, letterSpacing:'0.04em', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{brand.name}</p>
-              <p style={{ color: isLight ? 'rgba(148,163,184,0.75)' : 'var(--sidebar-text-muted)', fontSize:10.5, marginTop:1, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', direction:'ltr', textAlign:'left' }}>{brand.taglineEn}</p>
+              <p style={{ color: 'var(--sidebar-text-primary)', fontFamily:'var(--font-brand)', fontWeight:700, fontSize:17, letterSpacing:'0.01em', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', direction:'ltr', textAlign:'left' }}>Check<span style={{ color:'var(--sidebar-accent)' }}>In</span></p>
+              <p style={{ color: 'var(--sidebar-text-muted)', fontSize:9.5, marginTop:1, whiteSpace: (brand.name && brand.name !== 'PETSHROW') ? 'nowrap' : 'normal', overflow:'hidden', textOverflow:'ellipsis', lineHeight:1.2, direction: (brand.name && brand.name !== 'PETSHROW') ? 'rtl' : 'ltr', textAlign:'start', letterSpacing: (brand.name && brand.name !== 'PETSHROW') ? 0 : '0.04em' }}>
+                {(brand.name && brand.name !== 'PETSHROW') ? brand.name : brand.appDescriptor}
+              </p>
             </div>
           )}
           {/* Mobile-only close button — Escape/overlay-tap both already close
@@ -244,8 +216,8 @@ export default function Layout() {
             style={{
               alignItems:'center', justifyContent:'center', flexShrink:0,
               width:32, height:32, borderRadius:8, marginInlineStart:'auto',
-              background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.10)',
-              color: isLight ? 'rgba(255,255,255,0.75)' : 'var(--sidebar-text-secondary)', cursor:'pointer',
+              background:'var(--sidebar-surface-hover)', border:'1px solid var(--sidebar-border)',
+              color: 'var(--sidebar-text-secondary)', cursor:'pointer',
             }}>
             <X style={{ width:16, height:16 }} />
           </button>
@@ -256,11 +228,8 @@ export default function Layout() {
           {NAV.map(group => (
             <div key={group.id} style={{ marginBottom:14 }}>
               {!collapsed && (
-                <p style={isLight ? {
-                  padding:'0 11px', marginBottom:5, fontSize:9.5, fontWeight:700, letterSpacing:'0.09em', textTransform:'uppercase',
-                  color:'rgba(148,163,184,0.55)', borderTop:'1px solid rgba(255,255,255,0.04)', paddingTop:10, marginTop:2,
-                } : {
-                  padding:'0 11px', marginBottom:6, fontSize:9.5, fontWeight:700, letterSpacing:'0.09em', textTransform:'uppercase',
+                <p style={{
+                  padding:'0 11px', marginBottom:6, fontSize:12, fontWeight:600, letterSpacing:'0.02em',
                   color:'var(--sidebar-text-muted)', borderTop:'1px solid var(--sidebar-border)', paddingTop:12, marginTop:4,
                 }}>
                   {group.label}
@@ -273,12 +242,12 @@ export default function Layout() {
 
         {/* Footer */}
         {!collapsed && (
-          <div style={{ padding:'9px 14px', borderTop:'1px solid ' + (isLight ? 'rgba(255,255,255,0.05)' : 'var(--sidebar-border)'), flexShrink:0 }}>
-            <p style={{ textAlign:'center', fontSize:9.5, color: isLight ? 'rgba(148,163,184,0.4)' : 'var(--sidebar-text-muted)', letterSpacing:'0.03em' }}>
-              {brand.product} · v{brand.version}
+          <div style={{ padding:'9px 14px', borderTop:'1px solid var(--sidebar-border)', flexShrink:0 }}>
+            <p style={{ textAlign:'center', fontSize:11, color: 'var(--sidebar-text-muted)', letterSpacing:'0.03em' }}>
+              {brand.appName}
             </p>
             {brand.buildMarker && (
-              <p style={{ textAlign:'center', fontSize:8.5, color: isLight ? 'rgba(148,163,184,0.28)' : 'rgba(154,169,196,0.35)', letterSpacing:'0.03em', marginTop:2 }}>
+              <p style={{ textAlign:'center', fontSize:9.5, color: 'var(--sidebar-text-muted)', opacity: 0.85, letterSpacing:'0.03em', marginTop:2 }}>
                 {brand.buildMarker}
               </p>
             )}
@@ -323,10 +292,10 @@ export default function Layout() {
           <div style={{ display:'flex', alignItems:'center', gap:14, minWidth:0 }}>
             <ThemeSwitcher />
             <div style={{ display:'flex', alignItems:'center', gap:7, padding:'8px 14px', borderRadius:8, fontSize:14, fontWeight:700,
-              background: isLight ? 'rgba(5,150,105,0.09)' : 'rgba(16,185,129,0.10)',
-              border: isLight ? '1px solid rgba(5,150,105,0.30)' : '1px solid rgba(16,185,129,0.25)',
-              color: isLight ? '#065f46' : '#10b981', flexShrink:0 }}>
-              <span style={{ width:8, height:8, borderRadius:'50%', background: isLight ? '#059669' : '#10b981', boxShadow:'0 0 5px rgba(16,185,129,0.6)', flexShrink:0 }} />
+              background: 'var(--accent-soft)',
+              border: '1px solid rgba(79,191,107,0.30)',
+              color: 'var(--accent)', flexShrink:0 }}>
+              <span style={{ width:8, height:8, borderRadius:'50%', background: 'var(--ci-green)', flexShrink:0 }} />
               <span className="hidden md:inline">النظام يعمل</span>
             </div>
           </div>
@@ -349,7 +318,7 @@ export default function Layout() {
             <span style={{ fontSize:13, color:'#92400e', fontWeight:600, flex:1 }}>
               ⚠ لم يتم إعداد بيانات الشركة بعد — يرجى إعداد الشركة قبل استخدام النظام.
             </span>
-            <a href="#/settings/company" style={{ fontSize:12, fontWeight:700, color: isLight ? '#1d4ed8' : '#1F6FEB', textDecoration:'none', background:'rgba(29,78,216,0.08)', padding:'4px 10px', borderRadius:5, border:'1px solid rgba(29,78,216,0.2)' }}>
+            <a href="#/settings/company" style={{ fontSize:12, fontWeight:700, color: 'var(--accent)', textDecoration:'none', background:'rgba(79,191,107,0.08)', padding:'4px 10px', borderRadius:5, border:'1px solid rgba(79,191,107,0.2)' }}>
               فتح إعدادات الشركة
             </a>
           </div>

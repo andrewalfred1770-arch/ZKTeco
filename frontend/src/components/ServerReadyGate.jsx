@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import StartupScreen from './launcher/StartupScreen';
 
 // ─── Startup readiness gate ────────────────────────────────────────────────
 // Root cause of the "فشل تحميل البيانات" / "تعذر تحميل المرتبات" false
@@ -73,7 +74,7 @@ export default function ServerReadyGate({ children }) {
             position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
             padding: '6px 16px', fontSize: 12, direction: 'rtl',
-            background: status === 'unreachable' ? 'rgba(239,68,68,0.95)' : 'rgba(37,99,235,0.95)',
+            background: status === 'unreachable' ? 'rgba(239,68,68,0.95)' : 'rgba(32,40,43,0.96)',
             color: '#fff',
           }}>
             <span>
@@ -98,39 +99,7 @@ export default function ServerReadyGate({ children }) {
     );
   }
 
-  return (
-    <div style={{
-      position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'center', gap: 16,
-      background: 'var(--bg, #0b1220)', color: 'var(--text, #e2e8f0)', zIndex: 9999,
-    }}>
-      {status === 'checking' ? (
-        <>
-          <div style={{
-            width: 36, height: 36, borderRadius: '50%',
-            border: '3px solid rgba(148,163,184,0.25)', borderTopColor: '#3b82f6',
-            animation: 'spin 0.8s linear infinite',
-          }} />
-          <div style={{ fontSize: 13, color: 'var(--text-3, #94a3b8)' }}>جاري الاتصال بالخادم...</div>
-        </>
-      ) : (
-        <>
-          <div style={{ fontSize: 14, fontWeight: 700 }}>تعذر الوصول إلى الخادم</div>
-          <div style={{ fontSize: 12, color: 'var(--text-3, #94a3b8)', textAlign: 'center', maxWidth: 320 }}>
-            لا يزال البرنامج يحاول الاتصال بالخادم في الخلفية. إذا استمرت المشكلة تحقّق من إعدادات الاتصال.
-          </div>
-          <button
-            onClick={recheck}
-            style={{
-              padding: '8px 20px', borderRadius: 8, border: '1px solid #2563eb',
-              background: '#1d4ed8', color: '#fff', fontSize: 13, cursor: 'pointer',
-            }}
-          >
-            إعادة المحاولة الآن
-          </button>
-        </>
-      )}
-      <style>{'@keyframes spin { to { transform: rotate(360deg); } }'}</style>
-    </div>
-  );
+  // Branded startup screen. Same two states as before ('checking' / 'unreachable'), same retry handler; the screen reports only what
+  // GET /api/startup-status actually returned (see components/launcher/StartupScreen.jsx and lib/startupStages.js).
+  return <StartupScreen status={status} onRetry={recheck} />;
 }

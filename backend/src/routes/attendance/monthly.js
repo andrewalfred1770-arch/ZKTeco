@@ -1,11 +1,14 @@
-const router = require('express').Router();
-const { sendError } = require('../../utils/apiError');
+const router = require('express').Router();
+const { sendError, numericIdParam } = require('../../utils/apiError');
+const { viewerScope } = require('../../middleware/employeeAccess');
 const { getPrisma } = require('../../utils/prisma');
+router.param('id', numericIdParam);
 const moment = require('moment');
 const { mergeEffectivePenalty } = require('../../engines/attendanceEngine');
-const { applyApprovedAdjustment } = require('../../engines/payrollEngine');
+const { applyApprovedAdjustment, countDerivedAbsences, loadMonthHolidays } = require('../../engines/payrollEngine');
+const { getRulesBatch } = require('../../engines/rulesEngine');
 const { monthRange, getEffectiveMonthEndDate } = require('../../utils/monthRange');
-const { resolveVerifiedManualEditIds } = require('../../utils/manualEditAudit');
+const { resolveVerifiedManualEditIds, loadTimesReviewedAt } = require('../../utils/manualEditAudit');
 const { buildAttendanceRow } = require('../../utils/attendanceRow');
 const { countUnreflectedPunches } = require('../../utils/lockedPunchConflict');
 const { pLimit } = require('../../utils/pLimit');
@@ -38,11 +41,19 @@ const MONTHLY_DETAIL_EMPLOYEE_SELECT = {
 };
 const MONTHLY_SUMMARY_EMPLOYEE_SELECT = {
   id: true, name: true, code: true, salary: true, isMonitored: true, monitorColor: true,
+  status: true, hireDate: true, effectiveStopDate: true, branchId: true,   // derived-absence eligibility (utils/payrollPeriod.js)
   department: { select: { name: true } },
   branch: { select: { name: true } },
 };
 
+// AttendanceDaily columns that identify who edited a day or why — administrative, not part of an employee's own attendance record.
+const ADMIN_ONLY_DAILY_FIELDS = new Set([
+  'notes', 'manualEdit', 'manualPenaltyAt', 'manualPenaltyBy', 'manualPenaltyByName', 'manualPenaltyReason',
+  'absenceReason', 'absenceSetBy', 'absenceSetAt', 'createdAt', 'updatedAt',
+]);
+
 // Get monthly attendance for an employee
+// Owner decision: salary / amount views are readable by every user of the application (read-only); writes elsewhere keep their role checks.
 router.get('/monthly', async (req, res) => {
   try {
     const { month, year, branchId, departmentId, employeeId } = req.query;
@@ -86,6 +97,9 @@ router.get('/monthly', async (req, res) => {
       : [];
     const adjByDailyIdGlobal = new Map(allAdjustments.map(a => [a.attendanceDailyId, a]));
 
+    const rulesByEmployee = await getRulesBatch(employees);
+    const monthHolidays = await loadMonthHolidays(prisma, m, y);   // one query (null = unavailable -> no derived absences)
+
     const results = [];
     for (const emp of employees) {
       const records = recordsByEmployee.get(emp.id) || [];
@@ -97,7 +111,10 @@ router.get('/monthly', async (req, res) => {
       // Counted on the approved-adjustment-aware rows (effRecords), exactly like Payroll / Daily /
       // Movement — an approved forcePresent must not still count as an absent day here.
       const workDays = effRecords.filter(r => ['present', 'late', 'early_leave'].includes(r.status)).length;
-      const absentDays = effRecords.filter(r => r.isAbsent).length;
+      // Stored absent rows PLUS the eligible past working days that have no row at all (approved derived-absence rule) — the same
+      // count payroll prices (payrollEngine.countDerivedAbsences), so this report can never show fewer absences than the payroll it feeds.
+      const absentDays = effRecords.filter(r => r.isAbsent).length
+        + countDerivedAbsences({ employee: emp, month: m, year: y, rawRecords: records, rules: rulesByEmployee.get(emp.id), holidayRows: monthHolidays });
       const totalHours = records.reduce((s, r) => s + r.workedMinutes / 60, 0);
       const totalOT = records.reduce((s, r) => s + r.overtimeHours, 0);
       const totalLate = records.reduce((s, r) => s + r.lateMinutes, 0);
@@ -192,7 +209,6 @@ router.get('/monthly-detail', async (req, res) => {
             manualPenaltyBy: true, manualPenaltyByName: true, manualPenaltyReason: true,
             manualOvertimeUnits: true, overtimeRulesUnits: true, absenceType: true,
             penaltyDays: true, absenceReason: true, absenceSetBy: true, absenceSetAt: true,
-            updatedAt: true,   // only to tell punches stored after the last write of a LOCKED row (utils/lockedPunchConflict.js)
           },
         }))
       : [];
@@ -227,8 +243,9 @@ router.get('/monthly-detail', async (req, res) => {
         if (!byEmpDay.has(k)) byEmpDay.set(k, []);
         byEmpDay.get(k).push({ timestamp: l.timestamp, createdAt: l.createdAt });
       }
+      const reviewedAt = await attendanceQueryLimit(() => loadTimesReviewedAt(lockedRecs.map(r => r.id)));   // last AUDITED punch-time change, not updatedAt
       for (const r of lockedRecs) {
-        ignoredByRecId.set(r.id, countUnreflectedPunches(r, byEmpDay.get(`${r.employeeId}|${dayKey(r.date)}`) || []));
+        ignoredByRecId.set(r.id, countUnreflectedPunches({ ...r, timesReviewedAt: reviewedAt.get(r.id) || null }, byEmpDay.get(`${r.employeeId}|${dayKey(r.date)}`) || []));
       }
     }
 
@@ -256,7 +273,8 @@ router.get('/monthly-detail', async (req, res) => {
 });
 
 // Get employee monthly detail (per day breakdown)
-router.get('/employee/:id/monthly', async (req, res) => {
+// Owner decision: any user may view any employee's attendance. viewerScope marks a non-staff caller so the response omits editor identities / reasons.
+router.get('/employee/:id/monthly', viewerScope, async (req, res) => {
   try {
     const { month, year } = req.query;
     const m = parseInt(month) || new Date().getMonth() + 1;
@@ -270,13 +288,15 @@ router.get('/employee/:id/monthly', async (req, res) => {
       orderBy: { date: 'asc' },
     });
 
-    res.json(records.map(r => ({
+    const rows = records.map(r => ({
       ...r,
       checkIn: r.checkIn ? moment(r.checkIn).format('HH:mm') : null,
       checkOut: r.checkOut ? moment(r.checkOut).format('HH:mm') : null,
       date: moment(r.date).format('YYYY-MM-DD'),
       workedHours: (r.workedMinutes / 60).toFixed(2),
-    })));
+    }));
+    // Staff keep the unchanged response; a self-service caller gets only their own attendance facts (no editor identities / reasons).
+    res.json(req.restrictedView ? rows.map(r => Object.fromEntries(Object.entries(r).filter(([k]) => !ADMIN_ONLY_DAILY_FIELDS.has(k)))) : rows);
   } catch (err) {
     sendError(res, err);
   }

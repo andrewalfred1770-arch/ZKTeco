@@ -1,6 +1,6 @@
 import { Tray, Menu, nativeImage, app } from 'electron';
 import { existsSync } from 'fs';
-import { APP_NAME } from './constants.js';
+import { DISPLAY_NAME } from './constants.js';
 import { state } from './state.js';
 
 let tray = null;
@@ -37,7 +37,7 @@ export function createTray(paths) {
   } catch {}
 
   tray = new Tray(icon);
-  tray.setToolTip(APP_NAME);
+  tray.setToolTip(DISPLAY_NAME);
   tray.setContextMenu(Menu.buildFromTemplate([
     {
       label: 'فتح البرنامج',

@@ -1,13 +1,19 @@
 const router = require('express').Router();
 const { sendError } = require('../utils/apiError');
+const { lockCappedTransaction } = require('../utils/lockWaitCap');
 const moment = require('moment');
 const { getPrisma } = require('../utils/prisma');
 const { authenticate, authorize } = require('../middleware/auth');
+const { loadMonthHolidays } = require('../engines/payrollEngine');
 const { validatePayrollStatusValue, planPayrollEdit, assertPayrollOpen, replyPayrollPolicyError, calculatePayroll, calculateMonthlyPayroll, computePayroll, applyApprovedAdjustment, withPayrollKeyLock, calculatePayrollImpl, filterProtectedPayrollTargets, syncStoredPayroll, payrollSnapshotDiffers } = require('../engines/payrollEngine');
 const { mergeEffectivePenalty } = require('../engines/attendanceEngine');
 const { getRules, getRulesBatch, isRuleTrue } = require('../engines/rulesEngine');
 const { writeAudit } = require('../utils/manualEditAudit');
 const { monthRange } = require('../utils/monthRange');
+const { selectListablePayrolls, displayedFigures, isClosedStatus } = require('../utils/payrollListScope');
+// The stored columns a DRAFT detail response shows live (same set the list overlays).
+const PAYROLL_LIVE_FIELDS = ['basicSalary', 'hourlyRate', 'workDays', 'absentDays', 'latePenalty', 'penaltyUnits', 'penaltyAmount', 'overtimeHours', 'overtimeAmount', 'advances', 'manualDeductionAdjustment', 'deductions', 'netSalary'];
+const { preHireDaysInMonth } = require('../utils/payrollPeriod');
 const { parseMoney, hasMoneyPrecision } = require('../utils/numeric');
 const { MONTHS_AR } = require('../utils/constants');
 const { pLimit } = require('../utils/pLimit');
@@ -63,72 +69,14 @@ router.get('/', async (req, res) => {
       where,
       include: {
         employee: {
-          select: { code: true, name: true, status: true, effectiveStopDate: true },
+          select: { code: true, name: true, status: true, effectiveStopDate: true, hireDate: true },
         },
       },
       orderBy: { employee: { name: 'asc' } },
     });
 
-    // Phase 22.1: authoritative eligibility rule — "استبعاد الموظف الموقوف من
-    // المرتبات بعد تاريخ الإيقاف" (Rules page, category "payroll", key
-    // exclude_stopped_employees_from_payroll). Gated by the rule's own
-    // enabled state like every other Dynamic Rules Engine key: when the rule
-    // row is inactive OR its value isn't 'true', this route applies NO
-    // eligibility filtering at all (pre-Phase-20.5 raw behavior) — the
-    // policy is off, not silently replaced by hardcoded logic here.
-    const rules = await getRules();
-    const stoppedEmployeeFilterEnabled = isRuleTrue(rules['exclude_stopped_employees_from_payroll']);
-
-    let eligiblePayrolls = payrolls;
-    if (stoppedEmployeeFilterEnabled) {
-      const inactiveIds = [...new Set(
-        payrolls
-          .filter(p => p.employee.status === false && !['finalized', 'paid'].includes(p.status))
-          .map(p => p.employeeId)
-      )];
-
-      // Legacy fallback ONLY for inactive employees with no effectiveStopDate
-      // on record (pre-Phase-22.1 data — the field is never auto-backfilled,
-      // see Phase 22.1 audit). Once HR sets an effectiveStopDate for these via
-      // the Employees page, this branch stops applying to them entirely and
-      // the date-based rule below takes over. This is not a second competing
-      // eligibility system — it's the single decision function's handling of
-      // "authoritative date missing", not an independent parallel filter.
-      const undatedInactiveIds = inactiveIds.filter(id => {
-        const p = payrolls.find(row => row.employeeId === id);
-        return p && p.employee.effectiveStopDate == null;
-      });
-      let eligibleUndatedIds = new Set();
-      if (undatedInactiveIds.length) {
-        const { startDate, endDate } = monthRange(y, m);
-        const attended = await prisma.attendanceDaily.findMany({
-          where: {
-            employeeId: { in: undatedInactiveIds },
-            date: { gte: startDate, lte: endDate },
-            OR: [{ checkIn: { not: null } }, { checkOut: { not: null } }],
-          },
-          select: { employeeId: true },
-          distinct: ['employeeId'],
-        });
-        eligibleUndatedIds = new Set(attended.map(a => a.employeeId));
-      }
-
-      // Month-boundary convention (Phase 22.1 §5, verified against CASE A-D):
-      // eligible for month (m,y) iff effectiveStopDate is strictly AFTER the
-      // first day of that month — i.e. the stop date itself is the first
-      // excluded operational day. A stop date of Aug 1 excludes August
-      // entirely; Aug 15 keeps August (existing partial-month payroll
-      // behavior applies unchanged) but excludes September.
-      const { startDate: monthStart } = monthRange(y, m);
-      eligiblePayrolls = payrolls.filter(p => {
-        if (p.employee.status === true) return true;
-        if (['finalized', 'paid'].includes(p.status)) return true;
-        if (p.employee.effectiveStopDate != null) {
-          return new Date(p.employee.effectiveStopDate).getTime() > monthStart.getTime();
-        }
-        return eligibleUndatedIds.has(p.employeeId);
-      });
-    }
+    // Row set (stopped-employee rule, hire-date start rule): the ONE definition, shared with the Excel export (utils/payrollListScope.js).
+    const eligiblePayrolls = await selectListablePayrolls(prisma, payrolls, m, y, await getRules());
 
     // EF-017: netSalary (and the other money/attendance fields the grid
     // displays) must come from the same single canonical source every other
@@ -169,6 +117,7 @@ router.get('/', async (req, res) => {
         ])
       : [[], [], [], [], []];
 
+    const preloadHolidays = await loadMonthHolidays(prisma, m, y);   // one query for the whole page (null = unavailable → no derived absences)
     const employeeById = new Map(preloadEmployees.map(e => [e.id, e]));
     const groupByEmployeeId = (rows) => {
       const map = new Map();
@@ -199,13 +148,13 @@ router.get('/', async (req, res) => {
         existingPayroll: existingPayrollByEmployee.get(p.employeeId) || null,
         rules: rulesByEmployee.get(p.employeeId),
         advancesList: advancesByEmployee.get(p.employeeId) || [],
+        holidays: preloadHolidays,
       },
     }))));
     // Closed (finalized/paid) rows are approved records: show what was approved (the stored
     // row), never freshly computed figures that may differ after a later attendance edit.
-    const isClosedRow = (p) => p.status === 'finalized' || p.status === 'paid';
     const result = eligiblePayrolls.map((p, i) => {
-      const c = isClosedRow(p) ? { ...fresh[i], ...p, dailyRate: fresh[i].dailyRate } : fresh[i];
+      const c = displayedFigures(p, fresh[i]);
       return {
         ...p,
         employee: { code: p.employee.code, name: p.employee.name },
@@ -233,14 +182,8 @@ router.get('/', async (req, res) => {
     });
     res.json(result);
 
-    // F-01: best-effort write-through AFTER the response — rows whose stored
-    // snapshot lags the fresh figures just shown are re-synced (each recomputes
-    // under its own payroll lock, so a concurrent edit can never be overwritten).
-    const stale = eligiblePayrolls.filter((p, i) => !isClosedRow(p) && payrollSnapshotDiffers(p, fresh[i]));
-    if (stale.length) {
-      Promise.all(stale.map(p => payrollLimit(() => syncStoredPayroll(p.employeeId, p.month, p.year))))
-        .catch(e => console.error('[PAYROLL-SYNC] background sync failed:', e && e.message));
-    }
+    // Reads are strictly read-only: a stored draft that lags these live figures is NOT rewritten here. Persisting happens only through
+    // an explicit, authorized recalculation (POST /payroll/calculate, or an edit that already recalculates).
   } catch (err) {
     sendError(res, err);
   }
@@ -257,15 +200,19 @@ router.get('/:employeeId', async (req, res, next) => {
     const y = per.y;
 
     const employeeId = parseInt(req.params.employeeId);
-    // F-01: never serve a stale snapshot — re-sync it with the canonical computation first.
-    await syncStoredPayroll(employeeId, m, y);
+    // Read-only: never writes. A stale snapshot is not served either — a DRAFT row is overlaid with the live canonical figures (the same
+    // overlay the list uses); finalized/paid rows are approved records and are returned exactly as stored.
     const payroll = await prisma.payroll.findUnique({
       where: { employeeId_month_year: { employeeId, month: m, year: y } },
       include: { employee: true },
     });
 
     if (!payroll) return res.status(404).json({ error: 'Payroll not found' });
-    res.json(payroll);
+    if (isClosedStatus(payroll.status)) return res.json(payroll);
+    const c = displayedFigures(payroll, await computePayroll(employeeId, m, y));
+    const live = {};
+    for (const k of PAYROLL_LIVE_FIELDS) live[k] = c[k];
+    res.json({ ...payroll, ...live });
   } catch (err) {
     sendError(res, err);
   }
@@ -348,6 +295,15 @@ router.put('/:id', async (req, res) => {
       }
     }
 
+    // The basic shown for a month in which the employee STARTED is pro-rated (utils/payrollPeriod.js). Typing a number over it would
+    // silently rewrite the employee's MONTHLY salary to something else, so it is refused here with the way out spelled out.
+    if (newSalary !== null) {
+      const empNow = await prisma.employee.findUnique({ where: { id: payroll.employeeId }, select: { salary: true, hireDate: true } });
+      if (empNow && preHireDaysInMonth(empNow.hireDate, payroll.month, payroll.year) > 0 && newSalary !== (empNow.salary || 0)) {
+        return res.status(400).json({ error: 'الراتب الأساسي لهذا الشهر محسوب بالتناسب لأن الموظف بدأ العمل خلال الشهر — عدّل الراتب الشهري من بيانات الموظف', code: 'PRORATED_BASIC_NOT_EDITABLE' });
+      }
+    }
+
     // EF-003.3.3 / EF-029.1: the employee-salary write, the payroll-field
     // write, the recalculation upsert, and every audit-log row for this
     // request now commit or roll back together in one prisma.$transaction —
@@ -365,7 +321,7 @@ router.put('/:id', async (req, res) => {
     let salaryBefore = null, salaryAfter = null;
     let updated;
     await withPayrollKeyLock(payroll.employeeId, payroll.month, payroll.year, async () => {
-      await prisma.$transaction(async (tx) => {
+      await lockCappedTransaction(prisma, async (tx) => {
         // F-07: the audit "old" values must be the row as it is committed RIGHT NOW, not
         // the snapshot read at the top of this request (which can predate an edit that
         // finished while this request was waiting for the payroll lock). Lock the row, then
@@ -517,7 +473,7 @@ router.put('/:id/advances', async (req, res) => {
     let updated;
     await withPayrollKeyLock(employeeId, month, year, async () => {
       // F-04: no business limit on advances — the total is whatever the user enters.
-      await prisma.$transaction(async (tx) => {
+      await lockCappedTransaction(prisma, async (tx) => {
         // Closed-payroll policy + the cross-process serialisation point: lock the payroll row (FOR UPDATE) and re-read its
         // status INSIDE this transaction. A finalized/paid month accepts no advance change at all; the rejection throws
         // before anything is written, so the transaction leaves everything untouched.
@@ -569,6 +525,7 @@ router.put('/:id/advances', async (req, res) => {
     res.json(updated);
   } catch (err) {
     if (replyPayrollPolicyError(res, err)) return;
+    if (err.code === 'LOCK_WAIT_TIMEOUT') return sendError(res, err);   // H3: same 409 + code as every other lock-capped route
     if (err.statusCode) return res.status(err.statusCode).json({ error: err.message });
     sendError(res, err);
   }
@@ -653,7 +610,7 @@ router.get('/final-sheet', async (req, res) => {
     // a pre-2026-06-22 'half_day' status never recomputed since that status
     // was removed) — status-based is immune to that class of staleness since
     // it reads the engine's own explicit classification directly.
-    const absentDays  = attRecords.filter(r => r.isAbsent).length;
+    const storedAbsentDays = attRecords.filter(r => r.isAbsent).length;   // rows that exist; the displayed absentDays below is the canonical payroll count
     const totalLateMin= attRecords.reduce((s, r) => s + (r.lateMinutes || 0), 0);
     // EF-012: morningOT/eveningOT must sum to exactly totalOTHours. The old
     // formula summed morningOvertimeHours/eveningOvertimeHours — the raw,
@@ -704,11 +661,15 @@ router.get('/final-sheet', async (req, res) => {
     // scan across all 2,536 Payroll rows during the HIGH#1 investigation.
     // F-01: compute once AND bring the stored Payroll row in line with that
     // same result (no-op when equal; never changes status; never creates a row).
-    const { computed } = await syncStoredPayroll(eId, m, y);
+    const computed = await computePayroll(eId, m, y);   // read-only: opening the sheet persists nothing
 
     const dailyRate  = computed.dailyRate;
     const hourlyRate = computed.hourlyRate;
     const workDays   = computed.workDays;
+    // The absence count is the one payroll prices (stored absent rows + derived absences for working days with no row), so the
+    // sheet can never say "9 absent days" next to a deduction for 10.
+    const derivedAbsentDays = computed.derivedAbsentDays || 0;
+    const absentDays = computed.absentDays;
 
     // EF-012: full day-accounting for the period — workDays/absentDays alone
     // silently dropped weekend/holiday/future days from every statement (e.g.
@@ -720,14 +681,14 @@ router.get('/final-sheet', async (req, res) => {
     const totalDaysInPeriod = moment(startDate).daysInMonth();
     const weeklyOffDays = attRecords.filter(r => r.isWeekend && !r.isHoliday).length;
     const holidayDays   = attRecords.filter(r => r.isHoliday).length;
-    const futureDays    = totalDaysInPeriod - attRecords.length; // dates not yet reached (no AttendanceDaily row exists for them)
+    const futureDays    = totalDaysInPeriod - attRecords.length - derivedAbsentDays; // (derived absences are past working days, not future ones) // dates not yet reached (no AttendanceDaily row exists for them)
     // Defensive catch-all: a row can carry a legacy/unrecognized status (e.g.
     // 'half_day', removed 2026-06-22 per attendanceEngine.js's own comment,
     // but still present in old un-recomputed rows — live-verified: employee
     // 19, 2026-06-07) that matches none of the 4 buckets above. Rather than
     // let such a row silently vanish from the day count, it's explicitly
     // counted here so the identity below always holds exactly, for any data.
-    const otherDays = attRecords.length - (workDays + absentDays + weeklyOffDays + holidayDays);
+    const otherDays = attRecords.length - (workDays + storedAbsentDays + weeklyOffDays + holidayDays);
 
     // Closed payrolls: the headline money figures are the APPROVED stored values, not a fresh
     // recomputation (see syncStoredPayrollLocked). Breakdown lines below stay live.

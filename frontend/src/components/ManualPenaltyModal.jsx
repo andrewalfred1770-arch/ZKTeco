@@ -9,7 +9,7 @@
  * canonical value (manual* = null). Every change requires a mandatory reason
  * and is written to the same audit trail as ManualEditDrawer.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Save, Loader2, History, ShieldOff, RotateCcw } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../lib/api';
@@ -46,7 +46,7 @@ function Card({ title, icon:Icon, children, accent='var(--accent)' }) {
 
 const inputStyle = { fontFamily:'Consolas,monospace', textAlign:'center', direction:'ltr' };
 
-export default function ManualPenaltyModal({ record, onClose, onSaved }) {
+export default function ManualPenaltyModal({ record, onClose, onSaved, onResult }) {
   const originalLate     = record.manualLatePenaltyUnits  ?? null;
   const originalEarly    = record.manualEarlyPenaltyUnits ?? null;
   const originalOvertime = record.manualOvertimeUnits     ?? null;
@@ -58,6 +58,7 @@ export default function ManualPenaltyModal({ record, onClose, onSaved }) {
   const [statusVal, setStatusVal]   = useState(originalStatus);
   const [reason, setReason]         = useState('');
   const [saving, setSaving]         = useState(false);
+  const savingRef = useRef(false);   // synchronous re-entry guard for handleSave
   const [audit, setAudit]           = useState(null);
   const [showAudit, setShowAudit]   = useState(false);
 
@@ -96,6 +97,7 @@ export default function ManualPenaltyModal({ record, onClose, onSaved }) {
   const restoreOriginal = () => { setLateStr(''); setEarlyStr(''); setOvertimeStr(''); setStatusVal(originalStatus); };
 
   const handleSave = async () => {
+    if (savingRef.current) return;   // duplicate-submission guard: a second click while the first save is in flight sends nothing
     if (parsedOvertime != null && parsedOvertime > 24) {
       toast.error('قيمة الإضافي اليدوي لا يمكن أن تتجاوز 24 ساعة لليوم الواحد'); return;
     }
@@ -103,6 +105,7 @@ export default function ManualPenaltyModal({ record, onClose, onSaved }) {
     if (!needsReason) { toast.error('لم يتم تغيير أي قيمة'); return; }
     if (!reason.trim()) { toast.error('سبب التعديل مطلوب'); return; }
 
+    savingRef.current = true;
     setSaving(true);
     try {
       const payload = { overrideReason: reason, modifiedByName: ACTOR };
@@ -110,13 +113,14 @@ export default function ManualPenaltyModal({ record, onClose, onSaved }) {
       if (earlyChanged)     payload.manualEarlyPenaltyUnits = parsedEarly;
       if (overtimeChanged)  payload.manualOvertimeUnits     = parsedOvertime;
       if (statusChanged)    payload.status = statusVal;
-      await api.put(`/attendance/${record.id}/manual-penalty`, payload);
-      toast.success('تم حفظ التعديل اليدوي');
+      const res = await api.put(`/attendance/${record.id}/manual-penalty`, payload);
+      try { onResult?.(res?.data); } catch { /* informational only: must never turn a saved edit into an error */ }
+      if (!onResult) toast.success('تم حفظ التعديل اليدوي');   // with onResult the page shows ONE outcome toast (saved + payroll status)
       onSaved?.();
       onClose();
     } catch (err) {
       toast.error('فشل الحفظ: ' + (err.response?.data?.error || err.message));
-    } finally { setSaving(false); }
+    } finally { savingRef.current = false; setSaving(false); }
   };
 
   const originalOvertimeBase = record.originalOvertimeUnits ?? record.overtimeRulesUnits ?? record.overtimeHours ?? 0;
@@ -142,7 +146,7 @@ export default function ManualPenaltyModal({ record, onClose, onSaved }) {
         <>
           <button onClick={handleSave} disabled={saving || !needsReason}
             style={{ display:'flex', alignItems:'center', gap:7, padding:'10px 22px', borderRadius:9,
-              background:'var(--accent)', color:'#fff', border:'none', fontWeight:700, fontSize:13.5,
+              background:'var(--accent-2)', color:'var(--btn-primary-text)', border:'none', fontWeight:700, fontSize:13.5,
               cursor: (saving || !needsReason) ? 'not-allowed' : 'pointer', opacity: (saving || !needsReason) ? .6 : 1 }}>
             {saving ? <Loader2 style={{ width:15, height:15, animation:'spin 1s linear infinite' }} />
                     : <Save style={{ width:15, height:15 }} />}

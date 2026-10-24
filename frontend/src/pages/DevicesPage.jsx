@@ -28,11 +28,12 @@ import toast from 'react-hot-toast';
 import { useUnsavedWork } from '../hooks/useUnsavedWork';
 import { describeSaveFailure } from '../lib/saveFailure';
 import { getSocket } from '../lib/socket';
+import { buildSyncToast } from '../lib/syncResultSummary';
 import api, { LONG_OP } from '../lib/api';
 import { useTheme } from '../contexts/ThemeContext';
 import { AG_GRID_LOCALE_AR } from '../lib/agGridLocale';
 import { westernDigits, fmtDateTime } from '../lib/formatters';
-import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS } from '../lib/gridDefaults';
+import { ENTERPRISE_DEFAULT_COL_DEF, ENTERPRISE_GRID_PROPS, withHeaderFloor } from '../lib/gridDefaults';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 import { useIsNarrowViewport } from '../hooks/useIsNarrowViewport';
 
@@ -378,9 +379,9 @@ function DeviceDrawer({ open, onClose, onSaved, device, branches }) {
                 display: 'flex', alignItems: 'center', gap: 8,
                 padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600,
                 fontFamily: 'Cairo, sans-serif', cursor: 'pointer',
-                background: isLight ? 'rgba(59,130,246,0.1)' : 'rgba(47,129,247,0.1)',
-                border: '1px solid ' + (isLight ? 'rgba(59,130,246,0.3)' : 'rgba(47,129,247,0.3)'),
-                color: isLight ? '#60a5fa' : '#79C0FF', width: '100%', justifyContent: 'center',
+                background: isLight ? 'rgba(79,191,107,0.1)' : 'rgba(79,191,107,0.1)',
+                border: '1px solid ' + (isLight ? 'rgba(79,191,107,0.3)' : 'rgba(79,191,107,0.3)'),
+                color: isLight ? 'var(--accent)' : 'var(--accent)', width: '100%', justifyContent: 'center',
               }}
             >
               {testing
@@ -470,7 +471,7 @@ function DeviceDrawer({ open, onClose, onSaved, device, branches }) {
                   onClick={() => set(key, !form[key])}
                   style={{
                     width: 44, height: 24, borderRadius: 99, border: 'none', cursor: 'pointer',
-                    background: form[key] ? '#2563eb' : (isLight ? '#cbd5e1' : 'var(--surface-4)'),
+                    background: form[key] ? '#1E7A34' : (isLight ? '#cbd5e1' : 'var(--surface-4)'),
                     position: 'relative', transition: 'background 0.2s', flexShrink: 0,
                   }}
                 >
@@ -506,7 +507,7 @@ function DeviceDrawer({ open, onClose, onSaved, device, branches }) {
             style={{
               flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
               padding: '9px 0', borderRadius: 8, border: 'none',
-              background: '#2563eb', color: '#fff',
+              background: '#1E7A34', color: '#fff',
               fontSize: 13, fontWeight: 700, fontFamily: 'Cairo, sans-serif', cursor: 'pointer',
             }}
           >
@@ -565,11 +566,11 @@ function SyncLogsPanel({ deviceId, deviceName, isLight }) {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <History style={{ width: 15, height: 15, color: isLight ? '#60a5fa' : '#79C0FF' }} />
+          <History style={{ width: 15, height: 15, color: isLight ? 'var(--accent)' : 'var(--accent)' }} />
           {deviceName ? `سجل مزامنة: ${deviceName}` : 'سجل المزامنة الأخير (جميع الأجهزة)'}
           {logs.length > 0 && open && (
             <span style={{
-              background: isLight ? 'rgba(59,130,246,0.15)' : 'rgba(47,129,247,0.15)', color: isLight ? '#60a5fa' : '#79C0FF',
+              background: isLight ? 'rgba(79,191,107,0.15)' : 'rgba(79,191,107,0.15)', color: isLight ? 'var(--accent)' : 'var(--accent)',
               padding: '1px 7px', borderRadius: 99, fontSize: 10,
             }}>{logs.length}</span>
           )}
@@ -621,14 +622,14 @@ function SyncLogsPanel({ deviceId, deviceName, isLight }) {
                       <td style={{ padding: '5px 10px', color: isLight ? '#64748b' : '#475569', fontFamily: 'Consolas, monospace' }}>
                         {W(log.totalLogs)}
                       </td>
-                      <td style={{ padding: '5px 10px', color: isLight ? '#60a5fa' : '#79C0FF', fontFamily: 'Consolas, monospace', whiteSpace: 'nowrap' }}>
+                      <td style={{ padding: '5px 10px', color: isLight ? 'var(--accent)' : 'var(--accent)', fontFamily: 'Consolas, monospace', whiteSpace: 'nowrap' }}>
                         {fmtDuration(log.duration)}
                       </td>
                       <td style={{ padding: '5px 10px' }}>
                         <span style={{
                           fontSize: 10, padding: '1px 7px', borderRadius: 99,
-                          background: log.triggeredBy === 'manual' ? 'rgba(168,85,247,0.1)' : (isLight ? 'rgba(59,130,246,0.1)' : 'rgba(47,129,247,0.1)'),
-                          color:      log.triggeredBy === 'manual' ? '#a855f7'               : (isLight ? '#60a5fa' : '#79C0FF'),
+                          background: log.triggeredBy === 'manual' ? 'rgba(168,85,247,0.1)' : (isLight ? 'rgba(79,191,107,0.1)' : 'rgba(79,191,107,0.1)'),
+                          color:      log.triggeredBy === 'manual' ? '#a855f7'               : (isLight ? 'var(--accent)' : 'var(--accent)'),
                         }}>
                           {log.triggeredBy === 'manual' ? 'يدوي' : 'تلقائي'}
                         </span>
@@ -851,7 +852,7 @@ function RecoveryDiagnosticsPanel({ deviceId, deviceName, isLight }) {
                     <span style={{ color: isLight ? '#334155' : 'var(--text-3)', fontFamily: 'Consolas, monospace', fontSize: 11 }}>
                       {fmtDatetime(data.lastConvergence.completedAt || data.lastConvergence.startedAt)}
                     </span>
-                    <span style={{ color: isLight ? '#60a5fa' : '#79C0FF', fontFamily: 'Consolas, monospace', fontSize: 11 }}>
+                    <span style={{ color: isLight ? 'var(--accent)' : 'var(--accent)', fontFamily: 'Consolas, monospace', fontSize: 11 }}>
                       {W(data.lastConvergence.convergencePasses ?? 0)} تمريرات
                     </span>
                     <span style={{ color: '#22c55e', fontFamily: 'Consolas, monospace', fontSize: 11 }}>
@@ -1154,7 +1155,12 @@ export default function DevicesPage() {
     setSyncAll(true);
     try {
       const { data } = await api.post('/devices/sync-all', null, LONG_OP);
-      toast.success(`مزامنة جماعية — ${W(data.totalNewLogs)} حركة جديدة من ${W(data.results?.length)} جهاز`);
+      // A skipped (busy / disabled) or failed device is never reported as a success.
+      const results = Array.isArray(data?.results) ? data.results : [];
+      const t = buildSyncToast(results);
+      if (t.level === 'success') toast.success(`مزامنة جماعية — ${W(data.totalNewLogs)} حركة جديدة من ${W(results.length)} جهاز`);
+      else if (t.level === 'error') toast.error(t.message, { duration: 8000 });
+      else toast(t.message, { icon: '⚠️', duration: 7000 });
       loadAll();
     } catch { toast.error('فشلت المزامنة الجماعية'); }
     finally { setSyncAll(false); }
@@ -1228,7 +1234,7 @@ export default function DevicesPage() {
       cellStyle: { ...NUM, color: 'var(--c-muted)', fontSize: 11, justifyContent: 'center' },
     },
     {
-      field: 'name', headerName: 'اسم الجهاز', width: 180, pinned: 'right',
+      field: 'name', headerName: 'اسم الجهاز', width: 180, minWidth: 150, pinned: 'right',
       cellStyle: { fontWeight: 700, color: 'var(--c-name)', fontFamily: 'Cairo, sans-serif' },
     },
     {
@@ -1238,7 +1244,7 @@ export default function DevicesPage() {
       // column's definition (and every other column's) stable across the
       // continuous stream of device:realtime-status pushes, instead of
       // rebuilding all 11 column defs + cell renderer closures on every one.
-      headerName: 'الحالة', width: 115, headerClass: 'ag-header-center',
+      headerName: 'الحالة', width: 115, minWidth: 100, headerClass: 'ag-header-center',
       cellRenderer: ({ data, context }) => {
         const status = context.liveStatus[data.id] || data.status || 'offline';
         return <StatusBadge status={status} />;
@@ -1295,7 +1301,7 @@ export default function DevicesPage() {
       ),
     },
     {
-      headerName: 'إجراءات', width: 250, pinned: isNarrow ? undefined : 'left',
+      headerName: 'إجراءات', width: 250, minWidth: 250, pinned: isNarrow ? undefined : 'left',
       sortable: false, filter: false,
       cellRenderer: ({ data, context }) => (
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, height: '100%' }}>
@@ -1306,8 +1312,8 @@ export default function DevicesPage() {
             style={{
               display: 'flex', alignItems: 'center', gap: 4,
               padding: '3px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
-              cursor: 'pointer', border: '1.5px solid rgba(37,99,235,0.4)',
-              background: 'rgba(37,99,235,0.1)', color: 'var(--accent)',
+              cursor: 'pointer', border: '1.5px solid rgba(79,191,107,0.4)',
+              background: 'rgba(79,191,107,0.1)', color: 'var(--accent)',
               fontFamily: 'Cairo, sans-serif',
             }}
           >
@@ -1368,7 +1374,7 @@ export default function DevicesPage() {
   // repainted via refreshCells() in the effect below, so columnDefs itself
   // never needs to change after mount. isNarrow is a new, deliberate
   // dependency (mobile pinning fix above) — everything else is unchanged.
-  ], [isNarrow]);
+  ].map(withHeaderFloor), [isNarrow]);
 
   // Perf Fix #7: rowClassRules (unlike a getRowClass function) is checked
   // against the AG Grid `context` prop at evaluation time, exactly like the
@@ -1489,7 +1495,7 @@ export default function DevicesPage() {
 
       {/* ── KPI Cards — 2 cols on mobile, 3 on tablet, 5 on desktop ────────── */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5" style={{ gap: 10 }}>
-        <KpiCard label="إجمالي الأجهزة"  value={stats?.total}      icon={Server}   color={isLight ? '#3b82f6' : '#2F81F7'}  loading={statsLoad} />
+        <KpiCard label="إجمالي الأجهزة"  value={stats?.total}      icon={Server}   color={isLight ? '#1E7A34' : 'var(--accent)'}  loading={statsLoad} />
         <KpiCard label="متصل"             value={stats?.online}     icon={Wifi}     color="#22c55e"  loading={statsLoad} sub="في الوقت الحالي" />
         <KpiCard label="غير متصل"         value={stats?.offline}    icon={WifiOff}  color="#ef4444"  loading={statsLoad} />
         <KpiCard

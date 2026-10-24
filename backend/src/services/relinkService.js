@@ -172,7 +172,8 @@ async function recalcDateRangeForEmployee(employeeId, from, to) {
   let d = start.clone();
   while (d.isSameOrBefore(end)) {
     try {
-      await attendanceEngine.processDate(d.toDate(), employeeId);
+      const pr = await attendanceEngine.processDate(d.toDate(), employeeId);
+      if (pr && pr.skipped === 'closed-evidence-loss') logger.warn(`[Relink] ${d.format('YYYY-MM-DD')} emp ${employeeId}: closed payroll + missing raw punches — attendance left unchanged`);
     } catch (err) {
       logger.error(`[Relink] processDate emp ${employeeId} ${d.format('YYYY-MM-DD')}: ${err.message}`);
     }

@@ -1,0 +1,72 @@
+/* CheckIn launcher + startup screen. Motion rule: transform / opacity / stroke-dashoffset only; no continuous blur; every loop is slow. */
+
+.ci-stage { position: relative; color: var(--ci-text); font-family: var(--font-ui); }
+
+/* ── Logo mark: the approved artwork is a PNG; on dark surfaces it sits on a white tile (charcoal ridges would vanish otherwise) ── */
+.ci-mark { object-fit: contain; }
+.ci-mark--plated { background: #FFFFFF; border-radius: 22%; padding: 7%; box-sizing: border-box; }
+html:not(.light) .ci-mark--auto { background: #FFFFFF; border-radius: 22%; padding: 7%; box-sizing: border-box; }
+.ci-mark-animate { animation: ci-mark-in 520ms var(--ci-ease) both; }
+@keyframes ci-mark-in { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: scale(1); } }
+
+/* hologram floating a few pixels (slow, small) */
+.ci-float { animation: ci-float 7s ease-in-out infinite; }
+@keyframes ci-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+
+/* fingerprint scan line sweeping the sensor */
+.ci-scan { animation: ci-scan 2.8s ease-in-out infinite; }
+@keyframes ci-scan { 0% { transform: translateY(-30px); opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } 100% { transform: translateY(30px); opacity: 0; } }
+
+/* thin data streams: dashes travel along the lines, lines fade in gradually */
+.ci-stream { stroke-dasharray: 3 9; animation: ci-stream 3.2s linear infinite, ci-fade-in 900ms var(--ci-ease) both; }
+.ci-stream:nth-of-type(2) { animation-delay: 0s, 200ms; }
+.ci-stream:nth-of-type(3) { animation-delay: 0s, 400ms; }
+.ci-stream:nth-of-type(4) { animation-delay: 0s, 600ms; }
+@keyframes ci-stream { to { stroke-dashoffset: -48; } }
+@keyframes ci-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── Module cards: staggered fade/translate in, hover = lift + border highlight ── */
+.ci-card {
+  display: flex; flex-direction: column; gap: 10px; text-align: start; text-decoration: none; cursor: pointer;
+  padding: 16px; border-radius: 14px; background: var(--surface); border: 1px solid var(--border); color: var(--text);
+  transition: transform var(--ci-dur-ui) var(--ci-ease), border-color var(--ci-dur-ui) var(--ci-ease), background-color var(--ci-dur-ui) var(--ci-ease), box-shadow var(--ci-dur-ui) var(--ci-ease);
+  animation: ci-card-in var(--ci-dur-scene) var(--ci-ease) both;
+  animation-delay: calc(var(--i, 0) * 45ms + 250ms);
+}
+.ci-card:hover, .ci-card:focus-visible { transform: translateY(-2px); border-color: var(--ci-green); background: var(--surface-2); box-shadow: 0 10px 24px -14px rgba(0,0,0,0.6); }
+.ci-card-icon { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; background: var(--surface-2); color: var(--accent-text, var(--accent)); border: 1px solid var(--border); }
+.ci-card h3 { font-size: 15px; font-weight: 700; line-height: 1.3; }
+.ci-card p  { font-size: 12.5px; line-height: 1.5; color: var(--text-3); }
+@keyframes ci-card-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+.ci-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+
+/* ── Startup screen ──────────────────────────────────────────────────────────── */
+.ci-startup { position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column; background: var(--ci-bg);
+  background-image: radial-gradient(60% 50% at 50% 38%, rgba(255,255,255,0.04), transparent 70%); }
+.ci-startup-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 28px; }
+.ci-startup-body { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 12px 24px; min-height: 0; }
+.ci-steps { display: grid; gap: 8px; width: min(420px, 90vw); }
+.ci-step { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--ci-muted); transition: color var(--ci-dur-ui) var(--ci-ease); }
+.ci-step.is-done { color: var(--ci-text); }
+.ci-step-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid #525252; flex: none; transition: background-color var(--ci-dur-ui), border-color var(--ci-dur-ui); }
+.ci-step.is-done .ci-step-dot { background: var(--ci-green); border-color: var(--ci-green); }
+.ci-step.is-waiting .ci-step-dot { border-color: var(--ci-green); animation: ci-pulse 1.4s ease-in-out infinite; }
+@keyframes ci-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+.ci-segments { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; width: min(420px, 90vw); }
+.ci-seg { height: 4px; border-radius: 2px; background: #242424; overflow: hidden; position: relative; }
+.ci-seg > i { position: absolute; inset: 0; background: var(--ci-green); transform-origin: left center; transform: scaleX(0); transition: transform var(--ci-dur-scene) var(--ci-ease); }
+.ci-seg.is-done > i { transform: scaleX(1); }
+[dir="rtl"] .ci-seg > i { transform-origin: right center; }
+.ci-indeterminate { position: absolute; inset: 0; background: linear-gradient(90deg, transparent, var(--ci-green), transparent); width: 40%; animation: ci-slide 1.6s ease-in-out infinite; }
+@keyframes ci-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
+.ci-retry { padding: 8px 20px; border-radius: 9px; border: 1px solid var(--ci-green); background: var(--ci-green); color: #0A130C; font-size: 13px; cursor: pointer; }
+.ci-retry:hover { background: var(--ci-green-dark); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ci-mark-animate { animation: none; }
+  .ci-hero-light, .ci-scan { display: none; }
+  .ci-float, .ci-stream, .ci-card, .ci-step.is-waiting .ci-step-dot, .ci-indeterminate { animation: none; }
+  .ci-card { opacity: 1; transform: none; }
+  .ci-seg > i { transition: none; }
+}

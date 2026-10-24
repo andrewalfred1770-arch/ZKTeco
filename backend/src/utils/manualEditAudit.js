@@ -89,4 +89,25 @@ function hasVerifiedManualEdit(rec, verifiedIds, hasApprovedAdjustment) {
   return false;
 }
 
-module.exports = { writeAudit, resolveVerifiedManualEditIds, hasVerifiedManualEdit };
+// ─── Punch-time review (F-M2) ─────────────────────────────────────────────────
+// When did HR last CHANGE a row's punch times? The only reliable, already-existing signal is the audit trail: PUT
+// /attendance/daily/:id writes one ManualEditAuditLog row per changed field, checkIn/checkOut included, in the same
+// transaction as the change. Other writes (manual penalty, absence type, status, adjustment approval) never audit those
+// two fields, so they cannot be mistaken for a review of the times. Returns Map<attendanceDailyId, Date>; rows with no
+// audited time change are simply absent from the map. Batched: one query for the whole id list.
+const PUNCH_TIME_FIELDS = ['checkIn', 'checkOut'];
+async function loadTimesReviewedAt(recordIds, client = prisma) {
+  const out = new Map();
+  if (!recordIds || !recordIds.length) return out;
+  const rows = await client.manualEditAuditLog.findMany({
+    where: { attendanceDailyId: { in: recordIds }, fieldName: { in: PUNCH_TIME_FIELDS } },
+    select: { attendanceDailyId: true, createdAt: true },
+  });
+  for (const r of rows) {
+    const t = new Date(r.createdAt).getTime();
+    if (!out.has(r.attendanceDailyId) || t > out.get(r.attendanceDailyId).getTime()) out.set(r.attendanceDailyId, new Date(t));
+  }
+  return out;
+}
+
+module.exports = { writeAudit, resolveVerifiedManualEditIds, hasVerifiedManualEdit, loadTimesReviewedAt };

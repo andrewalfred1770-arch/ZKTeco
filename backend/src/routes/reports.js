@@ -6,7 +6,9 @@ const moment = require('moment');
 const XLSX = require('xlsx');
 const { authenticate, authorize } = require('../middleware/auth');
 const { mergeEffectivePenalty } = require('../engines/attendanceEngine');
-const { applyApprovedAdjustment, computePayroll, buildPayrollPreloadMap } = require('../engines/payrollEngine');
+const { applyApprovedAdjustment, computePayroll, buildPayrollPreloadMap, countDerivedAbsences, loadMonthHolidays } = require('../engines/payrollEngine');
+const { getRulesBatch, getRules } = require('../engines/rulesEngine');
+const { selectListablePayrolls, displayedFigures } = require('../utils/payrollListScope');
 const { monthRange } = require('../utils/monthRange');
 const { attendanceScopeWhere, monthPeriod } = require('../utils/employmentEligibility');
 const prisma = getPrisma();
@@ -62,6 +64,9 @@ router.get('/attendance/monthly/export', async (req, res) => {
       : [];
     const adjByDailyIdGlobal = new Map(allAdjustments.map(a => [a.attendanceDailyId, a]));
 
+    const rulesByEmployee = await getRulesBatch(employees);
+    const monthHolidays = await loadMonthHolidays(prisma, m, y);   // null = unavailable -> no derived absences
+
     const rows = [];
     for (const emp of employees) {
       const records = recordsByEmployee.get(emp.id) || [];
@@ -75,7 +80,9 @@ router.get('/attendance/monthly/export', async (req, res) => {
       // stale/legacy status value (e.g. the removed 'half_day' status).
       // Counted on the approved-adjustment-aware rows (effRecords), like Payroll / Daily / Movement.
       const workDays = effRecords.filter(r => ['present', 'late', 'early_leave'].includes(r.status)).length;
-      const absentDays = effRecords.filter(r => r.isAbsent).length;
+      // Stored absent rows + derived absences (working days with no row) — the same count payroll prices (countDerivedAbsences).
+      const absentDays = effRecords.filter(r => r.isAbsent).length
+        + countDerivedAbsences({ employee: emp, month: m, year: y, rawRecords: records, rules: rulesByEmployee.get(emp.id), holidayRows: monthHolidays });
       const totalHours = records.reduce((s, r) => s + r.workedMinutes / 60, 0);
       const totalOT = records.reduce((s, r) => s + r.overtimeHours, 0);
       const totalLate = records.reduce((s, r) => s + r.lateMinutes, 0);
@@ -129,11 +136,13 @@ router.get('/payroll/export', async (req, res) => {
     const where = { month: m, year: y };
     if (branchId) where.employee = { branchId: parseInt(branchId) };
 
-    const filtered = await prisma.payroll.findMany({
+    const allForMonth = await prisma.payroll.findMany({
       where,
       include: { employee: { include: { department: true, branch: true } } },
       orderBy: { employee: { name: 'asc' } },
     });
+    // Same row set as the payroll grid (stopped-employee rule + hire-date start rule): the export must list exactly the employees the grid lists.
+    const filtered = await selectListablePayrolls(prisma, allForMonth, m, y, await getRules());
 
     // EP-022 Phase 8: this export previously read straight off the stored
     // Payroll row — a write-time snapshot that goes stale the moment
@@ -174,7 +183,8 @@ router.get('/payroll/export', async (req, res) => {
     const money2 = (v) => Number((Number(v) || 0).toFixed(2));
     const MONEY_COLS = ['Basic Salary', 'OT Amount', 'Deductions', 'Advances', 'Manual Deduction', 'Net Salary', 'Late Penalty'];
     const rows = filtered.map((p, i) => {
-      const c = fresh[i];
+      // Same figures as the grid: draft = live computePayroll(); finalized/paid = the approved stored row.
+      const c = displayedFigures(p, fresh[i]);
       return {
         'Employee Code': p.employee.code || '',
         'Employee Name': p.employee.name,
