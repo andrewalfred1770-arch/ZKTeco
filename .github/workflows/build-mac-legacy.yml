@@ -1,0 +1,140 @@
+name: Build macOS Legacy Client (on-demand)
+
+# Manual, on-demand build of "CheckIn Mac" (Manager/client edition, version from frontend/package.json = 1.1.5) for Intel Macs that cannot run
+# macOS 10.15: High Sierra 10.13 and Mojave 10.14. It uses the LEGACY toolchain (Electron 26.6.10 - the last Electron that supports macOS 10.13 /
+# 10.14; Electron 27 dropped them) through the existing script and config:
+#   npm run electron:build:mac:legacy   (frontend/electron-builder.legacy-mac.json; main process bundled to electron.mojave.cjs by esbuild)
+# Macs on macOS 10.15 or newer should use the modern build (workflow "Build macOS Intel Client", Electron 32.3.3).
+# appId (com.petshrow.erp.manager) and the packaged name (petshrow-erp-manager) are UNCHANGED on purpose: they decide the bundle identifier, the
+# user-data folder, the Keychain item and the Manager edition detection, so settings left on a Mac keep working. Install only ONE of the two
+# builds on a Mac, and never go back from the modern build to this one on the same user data (Chromium profiles are not downgrade-safe).
+# workflow_dispatch only: never fires on push / PR / release and never competes with the jobs in build.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref (tag/branch/sha) to build'
+        required: true
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  build-macos-legacy:
+    name: Build macOS Legacy Client (Electron 26.6.10, macOS 10.13+)
+    runs-on: macos-15-intel
+
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Checkout requested ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build macOS Legacy client (assets gate -> electron.mojave.cjs bundle -> vite --mode manager -> verify -> electron-builder)
+        working-directory: frontend
+        # Artifacts are intentionally UNSIGNED and NOT notarized (no Apple credentials configured). The npm script itself refuses a stale or
+        # incomplete electron.mojave.cjs (verify-mojave-main.mjs) before packaging.
+        run: npm run electron:build:mac:legacy
+
+      - name: Inspect packaged app (name, bundle id, version, arch, minimum macOS, Electron, main bundle, no backend)
+        working-directory: frontend
+        run: |
+          set -e
+          APP_DIR=$(find ../dist-electron-legacy -type d -name "*.app" -not -path "*/Contents/*" | head -n1)
+          [ -n "$APP_DIR" ] || { echo "FAIL: no .app bundle produced"; exit 1; }
+          echo "App bundle: $APP_DIR"
+          [ "$(basename "$APP_DIR")" = "CheckIn Mac.app" ] && echo "OK: bundle is CheckIn Mac.app" || { echo "FAIL: bundle is '$(basename "$APP_DIR")', expected 'CheckIn Mac.app'"; exit 1; }
+          BUNDLE_ID=$(plutil -extract CFBundleIdentifier raw "$APP_DIR/Contents/Info.plist")
+          [ "$BUNDLE_ID" = "com.petshrow.erp.manager" ] && echo "OK: CFBundleIdentifier unchanged ($BUNDLE_ID)" || { echo "FAIL: CFBundleIdentifier is '$BUNDLE_ID'"; exit 1; }
+          MIN_OS=$(plutil -extract LSMinimumSystemVersion raw "$APP_DIR/Contents/Info.plist")
+          [ "$MIN_OS" = "10.13.0" ] && echo "OK: LSMinimumSystemVersion is 10.13.0" || { echo "FAIL: LSMinimumSystemVersion is '$MIN_OS', expected 10.13.0"; exit 1; }
+          file "$APP_DIR/Contents/MacOS/"* | grep -q "x86_64" && echo "OK: main binary is x86_64" || { echo "FAIL: main binary is not x86_64"; exit 1; }
+          FW_PLIST="$APP_DIR/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/Info.plist"
+          FW_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$FW_PLIST")
+          [ "$FW_VER" = "26.6.10" ] && echo "OK: bundled Electron Framework is 26.6.10" || { echo "FAIL: Electron Framework is '$FW_VER', expected 26.6.10"; exit 1; }
+          FW_BIN="$APP_DIR/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework"
+          file "$FW_BIN" | grep -q "x86_64" && echo "OK: Electron Framework is x86_64" || { echo "FAIL: Electron Framework is not x86_64"; exit 1; }
+          echo "Electron Framework load command (minos):"; otool -l "$FW_BIN" | grep -A4 -E "LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX" | head -12 || true
+          if [ -e "$APP_DIR/Contents/Resources/backend" ]; then echo "FAIL: a Manager client must not bundle backend/"; exit 1; else echo "OK: no backend bundled"; fi
+          if [ -e "$APP_DIR/Contents/Resources/mysql" ]; then echo "FAIL: mysql/ must not be bundled"; exit 1; else echo "OK: no mysql bundled"; fi
+          if [ -e "$APP_DIR/Contents/Resources/app-update.yml" ]; then echo "FAIL: this build has no update feed, app-update.yml found"; exit 1; else echo "OK: no update feed (publish is null)"; fi
+          npx asar extract "$APP_DIR/Contents/Resources/app.asar" /tmp/asar-mac-legacy
+          NAME=$(node -e "console.log(require('/tmp/asar-mac-legacy/package.json').name)")
+          [ "$NAME" = "petshrow-erp-manager" ] && echo "OK: packaged name is $NAME (Manager edition)" || { echo "FAIL: packaged name is '$NAME'"; exit 1; }
+          MAIN=$(node -e "console.log(require('/tmp/asar-mac-legacy/package.json').main)")
+          [ "$MAIN" = "electron.mojave.cjs" ] && echo "OK: main is $MAIN" || { echo "FAIL: main is '$MAIN'"; exit 1; }
+          PKG_VER=$(node -e "console.log(require('/tmp/asar-mac-legacy/package.json').version)")
+          SRC_VER=$(node -e "console.log(require('./package.json').version)")
+          [ "$PKG_VER" = "$SRC_VER" ] && [ "$PKG_VER" = "1.1.5" ] && echo "OK: packaged version is $PKG_VER" || { echo "FAIL: packaged version '$PKG_VER', source '$SRC_VER', expected 1.1.5"; exit 1; }
+          if [ -e /tmp/asar-mac-legacy/electron.js ]; then echo "FAIL: electron.js (ESM) must not be packaged"; exit 1; else echo "OK: electron.js not packaged"; fi
+          if grep -nE "^\s*(import |export )" /tmp/asar-mac-legacy/electron.mojave.cjs | head -3 | grep -q .; then echo "FAIL: ESM import/export syntax found in electron.mojave.cjs"; exit 1; else echo "OK: no ESM syntax in electron.mojave.cjs"; fi
+          node --input-type=module -e "import { checkBundleText } from './scripts/mojave-bundle-check.mjs'; import fs from 'fs'; const r = checkBundleText(fs.readFileSync('/tmp/asar-mac-legacy/electron.mojave.cjs', 'utf8')); console.log(JSON.stringify(r)); process.exit(r.ok ? 0 : 1);" && echo "OK: packaged main bundle contains the 1.1.5 setup-auth code" || { echo "FAIL: packaged main bundle lacks 1.1.5 code"; exit 1; }
+          grep -q "http://192.168.1.145:8080" /tmp/asar-mac-legacy/electron.mojave.cjs && echo "OK: default server address is in the main bundle" || { echo "FAIL: default server address missing"; exit 1; }
+          grep -rlq "manager" "$APP_DIR/Contents/Resources/frontend/dist/assets" && echo "OK: renderer bundle references the manager edition" || { echo "FAIL: manager edition not found in renderer bundle"; exit 1; }
+
+      - name: Launch packaged app (runner smoke test - does NOT prove macOS 10.13/10.14)
+        working-directory: frontend
+        timeout-minutes: 5
+        run: |
+          set +e
+          APP_DIR=$(find ../dist-electron-legacy -type d -name "*.app" -not -path "*/Contents/*" | head -n1)
+          BIN=$(find "$APP_DIR/Contents/MacOS" -type f -maxdepth 1 | head -n1)
+          echo "Launching: $BIN"
+          "$BIN" > /tmp/app-launch.log 2>&1 &
+          APP_PID=$!
+          sleep 8
+          kill "$APP_PID" 2>/dev/null
+          pkill -f "$APP_DIR" 2>/dev/null
+          wait "$APP_PID" 2>/dev/null
+          echo "================ Launch output ================"
+          cat /tmp/app-launch.log
+          if grep -q "ERR_REQUIRE_ESM" /tmp/app-launch.log; then echo "FAIL: ERR_REQUIRE_ESM detected in launch output"; exit 1; else echo "OK: no ERR_REQUIRE_ESM in launch output"; fi
+          if grep -q "\[AssetSmokeTest\]" /tmp/app-launch.log; then echo "FAIL: a bundled asset failed to load"; grep "\[AssetSmokeTest\]" /tmp/app-launch.log; exit 1; else echo "OK: no [AssetSmokeTest] failures in launch output"; fi
+
+      - name: Report signing status (never faked)
+        run: |
+          echo "Signing: NOT VERIFIED - unsigned artifact"
+          echo "Notarization: NOT VERIFIED - no Apple credentials configured"
+          APP_DIR=$(find dist-electron-legacy -type d -name "*.app" -not -path "*/Contents/*" | head -n1)
+          codesign -dv "$APP_DIR" 2>&1 || echo "(informational only: expected to show 'not signed')"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkin-mac-legacy-1.1.5-intel-electron-26.6.10
+          path: |
+            dist-electron-legacy/*.dmg
+            dist-electron-legacy/*.zip
+          if-no-files-found: error
+
+      # Runs after the upload so the artifact can still be inspected, but turns the run red when the Electron binary was NOT built for
+      # macOS 10.13/10.14 (LSMinimumSystemVersion in Info.plist is only a label; the Mach-O load command is what the OS loader enforces).
+      - name: Verify the Electron binary really targets macOS 10.13 or older
+        if: always()
+        working-directory: frontend
+        run: |
+          APP_DIR=$(find ../dist-electron-legacy -type d -name "*.app" -not -path "*/Contents/*" | head -n1)
+          [ -n "$APP_DIR" ] || { echo "FAIL: no .app bundle to check"; exit 1; }
+          FW_BIN="$APP_DIR/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework"
+          MINOS=$(otool -l "$FW_BIN" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit} /LC_VERSION_MIN_MACOSX/{g=1} g&&/version/{print $2; exit}')
+          echo "Electron Framework Mach-O minimum macOS: ${MINOS:-unknown}"
+          [ -n "$MINOS" ] || { echo "FAIL: could not read the Mach-O minimum macOS"; exit 1; }
+          MAJOR=$(echo "$MINOS" | cut -d. -f1); MINOR=$(echo "$MINOS" | cut -d. -f2)
+          if [ "$MAJOR" -gt 10 ] || { [ "$MAJOR" -eq 10 ] && [ "${MINOR:-0}" -gt 13 ]; }; then
+            echo "FAIL: Electron Framework requires macOS $MINOS; it will not start on 10.13/10.14"; exit 1
+          fi
+          echo "OK: Electron Framework Mach-O minimum is $MINOS (<= 10.13)"

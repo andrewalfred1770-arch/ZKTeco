@@ -1,6 +1,6 @@
 {
   "appId": "com.petshrow.erp.manager",
-  "productName": "PETSHROW ERP Manager",
+  "productName": "CheckIn Mac",
   "copyright": "© 2026 PETSHROW ERP",
   "asar": true,
   "asarUnpack": ["assets/**"],
@@ -23,7 +23,7 @@
     "minimumSystemVersion": "10.13.0",
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
-    "artifactName": "PETSHROW-ERP-Mojave-${version}-${arch}.${ext}",
+    "artifactName": "CheckIn-Mac-Legacy-${version}-${arch}.${ext}",
     "extraResources": [
       {
         "from": "dist",
@@ -34,7 +34,7 @@
   },
 
   "dmg": {
-    "artifactName": "PETSHROW-ERP-Mojave-${version}-${arch}.${ext}"
+    "artifactName": "CheckIn-Mac-Legacy-${version}-${arch}.${ext}"
   },
 
   "files": [
